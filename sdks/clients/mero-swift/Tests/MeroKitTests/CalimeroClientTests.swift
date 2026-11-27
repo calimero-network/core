@@ -336,7 +336,7 @@ final class CalimeroClientTests: XCTestCase {
                 ])
             case ("GET", "/consent/r1/result"):
                 return .json(["requestId": "r1", "kind": "upgrade", "status": "approved", "decidedAt": 2])
-            case ("POST", "/apps"): return .json(["appId": "a1", "contextId": "c"])
+            case ("POST", "/apps"): return .json(["appId": "a1"])
             default: return .json([:])
             }
         }
@@ -426,7 +426,9 @@ final class CalimeroClientTests: XCTestCase {
     }
 
     func testMembershipsCredentialsAndInvitesAreApprovedWithAPasskey() async throws {
-        let node = Self.stepUpNode(["token": "inv_1", "credentialId": "cred2", "keyId": "k1", "key": "cal_x"])
+        let node = Self.stepUpNode([
+            "token": "inv_1", "credentialId": "cred2", "keyId": "k1", "key": "cal_x", "then": [],
+        ])
         node.install()
         let cloud = client()
         let passkey = SoftPasskey()

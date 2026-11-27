@@ -1,5 +1,5 @@
-//! The API's routes for undoing an upgrade from its restore point (C9;
-//! `SystemCmd::UndoUpgrade`, `crate::node::restore_points`).
+//! The API's routes for undoing an upgrade from its restore point
+//! (`SystemCmd::UndoUpgrade`, `crate::node::restore_points`).
 
 #[allow(
     clippy::wildcard_imports,
@@ -22,7 +22,7 @@ pub(super) struct UndoBody {
 
 /// One app an undo reverts, as the routes answer it: the release it leaves and the one
 /// it returns to, when, and what is lost ([`lost_writes`]).
-async fn part_json(node: &Node, a: &AppRecord, p: &RestorePoint) -> Value {
+async fn part_json(node: &Node, a: &AppRecord, p: &RestorePoint) -> UndoPart {
     let status = match &p.file {
         Some(f) => Some(node.restore_point_status(&a.app_id, f).await),
         None => None,
@@ -32,30 +32,111 @@ async fn part_json(node: &Node, a: &AppRecord, p: &RestorePoint) -> Value {
             // What the app wrote since is its replicas' to say, a majority of them, whether
             // or not the restore point's node still hosts it: that node may be behind.
             let progress = node.group_progress(a).await;
-            (lost_writes(v, f.source.index, progress), Value::Null)
+            (Some(lost_writes(v, f.source.index, progress)), None)
         }
-        (Some(Err(e)), _) => (Value::Null, json!({ "code": e.code, "message": e.message })),
+        (Some(Err(e)), _) => (
+            None,
+            Some(Refusal {
+                code: e.code.clone(),
+                message: e.message.clone(),
+            }),
+        ),
         _ => (
-            json!({ "entriesSince": 0, "lastWriteAt": null, "any": false }),
-            Value::Null,
+            Some(LostWrites {
+                entries_since: Some(0),
+                last_write_at: None,
+                any: Some(false),
+            }),
+            None,
         ),
     };
-    json!({
-        "app": a.app_id,
-        "from": p.to_release,
-        "to": p.from_release,
-        "toBundle": p.from_bundle,
-        "upgradedAt": p.at,
-        "upgradedBy": p.by,
-        "auto": p.by == crate::system::AUTO_UPDATE,
-        "undoUntil": p.at.saturating_add(UNDO_WINDOW_SECS),
-        "restorePoint": p.file.as_ref().map(|f| json!({
-            "node": f.node, "index": f.source.index, "sha256": f.source.sha256,
-        })),
-        "undoneAt": p.undone_at,
-        "lostWrites": lost,
-        "unavailable": available,
-    })
+    UndoPart {
+        app: a.app_id.clone(),
+        from: p.to_release.clone(),
+        to: p.from_release.clone(),
+        to_bundle: p.from_bundle.clone(),
+        upgraded_at: p.at,
+        upgraded_by: p.by.clone(),
+        auto: p.by == crate::system::AUTO_UPDATE,
+        undo_until: p.at.saturating_add(UNDO_WINDOW_SECS),
+        restore_point: p.file.as_ref().map(|f| RestorePointView {
+            node: f.node,
+            index: f.source.index,
+            sha256: f.source.sha256.clone(),
+        }),
+        undone_at: p.undone_at,
+        lost_writes: lost,
+        unavailable: available,
+    }
+}
+
+/// One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`),
+/// when and by whom it was upgraded, until when it may be undone, its restore point, and what
+/// the undo loses (`null` while the restore point's node does not answer, which `unavailable`
+/// says).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UndoPart {
+    app: String,
+    from: Option<crate::system::PackageRef>,
+    to: Option<crate::system::PackageRef>,
+    to_bundle: String,
+    upgraded_at: u64,
+    upgraded_by: String,
+    auto: bool,
+    undo_until: u64,
+    restore_point: Option<RestorePointView>,
+    undone_at: Option<u64>,
+    lost_writes: Option<LostWrites>,
+    unavailable: Option<Refusal>,
+}
+
+/// Where a restore point is: its node, the app log's index it was taken at, its SHA-256.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct RestorePointView {
+    node: u64,
+    index: u64,
+    sha256: String,
+}
+
+/// What an undo loses: entries since the restore point, the last write (Unix seconds) and
+/// whether it wrote since; each `null` when nobody can say.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct LostWrites {
+    entries_since: Option<u64>,
+    last_write_at: Option<u64>,
+    any: Option<bool>,
+}
+
+/// A refusal: its code and message.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct Refusal {
+    code: String,
+    message: String,
+}
+
+/// `GET /apps/{app}/undo`: whether the app's last upgrade may be undone now (else the
+/// refusal's `reason`), until when, and each app it reverts.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UndoView {
+    app: String,
+    available: bool,
+    reason: Option<Refusal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    undo_until: Option<u64>,
+    apps: Vec<UndoPart>,
+}
+
+/// What `POST /apps/{app}/undo` answers: each app group restored (its restore point's index,
+/// `null` when none), whether every group takes calls again, and each app reverted.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct UndoDone {
+    app: String,
+    groups: serde_json::Map<String, Value>,
+    restored: bool,
+    apps: Vec<UndoPart>,
 }
 
 /// What an undo loses (`lostWrites`): the app group's entries since the restore point
@@ -71,8 +152,12 @@ fn lost_writes(
     holder: &Value,
     index: u64,
     progress: Option<crate::node::ReplicaProgress>,
-) -> Value {
-    let unknown = json!({ "entriesSince": null, "lastWriteAt": null, "any": null });
+) -> LostWrites {
+    let unknown = LostWrites {
+        entries_since: None,
+        last_write_at: None,
+        any: None,
+    };
     let taken = holder["takenAt"].as_u64();
     let wrote_since = |ms: u64| taken.is_none_or(|t| ms / 1000 >= t);
     let Some(r) = progress else {
@@ -85,11 +170,11 @@ fn lost_writes(
     }
     // Past `index`, or a write after the restore point seen even so: a write since is a
     // write lost, whoever saw it, and none is said only by a replica past `index`.
-    json!({
-        "entriesSince": r.applied.filter(|_| caught_up).map(|i| i - index),
-        "lastWriteAt": r.last_write_ms.map(|ms| ms / 1000),
-        "any": wrote,
-    })
+    LostWrites {
+        entries_since: r.applied.filter(|_| caught_up).map(|i| i - index),
+        last_write_at: r.last_write_ms.map(|ms| ms / 1000),
+        any: Some(wrote),
+    }
 }
 
 /// What an undo of `app` would revert at `now`, and whether it may: `Ok` with each
@@ -109,6 +194,7 @@ async fn plan(
                     .as_ref()
                     .ok_or(crate::system::NO_RESTORE_POINT)?;
                 s.may_undo(a, p, now)?;
+                s.on_lineage(a, p.from_release.as_ref())?;
                 s.undo_release_installed(p)?;
                 Ok((a.clone(), p.clone()))
             })
@@ -125,32 +211,43 @@ async fn app_undo_view(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<UndoView>> {
     let (app, _p) = super::upgrades::readable_app(&node, &headers, &app_id).await?;
     let now = crate::types::update_now();
     let parts = match plan(&node, &app, now).await {
         Ok(parts) => parts,
         Err(e) => {
-            return Ok(Json(json!({
-                "app": app.app_id,
-                "available": false,
-                "reason": { "code": e.code, "message": e.message },
-                "apps": [],
-            })))
+            return Ok(Json(UndoView {
+                app: app.app_id,
+                available: false,
+                reason: Some(Refusal {
+                    code: e.code,
+                    message: e.message,
+                }),
+                undo_until: None,
+                apps: Vec::new(),
+            }))
         }
     };
     let mut apps = Vec::new();
     for (a, p) in &parts {
         apps.push(part_json(&node, a, p).await);
     }
-    let blocked = apps.iter().any(|a| !a["unavailable"].is_null());
-    Ok(Json(json!({
-        "app": app.app_id,
-        "available": !blocked,
-        "reason": apps.iter().map(|a| a["unavailable"].clone()).find(|u| !u.is_null()),
-        "undoUntil": parts.first().map(|(_, p)| p.at.saturating_add(UNDO_WINDOW_SECS)),
-        "apps": apps,
-    })))
+    let reason = apps.iter().find_map(|a| {
+        a.unavailable.as_ref().map(|r| Refusal {
+            code: r.code.clone(),
+            message: r.message.clone(),
+        })
+    });
+    Ok(Json(UndoView {
+        app: app.app_id,
+        available: reason.is_none(),
+        reason,
+        undo_until: parts
+            .first()
+            .map(|(_, p)| p.at.saturating_add(UNDO_WINDOW_SECS)),
+        apps,
+    }))
 }
 
 /// `POST /apps/{app}/undo`: undo the app's last upgrade within a week of it, with an
@@ -181,13 +278,11 @@ async fn app_undo(
     let mut shown = Vec::new();
     for (a, rp) in &parts {
         let part = part_json(&node, a, rp).await;
-        if let Some(why) = part["unavailable"].as_object() {
+        if let Some(why) = &part.unavailable {
             return Err(ApiError::new(
                 409,
                 "RESTORE_POINT_UNAVAILABLE",
-                why.get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
+                &why.message,
             ));
         }
         shown.push(part);
@@ -262,11 +357,11 @@ async fn app_undo(
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     };
-    Ok(Json(json!({
-        "app": app.app_id,
-        "groups": out["groups"],
-        "restored": restored,
-        "apps": shown,
+    Ok(Json(json!(UndoDone {
+        app: app.app_id,
+        groups: out["groups"].as_object().cloned().unwrap_or_default(),
+        restored,
+        apps: shown,
     })))
 }
 
@@ -278,6 +373,11 @@ pub(super) fn routes() -> Router<Arc<Node>> {
 mod tests {
     use super::*;
     use crate::node::ReplicaProgress;
+
+    /// What [`super::lost_writes`] answers, as the JSON the routes write.
+    fn lost_writes(holder: &Value, index: u64, progress: Option<ReplicaProgress>) -> Value {
+        json!(super::lost_writes(holder, index, progress))
+    }
 
     #[test]
     fn lost_writes_are_unknown_when_no_replica_answers_never_none() {
@@ -358,8 +458,8 @@ mod tests {
             none,
             json!({ "entriesSince": 0, "lastWriteAt": 50, "any": false })
         );
-        // The holder hosting the app but behind its group (Bugbot on #5210, "lagging
-        // replica undercounts"): its own count is never read; the majority's furthest is.
+        // The holder hosting the app but behind its group: its own count is never read; the
+        // majority's furthest is.
         let hosted = json!({
             "hosted": true, "entriesSince": 0, "lastWriteMs": null, "takenAt": 100,
         });

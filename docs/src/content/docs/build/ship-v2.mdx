@@ -186,7 +186,7 @@ there. Fix the code, not the scenario.
 ## 5. Publish v2
 
 Build, sign with **the same key** as v1 (another key makes another
-application, not an upgrade) and publish, as in
+package, not an upgrade) and publish, as in
 [Packaging & signing](/build/packaging-signing/):
 
 ```bash
@@ -205,7 +205,7 @@ Then publish it to the cluster's registry
 (`meroctl app publish dist/com.example.kv-store-2.0.0.mpk`); a node installs it
 from there on the first upgrade that names it. A development cluster (`--dev`, as
 `merod local` runs) also takes an upload:
-`meroctl app install --path dist/com.example.kv-store-2.0.0.mpk`.
+`meroctl package install --path dist/com.example.kv-store-2.0.0.mpk`.
 
 ## 6. Upgrade one instance
 
@@ -265,10 +265,10 @@ organization (or in one team, with `--cascade` its subtree) under one passkey
 approval:
 
 ```bash
-meroctl group upgrade trigger <org> --package com.example.kv-store --version 2.0.0 \
+meroctl team upgrade trigger <org> --package com.example.kv-store --version 2.0.0 \
   --dev-passkey ./dev-passkey.json
-meroctl group upgrade status <org> <run>
-meroctl group upgrade retry <org> <run> --dev-passkey ./dev-passkey.json   # the failed instances, as a new run
+meroctl team upgrade status <org> <run>
+meroctl team upgrade retry <org> <run> --dev-passkey ./dev-passkey.json   # the failed instances, as a new run
 ```
 
 The run (`POST /orgs/{org}/upgrade`, `GET /orgs/{org}/upgrades/{run}`) lists

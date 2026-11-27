@@ -68,6 +68,12 @@ hand; a new page appears in it only once it is added there. Keep each page's
   callout using RFC 2119 wording (MUST / SHOULD / MAY).
 - **Internal links** are root-absolute without the base, e.g. `/operate/merod/`
   (Starlight adds the `/core` base). The link checker enforces this.
+- **Code links here.** Comments and `AGENTS.md` files link pages and their headings in
+  full (`https://calimero-network.github.io/core/protocol/upgrades/#the-cluster-version`;
+  CODING_STANDARDS.md, "Documentation in code"). Renaming a heading or moving a page
+  breaks those links: grep the repository for the old anchor and fix them in the same
+  PR. `scripts/check-code-refs.py` (the `Code references` workflow) fails on one that no
+  longer resolves.
 
 ## Diagrams
 

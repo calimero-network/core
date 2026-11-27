@@ -7,9 +7,9 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.cluster_owner_named import ClusterOwnerNamed
 from ...models.error import Error
 from ...models.ops_cluster_owner_body import OpsClusterOwnerBody
-from ...models.ops_cluster_owner_response_200 import OpsClusterOwnerResponse200
 from typing import cast
 
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsClusterOwnerResponse200]]:
+) -> Optional[Union[ClusterOwnerNamed, Error]]:
     if response.status_code == 200:
-        response_200 = OpsClusterOwnerResponse200.from_dict(response.json())
+        response_200 = ClusterOwnerNamed.from_dict(response.json())
 
         return response_200
 
@@ -68,7 +68,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsClusterOwnerResponse200]]:
+) -> Response[Union[ClusterOwnerNamed, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -81,7 +81,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: OpsClusterOwnerBody,
-) -> Response[Union[Error, OpsClusterOwnerResponse200]]:
+) -> Response[Union[ClusterOwnerNamed, Error]]:
     """Name the cluster's owner
 
      The account or organization that then runs sign-up and deployers with passkeys; once.
@@ -98,7 +98,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsClusterOwnerResponse200]]
+        Response[Union[ClusterOwnerNamed, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -116,7 +116,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: OpsClusterOwnerBody,
-) -> Optional[Union[Error, OpsClusterOwnerResponse200]]:
+) -> Optional[Union[ClusterOwnerNamed, Error]]:
     """Name the cluster's owner
 
      The account or organization that then runs sign-up and deployers with passkeys; once.
@@ -133,7 +133,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsClusterOwnerResponse200]
+        Union[ClusterOwnerNamed, Error]
     """
 
     return sync_detailed(
@@ -146,7 +146,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: OpsClusterOwnerBody,
-) -> Response[Union[Error, OpsClusterOwnerResponse200]]:
+) -> Response[Union[ClusterOwnerNamed, Error]]:
     """Name the cluster's owner
 
      The account or organization that then runs sign-up and deployers with passkeys; once.
@@ -163,7 +163,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsClusterOwnerResponse200]]
+        Response[Union[ClusterOwnerNamed, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -179,7 +179,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: OpsClusterOwnerBody,
-) -> Optional[Union[Error, OpsClusterOwnerResponse200]]:
+) -> Optional[Union[ClusterOwnerNamed, Error]]:
     """Name the cluster's owner
 
      The account or organization that then runs sign-up and deployers with passkeys; once.
@@ -196,7 +196,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsClusterOwnerResponse200]
+        Union[ClusterOwnerNamed, Error]
     """
 
     return (

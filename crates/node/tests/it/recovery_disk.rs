@@ -228,12 +228,12 @@ async fn a_cluster_comes_back_from_its_recovery_disk_after_every_kms_is_gone() {
     for id in [2, 3] {
         others.push(calimero_node::run(config(id)).await.unwrap());
     }
-    for _ in 0..300 {
-        if others.iter().all(|r| r.node.sys(|s| s.nodes.len() == 3)) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    crate::harness::poll::until(
+        Duration::from_millis(30000),
+        "the restarted nodes know all three nodes",
+        || others.iter().all(|r| r.node.sys(|s| s.nodes.len() == 3)),
+    )
+    .await;
 
     // Alice is back with her refresh token; her app waits for its file.
     let cl = Client::connect(
@@ -282,7 +282,7 @@ async fn recover_holder(
     cl: &Client,
     body: &Value,
     signed: bool,
-) -> Result<calimero_client::types::RestoreRecoverHolderResponse, calimero_client::Error> {
+) -> Result<calimero_client::types::HolderRecovered, calimero_client::Error> {
     cl.public()
         .restore_recover_holder(
             body["holder"].as_str().unwrap(),

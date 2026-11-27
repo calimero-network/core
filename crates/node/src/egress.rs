@@ -1,5 +1,5 @@
-//! Where an app's unit may send data, and whether an update changes it (C5): the unit's
-//! releases read for the shared classifier (`calimero_bundle::update`). Only destinations
+//! Where an app's unit may send data, and whether an update changes it: the unit's releases
+//! read for the shared classifier (`calimero_bundle::update`). Only destinations
 //! are reported: every `outbound` prefix and secret host of the unit, an empty list meaning
 //! no data leaves Calimero. The platform never vouches for an external endpoint, a TEE
 //! included; an app that wants to trust one verifies it in its own code.
@@ -69,17 +69,23 @@ fn joined(path: &str, name: &str) -> String {
     }
 }
 
-/// The unit an instance of release `at` would be: the release, and each release its
-/// `uses` (mode `create`) would create, transitively, as `create_instance` picks them
-/// (`unit_members`), at most [`MAX_UNIT_DEPTH`] deep.
-pub(crate) async fn release_unit(node: &Node, at: &PackageRef) -> Result<Unit, ApiError> {
+/// The unit an instance of release `at` would be, created by `creator` (from `deployment`):
+/// the release, and each release its `uses` (mode `create`) would create, transitively, as
+/// `create_instance` picks them (`unit_members`), at most [`MAX_UNIT_DEPTH`] deep.
+pub(crate) async fn release_unit(
+    node: &Node,
+    at: &PackageRef,
+    (creator, deployment): (&str, Option<&str>),
+) -> Result<Unit, ApiError> {
     let mut unit = Unit::of(release_at(node, at).await?);
     let mut stack = vec![(String::new(), at.clone(), 0_usize)];
     while let Some((path, at, depth)) = stack.pop() {
         if depth >= MAX_UNIT_DEPTH {
             continue;
         }
-        for (name, (package, version)) in unit_members(node, &at).await?.members {
+        for (name, (package, version)) in
+            unit_members(node, &at, creator, deployment).await?.members
+        {
             let member = PackageRef {
                 package,
                 version,
@@ -155,6 +161,27 @@ async fn placed(
             stack.push((path, member, depth + 1));
         }
     }
+    // As it runs, a part is pinned as its record says, whatever its release declares.
+    if target.is_none() {
+        let pins: BTreeMap<String, bool> = node.sys(|s| {
+            out.apps
+                .iter()
+                .map(|(path, id)| {
+                    (
+                        path.clone(),
+                        s.apps.get(id).is_some_and(|a| a.lineage.is_some()),
+                    )
+                })
+                .collect()
+        });
+        for (path, pinned) in pins {
+            match out.unit.members.get_mut(&path) {
+                Some(member) => member.pinned = pinned,
+                None if path.is_empty() => out.unit.app.pinned = pinned,
+                None => {}
+            }
+        }
+    }
     // A member the target release would create that the instance lacks: shown as joining
     // (`unit_plan` refuses such an upgrade; a unit gains members only when created).
     for (name, (package, version)) in &moves {
@@ -198,7 +225,9 @@ pub(crate) async fn update(
         compute: false,
     };
     let moves = if whole_unit {
-        unit_members(node, &target).await?.members
+        unit_members(node, &target, &app.owner, app.deployment.as_deref())
+            .await?
+            .members
     } else {
         BTreeMap::new()
     };
@@ -277,26 +306,44 @@ pub(crate) fn verdict_json(c: &Classification) -> Value {
 /// its members; empty: no data leaves Calimero) as `destinations`, and each member by path with
 /// its package, version, own destinations
 /// and (for an instance) app id.
-pub(crate) fn describe(placed: &Placed) -> Value {
-    let members: serde_json::Map<String, Value> = placed
+pub(crate) fn describe(placed: &Placed) -> UnitEgress {
+    let members = placed
         .unit
         .members
         .iter()
         .map(|(path, r)| {
-            let mut m = json!({
-                "package": r.package,
-                "version": r.version,
-                "signer": r.signer,
-                "destinations": r.egress(),
-            });
-            if let Some(id) = placed.apps.get(path) {
-                m["app"] = json!(id);
-            }
+            let m = UnitMember {
+                package: r.package.clone(),
+                version: r.version.clone(),
+                signer: r.signer.clone(),
+                destinations: r.egress().into_iter().collect(),
+                app: placed.apps.get(path).cloned(),
+            };
             (path.clone(), m)
         })
         .collect();
-    json!({
-        "destinations": placed.unit.egress(),
-        "members": members,
-    })
+    UnitEgress {
+        destinations: placed.unit.egress().into_iter().collect(),
+        members,
+    }
+}
+
+/// A unit's egress: the sorted destinations over the app and its members (empty: no data
+/// leaves Calimero), and each member by its path.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UnitEgress {
+    pub destinations: Vec<String>,
+    pub members: BTreeMap<String, UnitMember>,
+}
+
+/// An app of a unit: the release it runs or would run, that release's signer, the destinations
+/// it alone may send data to, and its app id (absent on a release's card).
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct UnitMember {
+    package: String,
+    version: String,
+    signer: String,
+    destinations: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    app: Option<String>,
 }

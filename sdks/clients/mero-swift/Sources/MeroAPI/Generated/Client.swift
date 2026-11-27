@@ -22,7 +22,7 @@ import HTTPTypes
 ///
 /// **Retries.** `x-calimero-retry-safe` marks the operations a client may send again after a `503` or a lost answer (`x-calimero-retry-requires` names the body field that makes it so, an idempotency key). The sealed channel's own `503` (`{ error: { code: "busy", message } }`, outside the envelope: too many sealed requests or sessions at once; the schema `x-calimero-sealed-refusal` names) carries `Retry-After: 1` on any sealed route, and so does `GET /attestation`'s `503 BUSY` (too many quotes at once); the node's `503 UNAVAILABLE` answers carry none. `x-calimero-step-up` (with `x-calimero-user-verification`, and `x-calimero-step-up-when` where it applies only sometimes) and `x-calimero-operator` mark the two-round operations below.
 ///
-/// **Numbers** that may exceed 2^53 (fuel, bytes) travel as decimal strings (D20); every other integer is `format: int64` (read it into a 64-bit integer), and stays below 2^53.
+/// **Numbers** that may exceed 2^53 (fuel, bytes) travel as decimal strings; every other integer is `format: int64` (read it into a 64-bit integer), and stays below 2^53.
 public struct Client: APIProtocol {
     /// The underlying HTTP client.
     private let client: UniversalClient
@@ -106,7 +106,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -179,7 +179,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppCreated.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -311,7 +311,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppDelete.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppDeleted.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -377,7 +377,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppAbi.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppAbi.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -525,7 +525,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppAttestation.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppAttestations.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -591,7 +591,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.BlobList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.BlobList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -679,7 +679,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.BlobUpload.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.BlobStored.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -820,7 +820,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.BlobDelete.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.Logged.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -885,7 +885,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.BlobInfo.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.BlobView.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -952,7 +952,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.BlobRevoke.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.Logged.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1018,7 +1018,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppDelegations.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.Delegations.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1094,7 +1094,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppDelegate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DelegationMade.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1227,7 +1227,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppEgress.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.EgressView.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1302,7 +1302,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppSetEgress.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.EgressSet.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1439,7 +1439,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.FilesList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.FileList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1514,7 +1514,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.FilesUpload.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.FileStored.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1589,7 +1589,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.UploadBegin.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.UploadView.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1654,7 +1654,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.UploadStatus.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.UploadStatus.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1786,7 +1786,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.UploadComplete.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.FileStored.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1863,7 +1863,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.UploadPart.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PartTaken.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -1930,7 +1930,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.FileInfo.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.FileView.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2006,7 +2006,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.ExportsExport.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.FileExport.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2149,7 +2149,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.Intents.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.IntentResult.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2215,7 +2215,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppInviteList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppInviteList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2290,7 +2290,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppInviteCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppInviteMade.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2434,7 +2434,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppLinks.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppLinkList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2510,7 +2510,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppLink.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.LinkRow.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2737,7 +2737,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppMethod.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.MethodResult.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2812,7 +2812,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppMove.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppMoved.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2878,7 +2878,289 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppOpenapi.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppOpenApi.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// An instance's web origins
+    ///
+    /// The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/get(app_origins)`.
+    public func appOrigins(_ input: Operations.AppOrigins.Input) async throws -> Operations.AppOrigins.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppOrigins.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/origins",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .get
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppOrigins.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.AppOriginList.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Register a web origin for an instance
+    ///
+    /// By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/post(app_origin_add)`.
+    public func appOriginAdd(_ input: Operations.AppOriginAdd.Input) async throws -> Operations.AppOriginAdd.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppOriginAdd.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/origins",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .post
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppOriginAdd.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.PackageOrigin.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Remove an instance's web origin
+    ///
+    /// Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /apps/{app}/origins`.
+    /// - Remark: Generated from `#/paths//apps/{app}/origins/delete(app_origin_remove)`.
+    public func appOriginRemove(_ input: Operations.AppOriginRemove.Input) async throws -> Operations.AppOriginRemove.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppOriginRemove.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/origins",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .delete
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppOriginRemove.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.OriginRemoved.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// An app's outbound requests
+    ///
+    /// The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+    ///
+    /// **Who:** signed in (a session or an API key).
+    ///
+    /// - Remark: HTTP `GET /apps/{app}/outbound-log`.
+    /// - Remark: Generated from `#/paths//apps/{app}/outbound-log/get(app_outbound_log)`.
+    public func appOutboundLog(_ input: Operations.AppOutboundLog.Input) async throws -> Operations.AppOutboundLog.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.AppOutboundLog.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/apps/{}/outbound-log",
+                    parameters: [
+                        input.path.app
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .get
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.AppOutboundLog.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.OutboundLog.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -2951,7 +3233,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelinesList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PipelineRunList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3018,7 +3300,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelinesGet.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PipelineRunView.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3085,7 +3367,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelinesCancel.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PipelineCancelled.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3226,7 +3508,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelineReceiptReceipt.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.SignedPipelineReceipt.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3250,7 +3532,7 @@ public struct Client: APIProtocol {
     }
     /// Retry a pipeline run
     ///
-    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+    /// The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -3302,7 +3584,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelinesRetry.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PipelineStarted.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3378,7 +3660,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelinesEstimateRun.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.RunEstimate.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3402,7 +3684,7 @@ public struct Client: APIProtocol {
     }
     /// Start a pipeline run
     ///
-    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+    /// The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -3454,7 +3736,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelinesStart.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PipelineStarted.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3520,7 +3802,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PresenceGet.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PresenceList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3725,7 +4007,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PublicLinkList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PublicLinks.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3800,7 +4082,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PublicLinkCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PublicLinkMade.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -3958,7 +4240,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppRuns.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.RunList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4092,7 +4374,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppRunLogs.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.RunLogs.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4158,7 +4440,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppSecrets.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppSecrets.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4234,7 +4516,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppSecretSet.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.SecretSet.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4312,7 +4594,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppSecretClear.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.SecretCleared.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4378,7 +4660,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppStorage.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppStorage.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4495,7 +4777,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppUndoView.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.UndoView.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4519,7 +4801,7 @@ public struct Client: APIProtocol {
     }
     /// Undo an app's last upgrade
     ///
-    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -4570,7 +4852,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppUndo.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.UndoDone.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4594,7 +4876,7 @@ public struct Client: APIProtocol {
     }
     /// Whether an update is available for an app
     ///
-    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+    /// For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring `lineage: pinned` pins an instance that was not (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
     ///
     /// **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
     ///
@@ -4636,7 +4918,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppUpdate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.UpdateView.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4660,7 +4942,7 @@ public struct Client: APIProtocol {
     }
     /// Upgrade an app instance
     ///
-    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+    /// To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409 LINEAGE_OLDER_RELEASE`, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -4711,7 +4993,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppUpgrade.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.UpgradeApplied.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4786,7 +5068,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppApproveUpgrade.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.ApprovalLogged.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -4951,7 +5233,7 @@ public struct Client: APIProtocol {
     }
     /// Upgrade an app and the apps it created, in one consent
     ///
-    /// An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
+    /// An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks. A version the caller may not use answers as one that is not installed, as `POST /apps` installs one (`404 NOT_FOUND`, `400 NO_REGISTRY`), and for an instance from a deployment anything but its offer that still serves `409 OUTSIDE_DEPLOYMENT`, before anything of it is read.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -5068,7 +5350,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppUsage.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppUsage.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -5143,7 +5425,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.Views.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.ViewResult.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -5209,7 +5491,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppXcalls.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.XcallsReport.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -5445,7 +5727,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.ActivityList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.ActivityList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -5507,7 +5789,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AliasList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AliasList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -5571,7 +5853,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AliasGet.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AliasView.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -5770,7 +6052,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.ApikeyList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.ApiKeyList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -5843,7 +6125,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.ApikeyCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.ApiKeyMade.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -5996,7 +6278,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AccountApps.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppsReport.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -6259,7 +6541,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.LogoutAll.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.SessionsRevoked.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -6283,7 +6565,7 @@ public struct Client: APIProtocol {
     }
     /// The caller's account
     ///
-    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    /// The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -6323,7 +6605,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.Me.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AccountView.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -6347,7 +6629,7 @@ public struct Client: APIProtocol {
     }
     /// Start a sign-in
     ///
-    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+    /// A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
     ///
     /// **Who:** anyone.
     ///
@@ -6398,7 +6680,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.LoginBegin.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PasskeyChallenge.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -6542,7 +6824,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.RegisterBegin.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PasskeyChallenge.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -6566,7 +6848,7 @@ public struct Client: APIProtocol {
     }
     /// Finish a sign-up
     ///
-    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account.
+    /// The new passkey's registration. Answers `412 CONFIRM_REQUIRED` first: the new passkey signs the account it creates; the retry with `confirm` (and the same `invite`) opens a session, and redeems `invite` for the new account. `holderKey` on the first finish binds that session to a device key, as on `/auth/passkey/login/begin`.
     ///
     /// **Who:** anyone. **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -6679,7 +6961,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PasskeyAddBegin.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PasskeyChallenge.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -6752,7 +7034,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PasskeyAddFinish.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PasskeyAdded.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -6977,7 +7259,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.RecoveryCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.RecoveryCode.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -7123,7 +7405,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AccountRecoveryBegin.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PasskeyChallenge.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -7344,7 +7626,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AccountRecoveryStart.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AccountRecoveryPending.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -7368,7 +7650,7 @@ public struct Client: APIProtocol {
     }
     /// Refresh a session
     ///
-    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened.
+    /// A new session and the refresh token to use next (the same one until it is an hour old). A reused, superseded token ends the sessions it opened. A token bound to a holder key needs `holderProof`: `signature` (base64url, the 64-byte `r ‖ s` of ECDSA P-256 with SHA-256) by that key over `"calimero.refresh-holder.v1\0" ‖ b64url(SHA-256(refreshToken)) ‖ "\0" ‖ at ‖ "\0"`, `at` being Unix seconds within 120 of the node's clock; `401 HOLDER_PROOF_REQUIRED` without it, `401 BAD_HOLDER_PROOF` when it does not verify. Neither spends the token. A superseded token bound to a holder key ends its sessions only with that key's `holderProof` for it, so a copy without one is refused the same way and ends nothing.
     ///
     /// **Who:** anyone.
     ///
@@ -7481,7 +7763,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.SessionsList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.SessionList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -7611,7 +7893,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.Usage.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AccountUsage.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -7684,7 +7966,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.BundlePut.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.BundleStored.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -7757,7 +8039,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.ConsentPageCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.ConsentRequestMade.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -7823,7 +8105,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.ConsentPageResult.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.ConsentResult.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -7887,7 +8169,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeployerList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeployerList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -7960,7 +8242,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeployerGrant.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeployerGranted.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8035,7 +8317,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeployerRevoke.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeployerRevoked.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8059,7 +8341,7 @@ public struct Client: APIProtocol {
     }
     /// Deployments
     ///
-    /// The deployments the caller manages.
+    /// The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -8099,7 +8381,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeploymentList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8123,7 +8405,7 @@ public struct Client: APIProtocol {
     }
     /// Create a deployment
     ///
-    /// A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain).
+    /// A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain). An organization owns a deployment only holding a recovery key (`POST /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.38.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -8172,7 +8454,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeploymentCreated.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8238,7 +8520,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentGet.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PublicDeployment.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8313,7 +8595,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentDelete.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeploymentDeleted.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8386,7 +8668,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentOffer.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppOffered.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8462,7 +8744,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentWithdraw.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppWithdrawn.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8528,7 +8810,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentOrgs.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeploymentOrgs.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8594,7 +8876,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentSecrets.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeploymentSecrets.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8670,7 +8952,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentSecretSet.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeploymentSecretSet.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8748,7 +9030,234 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.DeploymentSecretClear.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.DeploymentSecretCleared.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Offer a deployment to another owner
+    ///
+    /// The deployment's owner account, or an owner or admin of its organization (managing it, `MANAGE_APPLICATION`, is not enough: `403`), offers it to `to`, another account or organization, with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.38.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/transfer`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/post(deployment_transfer_offer)`.
+    public func deploymentTransferOffer(_ input: Operations.DeploymentTransferOffer.Input) async throws -> Operations.DeploymentTransferOffer.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.DeploymentTransferOffer.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/deployments/{}/transfer",
+                    parameters: [
+                        input.path.id
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .post
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.DeploymentTransferOffer.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.DeploymentOffered.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Cancel the offer of a deployment
+    ///
+    /// A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over `deployment:{id} / __cancel_deployment_transfer / {}`. `404 NO_TRANSFER` when none waits.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `DELETE /deployments/{id}/transfer`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/delete(deployment_transfer_cancel)`.
+    public func deploymentTransferCancel(_ input: Operations.DeploymentTransferCancel.Input) async throws -> Operations.DeploymentTransferCancel.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.DeploymentTransferCancel.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/deployments/{}/transfer",
+                    parameters: [
+                        input.path.id
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .delete
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case .none:
+                    body = nil
+                case let .json(value):
+                    body = try converter.setOptionalRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.DeploymentTransferCancel.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.DeploymentTransferCancelled.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// Accept a deployment offered to an owner
+    ///
+    /// A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it may no longer hand it over, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /deployments/{id}/transfer/accept`.
+    /// - Remark: Generated from `#/paths//deployments/{id}/transfer/accept/post(deployment_transfer_accept)`.
+    public func deploymentTransferAccept(_ input: Operations.DeploymentTransferAccept.Input) async throws -> Operations.DeploymentTransferAccept.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.DeploymentTransferAccept.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/deployments/{}/transfer/accept",
+                    parameters: [
+                        input.path.id
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .post
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                let body: OpenAPIRuntime.HTTPBody?
+                switch input.body {
+                case let .json(value):
+                    body = try converter.setRequiredRequestBodyAsJSON(
+                        value,
+                        headerFields: &request.headerFields,
+                        contentType: "application/json; charset=utf-8"
+                    )
+                }
+                return (request, body)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.DeploymentTransferAccept.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.DeploymentAccepted.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8812,7 +9321,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.Health.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.Health.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8878,7 +9387,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.InviteRedeem.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.InviteRedeemed.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -8956,7 +9465,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OpsApps.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OpsApps.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -9032,7 +9541,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OpsOrgs.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OpsOrgs.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -9255,7 +9764,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OrgCreated.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -9279,7 +9788,7 @@ public struct Client: APIProtocol {
     }
     /// One organization
     ///
-    /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+    /// As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -9301,6 +9810,27 @@ public struct Client: APIProtocol {
                     method: .get
                 )
                 suppressMutabilityWarning(&request)
+                try converter.setQueryItemAsURI(
+                    in: &request,
+                    style: .form,
+                    explode: true,
+                    name: "limit",
+                    value: input.query.limit
+                )
+                try converter.setQueryItemAsURI(
+                    in: &request,
+                    style: .form,
+                    explode: true,
+                    name: "teamsAfter",
+                    value: input.query.teamsAfter
+                )
+                try converter.setQueryItemAsURI(
+                    in: &request,
+                    style: .form,
+                    explode: true,
+                    name: "membersAfter",
+                    value: input.query.membersAfter
+                )
                 converter.setAcceptHeader(
                     in: &request.headerFields,
                     contentTypes: input.headers.accept
@@ -9398,7 +9928,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgDelete.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OrgDeleted.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -9539,7 +10069,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppTeamList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppTeamList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -9614,7 +10144,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.AppTeamsScope.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppTeamsScoped.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -9694,7 +10224,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgApps.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.AppsReport.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -9985,7 +10515,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgEgress.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.EgressSet.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -10051,7 +10581,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.InviteList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.InviteList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -10126,7 +10656,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.InviteCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.InviteMade.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -10275,7 +10805,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgMembers.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.MemberSecurityList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -10806,7 +11336,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgRename.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OrgRenamed.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -11032,7 +11562,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgPublisher.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PublisherBound.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -11056,7 +11586,7 @@ public struct Client: APIProtocol {
     }
     /// Set the organization's recovery key
     ///
-    /// Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.
+    /// Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -11261,7 +11791,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.RecoveryFinish.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.RecoveryFinished.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -11336,7 +11866,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.RecoveryStart.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.RecoveryStarted.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -11486,7 +12016,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgSettings.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OrgSettingsSet.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -11561,7 +12091,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.TeamCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.TeamCreated.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -11780,7 +12310,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.TeamDelete.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.TeamDeleted.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -12008,7 +12538,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgUpdates.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OrgUpdates.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -12435,7 +12965,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OrgUsage.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OrgUsage.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -12501,7 +13031,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OriginsList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OriginList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -12649,7 +13179,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.OriginsRemove.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.OriginRemoved.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -12713,7 +13243,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PackageList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PackageList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -12737,7 +13267,7 @@ public struct Client: APIProtocol {
     }
     /// Upload a signed release
     ///
-    /// A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`.
+    /// A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is private to the accounts that install it.
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -12757,6 +13287,13 @@ public struct Client: APIProtocol {
                     method: .post
                 )
                 suppressMutabilityWarning(&request)
+                try converter.setQueryItemAsURI(
+                    in: &request,
+                    style: .form,
+                    explode: true,
+                    name: "org",
+                    value: input.query.org
+                )
                 converter.setAcceptHeader(
                     in: &request.headerFields,
                     contentTypes: input.headers.accept
@@ -12786,7 +13323,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PackageUpload.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PackageInstalled.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -12809,6 +13346,8 @@ public struct Client: APIProtocol {
         )
     }
     /// Install a release from the registry
+    ///
+    /// For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).
     ///
     /// **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
     ///
@@ -12857,7 +13396,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PackageInstall.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PackageInstalled.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -13078,7 +13617,7 @@ public struct Client: APIProtocol {
     }
     /// A release's capabilities
     ///
-    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads every release of it. `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
+    /// What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: `bundle` is the service WASM's hash, `outbound` the sorted prefixes it may call out to and `abi` the embedded `calimero:abi` verbatim (`null` when it embeds none). `destinations` is where an instance of it could send data, over the release and every app its `uses` would create with it (`members`, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both `null` while a release its `uses` would create is not installed here. `service` names the service whose card to read (default: the release's only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). `404` for a release the caller may not see, `400 NO_SUCH_SERVICE` for an unknown service or no `service` on a release with several, `400 BAD_REQUEST` for an over-long `service`.
     ///
     /// **Who:** signed in (a session or an API key).
     ///
@@ -13128,7 +13667,74 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PackageCapabilities.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.CapabilityCard.self,
+                            from: responseBody,
+                            transforming: { value in
+                                .json(value)
+                            }
+                        )
+                    default:
+                        preconditionFailure("bestContentType chose an invalid content type.")
+                    }
+                    return .ok(.init(body: body))
+                default:
+                    return .undocumented(
+                        statusCode: response.status.code,
+                        .init(
+                            headerFields: response.headerFields,
+                            body: responseBody
+                        )
+                    )
+                }
+            }
+        )
+    }
+    /// A release's frontend files
+    ///
+    /// Every file the node serves for the release's frontend (at `/{version}/{path}` on the package's origin), with its SHA-256 and size, and the entry. The node verified each against the publisher's signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. `404` for a release that ships no frontend or that the cluster does not hold.
+    ///
+    /// **Who:** anyone.
+    ///
+    /// - Remark: HTTP `GET /packages/{package}/{version}/frontend`.
+    /// - Remark: Generated from `#/paths//packages/{package}/{version}/frontend/get(package_frontend)`.
+    public func packageFrontend(_ input: Operations.PackageFrontend.Input) async throws -> Operations.PackageFrontend.Output {
+        try await client.send(
+            input: input,
+            forOperation: Operations.PackageFrontend.id,
+            serializer: { input in
+                let path = try converter.renderedPath(
+                    template: "/packages/{}/{}/frontend",
+                    parameters: [
+                        input.path.package,
+                        input.path.version
+                    ]
+                )
+                var request: HTTPTypes.HTTPRequest = .init(
+                    soar_path: path,
+                    method: .get
+                )
+                suppressMutabilityWarning(&request)
+                converter.setAcceptHeader(
+                    in: &request.headerFields,
+                    contentTypes: input.headers.accept
+                )
+                return (request, nil)
+            },
+            deserializer: { response, responseBody in
+                switch response.status.code {
+                case 200:
+                    let contentType = converter.extractContentTypeIfPresent(in: response.headerFields)
+                    let body: Operations.PackageFrontend.Output.Ok.Body
+                    let chosenContentType = try converter.bestContentType(
+                        received: contentType,
+                        options: [
+                            "application/json"
+                        ]
+                    )
+                    switch chosenContentType {
+                    case "application/json":
+                        body = try await converter.getResponseBodyAsJSON(
+                            Components.Schemas.FrontendDigests.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -13195,7 +13801,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PackagePipelines.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.ReleasePipelines.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -13268,7 +13874,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PipelinesValidate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PipelineValidation.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -13334,7 +13940,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.PublisherBinding.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.PublisherBinding.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -13358,7 +13964,7 @@ public struct Client: APIProtocol {
     }
     /// Bring an organization's or account's apps back from its recovery files
     ///
-    /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+    /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
     ///
     /// **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
     ///
@@ -13407,7 +14013,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.RestoreRecoverHolder.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.HolderRecovered.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -13471,7 +14077,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.ReleasesPublic.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.ClusterReleases.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -13535,7 +14141,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.SignUpPublic.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.SignUpPublic.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -13670,7 +14276,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.SignUpInviteList.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.SignUpInviteList.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)
@@ -13741,7 +14347,7 @@ public struct Client: APIProtocol {
                     switch chosenContentType {
                     case "application/json":
                         body = try await converter.getResponseBodyAsJSON(
-                            Operations.SignUpInviteCreate.Output.Ok.Body.JsonPayload.self,
+                            Components.Schemas.SignUpInviteMade.self,
                             from: responseBody,
                             transforming: { value in
                                 .json(value)

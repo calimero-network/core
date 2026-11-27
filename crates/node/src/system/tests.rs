@@ -27,7 +27,7 @@ fn account(id: &str) -> SystemCmd {
 }
 
 /// `owner`'s personal organization in these tests, made with the account.
-fn p(owner: &str) -> String {
+pub(super) fn p(owner: &str) -> String {
     format!("p-{owner}")
 }
 
@@ -41,7 +41,7 @@ fn genesis(governance: Governance) -> SystemCmd {
     }
 }
 
-fn all(who: Authority) -> Governance {
+pub(super) fn all(who: Authority) -> Governance {
     Governance {
         releases: who,
         app_upgrades: who,
@@ -670,6 +670,576 @@ fn a_release_from_before_installers_reads_and_records_who_installs_it_again() {
     assert!(seen(&old_state, "alice") && !seen(&old_state, "bob"));
 }
 
+/// A private release is used by the members of the organizations it was installed for,
+/// each install for another adding it, and by no one else, an installer or a reader of an
+/// instance running it included; a public one by everyone, never private again.
+#[test]
+fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
+    use super::{Visibility, NOT_AN_ORG_MEMBER};
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob", "carol", "dave"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    // A (alice's) holds carol and dave as a guest; B (bob's) holds alice.
+    let join = |m: &mut SystemMachine, org: &str, who: &str, role: OrgRole| {
+        let _prev = m
+            .state
+            .orgs
+            .get_mut(&p(org))
+            .unwrap()
+            .members
+            .insert(who.into(), role);
+    };
+    join(&mut m, "alice", "carol", OrgRole::Member);
+    join(&mut m, "alice", "dave", OrgRole::Guest);
+    join(&mut m, "bob", "alice", OrgRole::Member);
+    let install = |by: &str, orgs: &[&str], visibility: &str| SystemCmd::InstallPackage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "registry",
+            "services": { "": "b1" }, "installedBy": by, "installedAt": 1,
+            "visibility": visibility, "orgs": orgs.iter().map(|o| p(o)).collect::<Vec<_>>(),
+        }))
+        .unwrap(),
+    };
+    assert_eq!(
+        m.run_authorized(install("carol", &["bob"], "private")),
+        Err(NOT_AN_ORG_MEMBER.into())
+    );
+    let _ok = m
+        .run_authorized(install("alice", &["bob"], "private"))
+        .unwrap();
+    let seen = |m: &SystemMachine, who: &str| {
+        m.state
+            .sees_release(&m.state.packages["p"].versions["1.0.0"], who)
+    };
+    assert!(seen(&m, "alice") && seen(&m, "bob"));
+    assert!(!seen(&m, "carol"), "sharing A with its installer is not B");
+    assert!(!seen(&m, "dave") && !seen(&m, OPERATOR));
+
+    // Carol reaches an instance of it: she reads the release it runs, never uses it.
+    let app: crate::types::AppRecord = serde_json::from_value(json!({
+        "appId": "x", "name": "x", "group": 2, "bundle": "b1", "owner": "bob",
+        "org": p("bob"), "replicas": [1], "createdAt": 0, "grants": [{ "kind": "anyone" }],
+        "release": { "package": "p", "version": "1.0.0" },
+    }))
+    .unwrap();
+    let _prev = m.state.apps.insert("x".into(), app);
+    let v = m.state.packages["p"].versions["1.0.0"].clone();
+    assert!(m.state.may_reach(&m.state.apps["x"], Some("carol")));
+    assert!(m.state.reads_release("p", &v, "carol") && !m.state.sees_release(&v, "carol"));
+    assert!(!m.state.reads_release("p", &v, OPERATOR));
+
+    // Installed again for A: A's members use it too, a guest does not.
+    let _ok = m
+        .run_authorized(install("alice", &["alice"], "private"))
+        .unwrap();
+    assert!(seen(&m, "carol") && !seen(&m, "dave"));
+    // An installer who leaves loses it with the rest of the organization.
+    for org in ["alice", "bob"] {
+        let _gone = m
+            .state
+            .orgs
+            .get_mut(&p(org))
+            .unwrap()
+            .members
+            .remove("alice");
+    }
+    assert!(!seen(&m, "alice") && seen(&m, "carol") && seen(&m, "bob"));
+    assert!(
+        !m.state.sees_bundle("b1", "alice"),
+        "its first installer, by hash"
+    );
+
+    // Served to anyone, it is public, and a private install never takes that back.
+    let _ok = m.run_authorized(install("dave", &[], "public")).unwrap();
+    let _ok = m
+        .run_authorized(install("bob", &["bob"], "private"))
+        .unwrap();
+    let v = &m.state.packages["p"].versions["1.0.0"];
+    assert_eq!(v.visibility, Some(Visibility::Public));
+    assert!(seen(&m, "dave") && seen(&m, "alice"));
+}
+
+/// Reaching an instance of one package reads nothing of another package's release that
+/// ships the same WASM at the same version: Bob runs public `notes@1.0.0`, never reads
+/// Alice's private `secret@1.0.0`.
+#[test]
+fn reaching_an_instance_never_reads_another_packages_release_of_its_wasm() {
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    for (package, by, visibility) in [("secret", "alice", "private"), ("notes", "bob", "public")] {
+        let _ok = m
+            .run_authorized(SystemCmd::InstallPackage {
+                package: package.into(),
+                signer_id: "did:key:z".into(),
+                release: serde_json::from_value(json!({
+                    "version": "1.0.0", "mpk": package, "mpkSize": 1, "source": "registry",
+                    "services": { "": "b1" }, "installedBy": by, "installedAt": 1,
+                    "visibility": visibility, "orgs": [p(by)],
+                }))
+                .unwrap(),
+            })
+            .unwrap();
+    }
+    let app: crate::types::AppRecord = serde_json::from_value(json!({
+        "appId": "x", "name": "x", "group": 2, "bundle": "b1", "owner": "bob",
+        "org": p("bob"), "replicas": [1], "createdAt": 0,
+        "release": { "package": "notes", "version": "1.0.0" },
+    }))
+    .unwrap();
+    let _prev = m.state.apps.insert("x".into(), app);
+    assert!(m.state.newest_read("notes", "bob", false).is_some());
+    assert!(m.state.newest_read("secret", "bob", false).is_none());
+}
+
+/// A private release installed for no organization (its installer is in none) is its
+/// installing accounts' alone; an install for an organization adds it, and from then on
+/// the organization's members use it, an installer only while one.
+#[test]
+fn a_private_release_for_no_organization_is_its_installers_alone() {
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob", "carol"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    let install = |by: &str, orgs: &[String]| SystemCmd::InstallPackage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "upload",
+            "services": { "": "b1" }, "installedBy": by, "installedAt": 1,
+            "visibility": "private", "orgs": orgs,
+        }))
+        .unwrap(),
+    };
+    let seen = |m: &SystemMachine, who: &str| {
+        m.state
+            .sees_release(&m.state.packages["p"].versions["1.0.0"], who)
+    };
+    let _ok = m.run_authorized(install("alice", &[])).unwrap();
+    assert!(seen(&m, "alice"));
+    assert!(!seen(&m, "bob") && !seen(&m, "carol") && !seen(&m, OPERATOR));
+    let _ok = m.run_authorized(install("bob", &[])).unwrap();
+    assert!(seen(&m, "bob") && !seen(&m, "carol"));
+
+    let _ok = m.run_authorized(install("carol", &[p("carol")])).unwrap();
+    assert!(seen(&m, "carol"));
+    assert!(
+        !seen(&m, "alice") && !seen(&m, "bob"),
+        "the organization's rule now"
+    );
+}
+
+/// A package's first installer uninstalls (and manages the origins of) only the releases it
+/// may use, from the logged version that brings private releases; an entry logged below it
+/// replays as it applied.
+#[test]
+fn an_uninstall_takes_only_the_releases_its_actor_may_use() {
+    use super::cluster_version::Feature;
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    let install =
+        |by: &str, version: &str, visibility: &str, orgs: &[String]| SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: serde_json::from_value(json!({
+                "version": version, "mpk": version, "mpkSize": 1, "source": "registry",
+                "services": { "": format!("b-{version}") }, "installedBy": by,
+                "installedAt": 1, "visibility": visibility, "orgs": orgs,
+            }))
+            .unwrap(),
+        };
+    let _ok = m
+        .run_authorized(install("bob", "1.0.0", "public", &[]))
+        .unwrap();
+    let _ok = m
+        .run_authorized(install("alice", "2.0.0", "private", &[p("alice")]))
+        .unwrap();
+    let uninstall = |version: Option<&str>| SystemCmd::UninstallPackage {
+        package: "p".into(),
+        version: version.map(str::to_owned),
+        actor: "bob".into(),
+    };
+
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let gone = old.run_authorized(uninstall(Some("2.0.0"))).unwrap();
+    assert_eq!(gone["removed"], json!(["2.0.0"]), "replayed as it applied");
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(
+        m.run_authorized(uninstall(Some("2.0.0"))),
+        m.run_authorized(uninstall(Some("9.9.9")))
+    );
+    let gone = m.run_authorized(uninstall(None)).unwrap();
+    assert_eq!(gone["removed"], json!(["1.0.0"]));
+    assert!(m.state.packages["p"].versions.contains_key("2.0.0"));
+    assert_eq!(
+        m.run_authorized(uninstall(None)),
+        Err("no such package".into())
+    );
+    // Nor does the first installer manage the origins of releases it may not use.
+    assert!(!m.state.manages_package("p", "bob"));
+    let mut before = m.state.clone();
+    before.cluster_version = None;
+    assert!(before.manages_package("p", "bob"), "as it applied before");
+}
+
+/// An app team is named, and a package named outright is found, only from the releases its
+/// actor may use, from the logged version that brings private releases: a package with
+/// none answers as a missing one, and a team (by a scope or a move) is named after the
+/// newest release the actor may use. Entries logged below it apply as they did.
+#[test]
+fn an_app_team_reads_only_the_releases_its_actor_may_use() {
+    use super::cluster_version::Feature;
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    let _ok = m.run_authorized(account("alice")).unwrap();
+    for id in ["org", "dst"] {
+        let mut o = org(&[("alice", "owner")], &[], &["2.0.0"]);
+        id.clone_into(&mut o.org_id);
+        let _prev = m.state.orgs.insert(id.into(), o);
+    }
+    let release = |version: &str, visibility: &str, name: &str| {
+        json!({
+            "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+            "services": { "": format!("b-{version}") }, "installedBy": "bob",
+            "installedAt": 1, "visibility": visibility, "orgs": ["elsewhere"],
+            "metadata": { "name": name }
+        })
+    };
+    for (package, versions) in [
+        (
+            "p",
+            json!({ "1.0.0": release("1.0.0", "public", "Open"),
+                    "2.0.0": release("2.0.0", "private", "Secret") }),
+        ),
+        (
+            "q",
+            json!({ "1.0.0": release("1.0.0", "private", "Hidden") }),
+        ),
+        ("r", json!({ "1.0.0": release("1.0.0", "public", "Other") })),
+    ] {
+        let _prev = m.state.packages.insert(
+            package.into(),
+            serde_json::from_value(json!({
+                "name": package, "signerId": "did:key:z", "owner": "bob", "versions": versions
+            }))
+            .unwrap(),
+        );
+    }
+    let _prev = m.state.bundles.insert(
+        "b-1.0.0".into(),
+        serde_json::from_value(json!({
+            "hash": "b-1.0.0", "size": 1, "uploadedBy": "bob",
+            "package": { "package": "p", "version": "1.0.0" }
+        }))
+        .unwrap(),
+    );
+    let _prev = m.state.apps.insert(
+        "a".into(),
+        serde_json::from_value(json!({
+            "appId": "a", "name": "a", "group": 5, "bundle": "b-1.0.0", "owner": "alice",
+            "org": "org", "grants": [{ "kind": "org" }], "replicas": [1], "createdAt": 0,
+            "release": { "package": "p", "version": "1.0.0" }
+        }))
+        .unwrap(),
+    );
+    let scope_in = |org: &str, package: &str| SystemCmd::ScopeApps {
+        org: org.into(),
+        apps: Some(vec![super::ScopeApp {
+            package: package.into(),
+            name: None,
+            instances: Some(Vec::new()),
+            join: None,
+            keep: None,
+            child_teams: None,
+        }]),
+        shared: None,
+        nonce: package.into(),
+        actor: "alice".into(),
+        consent: Value::Null,
+        member_child_teams: true,
+        all_apps_rows: true,
+        by_release: true,
+    };
+    let scope = |package: &str| scope_in("org", package);
+    // A target with an app team gives a moved app one of its own.
+    let _ok = m.run_unproven(scope_in("dst", "r")).unwrap();
+    let team_name = |m: &SystemMachine, org: &str, package: &str| {
+        m.state.orgs[org].app_team(package).map(|t| t.name.clone())
+    };
+
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let _ok = old.run_unproven(scope("p")).unwrap();
+    let _ok = old.run_unproven(scope("q")).unwrap();
+    assert_eq!(
+        team_name(&old, "org", "p").as_deref(),
+        Some("Secret"),
+        "as it applied"
+    );
+    let _ok = old
+        .run_unproven(move_app("a", "dst", "alice", false, Value::Null))
+        .unwrap();
+    assert_eq!(
+        team_name(&old, "dst", "p").as_deref(),
+        Some("Secret"),
+        "as it applied"
+    );
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(m.run_unproven(scope("q")), m.run_unproven(scope("missing")));
+    assert_eq!(team_name(&m, "org", "q"), None);
+    let _ok = m.run_unproven(scope("p")).unwrap();
+    assert_eq!(team_name(&m, "org", "p").as_deref(), Some("Open"));
+    let _ok = m
+        .run_unproven(move_app("a", "dst", "alice", false, Value::Null))
+        .unwrap();
+    assert_eq!(team_name(&m, "dst", "p").as_deref(), Some("Open"));
+}
+
+/// A release of another signer's package pins a private module only while it is private to
+/// the module's own organizations, judged at apply on the release as the install leaves it
+/// (an install again for another organization included), from the logged version that
+/// brings private releases; an entry logged below it applies as it did.
+#[test]
+fn a_private_module_is_pinned_only_into_a_release_private_to_its_organizations() {
+    use super::cluster_version::Feature;
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["vic", "mia"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    for (id, members) in [
+        ("v", &[("vic", "owner"), ("mia", "member")][..]),
+        ("a", &[("mia", "owner")][..]),
+    ] {
+        let mut o = org(members, &[], &[]);
+        id.clone_into(&mut o.org_id);
+        let _prev = m.state.orgs.insert(id.into(), o);
+    }
+    let install = |package: &str, signer: &str, by: &str, org: &str, extra: Value| {
+        let mut release = json!({
+            "version": "1.0.0", "mpk": package, "mpkSize": 1, "source": "upload",
+            "services": {}, "installedBy": by, "installedAt": 1,
+            "visibility": "private", "orgs": [org],
+        });
+        release
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        SystemCmd::InstallPackage {
+            package: package.into(),
+            signer_id: signer.into(),
+            release: serde_json::from_value(release).unwrap(),
+        }
+    };
+    let module = install(
+        "m",
+        "did:key:victim",
+        "vic",
+        "v",
+        json!({ "compute": { "": "c" } }),
+    );
+    let _ok = m.run_authorized(module).unwrap();
+    let q = |org: &str| {
+        install(
+            "q",
+            "did:key:attacker",
+            "mia",
+            org,
+            json!({
+                "compute": { "": "cq" },
+                "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1", "modules": {
+                    "m@1.0.0": { "package": "m", "version": "1.0.0", "compute": "c" }
+                } } }
+            }),
+        )
+    };
+
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let _ok = old.run_authorized(q("a")).expect("replayed as it applied");
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(
+        m.run_authorized(q("a")),
+        Err("a module the pipelines use is no longer installed".into())
+    );
+    assert!(!m.state.packages.contains_key("q"));
+    let _ok = m.run_authorized(q("v")).unwrap();
+    assert_eq!(
+        m.run_authorized(q("a")),
+        Err("a module the pipelines use is no longer installed".into())
+    );
+    assert_eq!(
+        m.state.packages["q"].versions["1.0.0"].orgs,
+        BTreeSet::from(["v".to_owned()])
+    );
+}
+
+/// An outbound approval approves the prefixes of the newest release its approver reads, from
+/// the logged version that brings private releases: another organization's private newer
+/// release neither blocks it nor lends it its prefixes; one with none it reads is a missing
+/// package. An entry logged below that version approves the newest release's, as it did.
+#[test]
+fn an_outbound_approval_takes_the_newest_release_its_approver_reads() {
+    use super::cluster_version::Feature;
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    let _ok = m.run_authorized(account("alice")).unwrap();
+    let _prev = m
+        .state
+        .orgs
+        .insert("org".into(), org(&[("alice", "owner")], &[], &[]));
+    let release = |version: &str, visibility: &str, prefix: &str| {
+        json!({
+            "version": version, "mpk": version, "mpkSize": 1, "source": "upload",
+            "services": { "": format!("b-{version}") }, "installedBy": "bob",
+            "installedAt": 1, "visibility": visibility, "orgs": ["elsewhere"],
+            "outbound": [prefix]
+        })
+    };
+    let _prev = m.state.packages.insert(
+        "p".into(),
+        serde_json::from_value(json!({
+            "name": "p", "signerId": "did:key:z", "owner": "bob", "versions": {
+                "1.0.0": release("1.0.0", "public", "https://open.example/"),
+                "2.0.0": release("2.0.0", "private", "https://secret.example/"),
+            }
+        }))
+        .unwrap(),
+    );
+    let outbound = SystemCmd::SetOutboundApproval {
+        scope: ReleaseScope::Org { org: "org".into() },
+        package: "p".into(),
+        selection: calimero_primitives::outbound::OutboundSelection::Manifest,
+        replace: false,
+        actor: "alice".into(),
+        consent: Value::Null,
+    };
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let got = old.run_unproven(outbound.clone()).unwrap();
+    assert_eq!(
+        got["approval"]["prefixes"],
+        json!(["https://secret.example/"]),
+        "as it applied"
+    );
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    let got = m.run_unproven(outbound.clone()).unwrap();
+    assert_eq!(
+        got["approval"]["prefixes"],
+        json!(["https://open.example/"])
+    );
+    let v1 = m
+        .state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .get_mut("1.0.0")
+        .unwrap();
+    v1.visibility = Some(super::Visibility::Private);
+    assert_eq!(m.run_unproven(outbound), Err("no such package".into()));
+}
+
+/// A release recorded before `visibility` keeps the rule from before: whoever shares an
+/// organization with an installer, or reaches an app of it, uses it. Its entry writes back
+/// byte for byte; a private install of it again leaves that rule, a public one replaces it.
+#[test]
+fn a_release_recorded_before_visibility_keeps_the_rule_from_before() {
+    use super::{PackageVersion, Visibility};
+    let old = json!({
+        "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "registry",
+        "services": { "": "b1" }, "metadata": null, "outbound": [],
+        "installedBy": "alice", "installedAt": 1,
+    });
+    let release: PackageVersion = serde_json::from_value(old.clone()).unwrap();
+    assert!(release.visibility.is_none() && release.orgs.is_empty());
+    assert_eq!(serde_json::to_value(&release).unwrap(), old);
+    let entry = SystemCmd::InstallPackage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        release: release.clone(),
+    };
+    assert!(entry.features().is_empty());
+
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob", "carol"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    let _prev = m
+        .state
+        .orgs
+        .get_mut(&p("alice"))
+        .unwrap()
+        .members
+        .insert("bob".into(), OrgRole::Member);
+    let _ok = m.run_authorized(raw_bundle("carol", "b1", 1)).unwrap();
+    let _ok = m.run_authorized(entry).unwrap();
+    assert_eq!(
+        serde_json::to_value(&m.state.packages["p"].versions["1.0.0"]).unwrap(),
+        old
+    );
+    assert!(
+        m.state.sees_bundle("b1", "carol"),
+        "its raw uploader, as before"
+    );
+    let seen = |m: &SystemMachine, who: &str| {
+        m.state
+            .sees_release(&m.state.packages["p"].versions["1.0.0"], who)
+    };
+    assert!(seen(&m, "alice") && seen(&m, "bob") && !seen(&m, "carol"));
+    assert!(m
+        .state
+        .sees_release_from(&m.state.packages["p"].versions["1.0.0"], "carol", true));
+
+    let again = |visibility: Visibility| SystemCmd::InstallPackage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        release: PackageVersion {
+            installed_by: "bob".into(),
+            visibility: Some(visibility),
+            orgs: [p("bob")].into(),
+            ..release.clone()
+        },
+    };
+    let _ok = m.run_authorized(again(Visibility::Private)).unwrap();
+    let v = &m.state.packages["p"].versions["1.0.0"];
+    assert!(v.visibility.is_none() && seen(&m, "bob"));
+    let _ok = m.run_authorized(again(Visibility::Public)).unwrap();
+    assert!(seen(&m, "carol"));
+    assert!(!m.state.sees_release_from(
+        &PackageVersion {
+            visibility: Some(Visibility::Private),
+            ..release
+        },
+        "carol",
+        true
+    ));
+}
+
 /// A release's compute component is recorded as the compute part of its service: no app
 /// runs it, the app's record carries it next to `bundle` on create and upgrade, and
 /// uninstalling the release takes it with the service.
@@ -705,9 +1275,12 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             installed_at: 0,
             installers: BTreeSet::new(),
             upgrades: UpgradeAuthority::Owner,
+            lineage: calimero_bundle::Lineage::Free,
             min_runtime_version: None,
             instance_org: None,
             guests: None,
+            visibility: None,
+            orgs: BTreeSet::new(),
         },
     };
     let _ok = m
@@ -813,9 +1386,12 @@ fn a_compute_release_is_charged_each_parts_own_size() {
             installed_at: 0,
             installers: BTreeSet::new(),
             upgrades: UpgradeAuthority::Owner,
+            lineage: calimero_bundle::Lineage::Free,
             min_runtime_version: None,
             instance_org: None,
             guests: None,
+            visibility: None,
+            orgs: BTreeSet::new(),
         },
     };
     let _ok = m.run_authorized(release("1.0.0", "m1", "j1")).unwrap();
@@ -857,9 +1433,12 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             installed_at: 0,
             installers: BTreeSet::new(),
             upgrades: UpgradeAuthority::Owner,
+            lineage: calimero_bundle::Lineage::Free,
             min_runtime_version: None,
             instance_org: None,
             guests: None,
+            visibility: None,
+            orgs: BTreeSet::new(),
         },
     };
     let _ok = m.run_authorized(install("1.0.0", "m1", "j1")).unwrap();
@@ -890,7 +1469,10 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
 }
 
 /// An account `id` holding the passkey `pk`.
-fn account_with(id: &str, pk: &mut calimero_identity::testing::SoftAuthenticator) -> SystemCmd {
+pub(super) fn account_with(
+    id: &str,
+    pk: &mut calimero_identity::testing::SoftAuthenticator,
+) -> SystemCmd {
     let rp = calimero_identity::RelyingParty {
         id: "localhost".into(),
         origins: vec!["http://localhost:3000".into()],
@@ -918,7 +1500,7 @@ fn account_with(id: &str, pk: &mut calimero_identity::testing::SoftAuthenticator
     }
 }
 
-fn consent(
+pub(super) fn consent(
     pk: &mut calimero_identity::testing::SoftAuthenticator,
     subject: &str,
     method: &str,
@@ -1213,6 +1795,66 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
     );
 }
 
+/// From the logged version that brings private releases, an app's move in a run applies only
+/// to a release its owner may use, whoever started the run; an entry logged below it applies
+/// as it did.
+#[test]
+fn a_run_moves_an_app_only_to_a_release_its_owner_may_use() {
+    use super::apps::RELEASE_NOT_USABLE;
+    use super::cluster_version::Feature;
+    let (mut m, mut alice) = org_with_package_apps();
+    m.index = 10;
+    let _ok = m.run(SystemCmd::RequireCurrentRules).unwrap();
+    let c = consent(
+        &mut alice,
+        "org:org",
+        "__upgrade_org",
+        &json!({
+            "package": "p", "version": "2.0.0", "team": null,
+            "cascade": false, "migrate": null,
+        }),
+    );
+    let run: crate::types::UpgradeRun = serde_json::from_value(json!({
+        "runId": "r1", "package": "p", "version": "2.0.0", "by": "alice",
+        "startedAt": 0, "apps": [], "done": [], "failed": {}, "finished": false,
+    }))
+    .unwrap();
+    m.index = 11;
+    let _ok = m
+        .run(SystemCmd::StartUpgradeRun {
+            org: "org".into(),
+            run: Box::new(run),
+            consent: c,
+            by_release: false,
+            owner_approves: false,
+        })
+        .unwrap();
+    let release = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.get_mut("2.0.0"))
+        .unwrap();
+    release.visibility = Some(super::Visibility::Private);
+    release.orgs = ["elsewhere".to_owned()].into();
+    let upgrade = || {
+        let mut cmd = upgrade_to("p1", "alice", "b-2.0.0", Some(("p", "2.0.0")));
+        if let SystemCmd::UpgradeApp { run, .. } = &mut cmd {
+            *run = Some("r1".into());
+        }
+        cmd
+    };
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    m.index = 12;
+    assert_eq!(m.run(upgrade()).unwrap_err(), RELEASE_NOT_USABLE);
+    assert_eq!(m.state.apps["p1"].bundle, "b-1.0.0");
+
+    m.state.cluster_version = None;
+    let _ok = m.run(upgrade()).unwrap();
+    assert_eq!(m.state.apps["p1"].bundle, "b-2.0.0");
+}
+
 /// A publisher's run covers the instances that run a release of its package
 /// (`SystemState::app_release`), as an organization's run and each app's
 /// `UpgradeApp { run }` judge it: not the instances whose WASM another
@@ -1296,7 +1938,7 @@ fn a_publishers_run_covers_the_instances_that_run_its_package() {
 type Soft = calimero_identity::testing::SoftAuthenticator;
 
 /// The operator's signing key in these tests, and what genesis records.
-fn operator_signer() -> (ed25519_dalek::SigningKey, crate::proof::OperatorKey) {
+pub(super) fn operator_signer() -> (ed25519_dalek::SigningKey, crate::proof::OperatorKey) {
     let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let public = crate::proof::OperatorKey {
         key: hex::encode(key.verifying_key().to_bytes()),
@@ -1306,7 +1948,7 @@ fn operator_signer() -> (ed25519_dalek::SigningKey, crate::proof::OperatorKey) {
 }
 
 /// The operator's signature over `method` on `subject` with `args`.
-fn signed(subject: &str, method: &str, args: &serde_json::Value) -> serde_json::Value {
+pub(super) fn signed(subject: &str, method: &str, args: &serde_json::Value) -> serde_json::Value {
     use ed25519_dalek::Signer;
     let (key, public) = operator_signer();
     let statement = crate::proof::Statement::new(subject, method, args);
@@ -1675,8 +2317,10 @@ fn refresh_token(
         passkey: Some(passkey.into()),
         app: None,
         origin: None,
+        registration: String::new(),
         key: crate::proof::refresh_key(&token),
         opened_at: 0,
+        holder: None,
     };
     (token, hash, record)
 }
@@ -1728,7 +2372,7 @@ fn a_sign_ins_refresh_token_needs_its_passkeys_assertion() {
     assert_eq!(m.state.refresh[&hash].account, "alice");
 }
 
-/// Review finding B1: every sign-in's proof stayed in `used_proofs` for good, so
+/// Every sign-in's proof stayed in `used_proofs` for good, so
 /// the system state (one snapshot row) only grew. From the `ExpireProofs` mark
 /// on, a sign-in's proof is forgotten once the session it opened expires (at an
 /// entry's own time, never a clock), and a sign-in whose session expired by
@@ -1813,6 +2457,69 @@ fn proofs_from_before_the_expiry_mark_read_and_write_as_they_did() {
     }
 }
 
+/// A reused token that was bound to a holder key revokes its session only with that key's proof
+/// for it, made near the entry's time; an unbound one revokes it as before. So a copy of an old
+/// token taken off the device cannot sign its owner out, through any node.
+#[test]
+fn a_reused_holder_bound_token_revokes_only_with_its_holders_proof() {
+    use ring::rand::SystemRandom;
+    use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+    let device = || {
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let public = calimero_identity::b64url(pair.public_key().as_ref());
+        (pair, public)
+    };
+    let prove = |pair: &EcdsaKeyPair, hash: &str, at: u64| crate::types::HolderProof {
+        at,
+        signature: calimero_identity::b64url(
+            pair.sign(
+                &SystemRandom::new(),
+                &crate::proof::refresh_holder_message(hash, at),
+            )
+            .unwrap()
+            .as_ref(),
+        ),
+    };
+    let (mut m, alice, _bob, _carol) = proven_cluster();
+    let (key, public) = device();
+    let (other, _) = device();
+    let (_t, hash, mut held) = refresh_token("alice", &alice.credential_id(), "s-held");
+    held.holder = Some(public);
+    let _prev = m.state.rotated_refresh.insert(hash.clone(), held);
+    let now = 1_700_000_000;
+    let reuse = |holder_proof| SystemCmd::RefreshReused {
+        hash: hash.clone(),
+        now,
+        holder_proof,
+    };
+    for (why, proof) in [
+        ("no proof", None),
+        ("another key's", Some(prove(&other, &hash, now))),
+        ("for another token", Some(prove(&key, "other-hash", now))),
+        ("stale", Some(prove(&key, &hash, now - 600))),
+    ] {
+        assert!(m.run(reuse(proof)).is_err(), "{why}");
+        assert!(!m.state.revoked_sessions.contains("s-held"), "{why}");
+    }
+    let _ok = m.run(reuse(Some(prove(&key, &hash, now - 30)))).unwrap();
+    assert!(m.state.revoked_sessions.contains("s-held"));
+
+    // An unbound token's reuse needs no proof, as before.
+    let (_t, plain_hash, plain) = refresh_token("alice", &alice.credential_id(), "s-plain");
+    let _prev = m.state.rotated_refresh.insert(plain_hash.clone(), plain);
+    let _ok = m
+        .run(SystemCmd::RefreshReused {
+            hash: plain_hash,
+            now,
+            holder_proof: None,
+        })
+        .unwrap();
+    assert!(m.state.revoked_sessions.contains("s-plain"));
+}
+
 /// A refresh token is exchanged only with its own key's signature, for
 /// the session it already belongs to.
 #[test]
@@ -1893,6 +2600,18 @@ fn a_refresh_token_is_exchanged_with_its_own_key() {
                 crate::proof::sign_refresh_use(&token, &message(&next_record)),
             ),
         ),
+        // An unbound session is not bound to a holder key by an exchange: the passkey
+        // signed the session without one.
+        (
+            "bound to a holder key the session lacks",
+            exchange(
+                crate::types::RefreshRecord {
+                    holder: Some("BHolder".into()),
+                    ..next_record.clone()
+                },
+                crate::proof::sign_refresh_use(&token, &message(&next_record)),
+            ),
+        ),
     ] {
         assert!(m.run(cmd).is_err(), "{why}");
     }
@@ -1903,6 +2622,65 @@ fn a_refresh_token_is_exchanged_with_its_own_key() {
         .unwrap();
     assert!(m.state.refresh.contains_key(&next_hash));
     assert!(m.run(exchange(next_record, signed)).is_err(), "replayed");
+
+    // A holder-bound session stays bound: an exchange that drops the key, or names
+    // another, is refused, so no node can turn the token into one usable off the device.
+    let (held_token, held_hash, mut held) = refresh_token("alice", &alice.credential_id(), "s4");
+    held.holder = Some("BDevice".into());
+    let _prev = m.state.refresh.insert(held_hash.clone(), held.clone());
+    let (_n, then_hash, then_record) = refresh_token("alice", &alice.credential_id(), "s4");
+    for (why, holder) in [("dropped", None), ("swapped", Some("BOther".to_owned()))] {
+        let record = crate::types::RefreshRecord {
+            holder,
+            ..then_record.clone()
+        };
+        let message = crate::proof::refresh_use_message(
+            &held_hash,
+            &then_hash,
+            &record.key,
+            "s4",
+            record.expires_at,
+            5,
+        );
+        assert_eq!(
+            m.run(SystemCmd::UseRefresh {
+                old_hash: held_hash.clone(),
+                new_hash: then_hash.clone(),
+                record,
+                now: 5,
+                signature: crate::proof::sign_refresh_use(&held_token, &message),
+            })
+            .unwrap_err()
+            .message(),
+            "the exchange is for another session",
+            "{why}"
+        );
+    }
+    let kept = crate::types::RefreshRecord {
+        holder: held.holder.clone(),
+        ..then_record
+    };
+    let message = crate::proof::refresh_use_message(
+        &held_hash,
+        &then_hash,
+        &kept.key,
+        "s4",
+        kept.expires_at,
+        5,
+    );
+    let _ok = m
+        .run(SystemCmd::UseRefresh {
+            old_hash: held_hash,
+            new_hash: then_hash.clone(),
+            record: kept,
+            now: 5,
+            signature: crate::proof::sign_refresh_use(&held_token, &message),
+        })
+        .unwrap();
+    assert_eq!(
+        m.state.refresh[&then_hash].holder.as_deref(),
+        Some("BDevice")
+    );
 
     // A token from before keys is not exchanged at all.
     let (old, old_hash, mut keyless) = refresh_token("alice", &alice.credential_id(), "s3");
@@ -2458,7 +3236,7 @@ fn a_create_org_entry_from_before_takes_any_name() {
 /// The status a client sees for a refusal comes from what the log refused it
 /// for, never from its wording: a quota refusal worded otherwise is still
 /// `429 QUOTA_EXCEEDED`, and a refusal of another kind whose wording happens
-/// to start like a quota's is still `400 REJECTED` (review finding E4).
+/// to start like a quota's is still `400 REJECTED`.
 #[test]
 fn a_refusals_status_comes_from_its_kind_not_its_wording() {
     let (mut m, _alice, _bob, _carol) = proven_cluster();
@@ -2505,6 +3283,398 @@ fn a_refusals_status_comes_from_its_kind_not_its_wording() {
     assert_eq!(
         answer(&other, "quota exceeded: none, this organization is unknown"),
         (400, "REJECTED".to_owned())
+    );
+}
+
+/// `CreateApp`'s own refusals reach a client with the wording, status and code
+/// they always had: each check is named, none changed what it answers.
+#[test]
+fn a_create_apps_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let _prev = m.state.bundles.insert(
+        "b1".into(),
+        serde_json::from_value(json!({ "hash": "b1", "size": 1, "uploadedBy": "alice" })).unwrap(),
+    );
+    let create = |changes: Value, unit_offer: Option<PackageRef>| {
+        let mut app = json!({
+            "appId": "new", "name": "new", "group": 0, "bundle": "b1", "owner": "alice",
+            "org": p("alice"), "replicas": [1], "createdAt": 10,
+        });
+        for (key, value) in changes.as_object().unwrap() {
+            app[key] = value.clone();
+        }
+        SystemCmd::CreateApp {
+            app: Box::new(serde_json::from_value(app).unwrap()),
+            unit_offer,
+            offers_only: false,
+        }
+    };
+    let offer = PackageRef {
+        package: "p".into(),
+        version: "1.0.0".into(),
+        service: None,
+        compute: false,
+    };
+    let cases = [
+        (create(json!({ "bundle": "nope" }), None), "unknown bundle"),
+        (create(json!({ "appId": "app" }), None), "app exists"),
+        (
+            create(json!({ "deployment": "nope" }), None),
+            "no such deployment",
+        ),
+        (
+            create(json!({}), Some(offer)),
+            "a unit's offer comes with the deployment that makes it",
+        ),
+        (
+            create(json!({ "owner": "carol", "org": "org" }), None),
+            "owner is not a member of the organization",
+        ),
+        (
+            create(json!({ "owner": "bob", "org": "org" }), None),
+            "creating apps here needs the CREATE_APP capability",
+        ),
+    ];
+    for (cmd, message) in cases {
+        let refused = m.run_unproven(cmd).unwrap_err();
+        let api = crate::node::rejected(&refused);
+        assert_eq!(
+            (api.message.as_str(), api.status, api.code.as_str()),
+            (message, 400, "REJECTED")
+        );
+    }
+    m.state.quotas.max_apps_per_account = 1;
+    let refused = m.run_unproven(create(json!({}), None)).unwrap_err();
+    let api = crate::node::rejected(&refused);
+    assert_eq!(
+        (api.message.as_str(), api.status, api.code.as_str()),
+        ("quota exceeded: apps", 429, "QUOTA_EXCEEDED")
+    );
+}
+
+/// An organization command's refusals reach a client with the wording, status
+/// and code they always had: each check is named, none changed what it answers.
+#[test]
+fn an_org_commands_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let update_team = |parent: Option<Option<String>>, team: &str| SystemCmd::UpdateTeam {
+        org: "org".into(),
+        team: team.into(),
+        name: None,
+        join: None,
+        parent,
+        metadata: None,
+        actor: "alice".into(),
+        all_apps_rows: true,
+        close_drops_below: true,
+    };
+    let cases = [
+        (
+            SystemCmd::DeleteOrg {
+                org: "nope".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+            },
+            "no such organization",
+        ),
+        (
+            SystemCmd::CreateOrg {
+                org_id: "org".into(),
+                name: "Docs".into(),
+                actor: "alice".into(),
+                release: None,
+                recovery_key: None,
+                at: 0,
+                name_fits: true,
+                personal: false,
+                app_team: None,
+                capabilities: None,
+            },
+            "organization exists",
+        ),
+        (
+            SystemCmd::SetOrgRole {
+                org: "org".into(),
+                account: "carol".into(),
+                role: OrgRole::Member,
+                actor: "bob".into(),
+                consent: Value::Null,
+            },
+            "only admins manage members",
+        ),
+        (
+            SystemCmd::RemoveOrgMember {
+                org: "org".into(),
+                account: "alice".into(),
+                actor: "alice".into(),
+                consent: Value::Null,
+            },
+            "transfer ownership before removing the owner",
+        ),
+        (
+            SystemCmd::CreateTeam {
+                org: "org".into(),
+                team_id: "t".into(),
+                name: "T".into(),
+                parent: None,
+                join: crate::types::TeamJoin::Invite,
+                actor: "alice".into(),
+                member_child_teams: true,
+            },
+            "team exists",
+        ),
+        (update_team(None, "nope"), "no such team"),
+        (
+            update_team(Some(Some("t".into())), "t"),
+            "a team cannot move under itself",
+        ),
+        (
+            SystemCmd::SetOrgSettings {
+                org: "org".into(),
+                settings: super::OrgSettings::default(),
+                actor: "alice".into(),
+                consent: Value::Null,
+            },
+            "no setting to change",
+        ),
+    ];
+    for (cmd, message) in cases {
+        let refused = m.run_unproven(cmd).unwrap_err();
+        let api = crate::node::rejected(&refused);
+        assert_eq!(
+            (api.message.as_str(), api.status, api.code.as_str()),
+            (message, 400, "REJECTED")
+        );
+    }
+}
+
+/// Each logged command (its JSON, as the log keeps it) is refused with this
+/// message as `400 REJECTED`, by its own rules on `m`'s state.
+fn assert_rejected(m: &mut SystemMachine, cases: Vec<(Value, &str)>) {
+    for (logged, message) in cases {
+        let cmd = serde_json::from_value::<SystemCmd>(logged.clone()).unwrap();
+        let refused = m.run_unproven(cmd).unwrap_err();
+        let api = crate::node::rejected(&refused);
+        assert_eq!(
+            (api.message.as_str(), api.status, api.code.as_str()),
+            (message, 400, "REJECTED"),
+            "{logged}"
+        );
+    }
+}
+
+/// The sign-up area's refusals keep their wording and code.
+#[test]
+fn sign_up_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let invite =
+        |by: &str| json!({ "expiresAt": 20, "usesLeft": 1, "createdBy": by, "createdAt": 10 });
+    let key = "11".repeat(32);
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "createSignUpInvite", "invite_key": key,
+                        "invite": invite("alice"), "actor": OPERATOR }),
+                "a sign-up invite names who issued it",
+            ),
+            (
+                json!({ "op": "createSignUpInvite", "invite_key": "zz",
+                        "invite": invite(OPERATOR), "actor": OPERATOR }),
+                "an invite key is 32 bytes, hex",
+            ),
+            (
+                json!({ "op": "revokeSignUpInvite", "invite_key": key, "actor": OPERATOR }),
+                "no such sign-up invite",
+            ),
+        ],
+    );
+}
+
+/// The fleet's refusals keep their wording and code.
+#[test]
+fn fleet_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (json!({ "op": "removeNode", "id": 99 }), "no such node"),
+            (
+                json!({ "op": "setOrgQuotas", "payer": "", "quotas": {} }),
+                "a payer is named, in at most 128 bytes",
+            ),
+            (
+                json!({ "op": "requireSessionProofs" }),
+                "session proofs are required already",
+            ),
+        ],
+    );
+}
+
+/// The approval area's refusals keep their wording and code.
+#[test]
+fn approval_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "setOperatorRelease", "version": "2.0.0", "approved": true }),
+                "this cluster's releases are approved by each app's owner",
+            ),
+            (
+                json!({ "op": "setReleaseDeadline", "version": "soon", "after": null }),
+                "a deadline names a semver release of at most 64 bytes",
+            ),
+            (
+                json!({ "op": "setEgress", "org": "org", "app": null, "egress": true,
+                        "actor": "bob" }),
+                "only the organization's owner or an admin turns its egress off or on",
+            ),
+        ],
+    );
+}
+
+/// The package area's refusals keep their wording and code.
+#[test]
+fn package_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let proof = json!({ "publicKey": "k", "signature": "s" });
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "putBundle", "hash": "h", "size": 1, "actor": "nobody", "at": 0 }),
+                "unknown account",
+            ),
+            (
+                json!({ "op": "uninstallPackage", "package": "nope", "version": null,
+                        "actor": "alice" }),
+                "no such package",
+            ),
+            (
+                json!({ "op": "bindPublisher", "signer_id": "s".repeat(129), "org": "org",
+                        "cluster": "", "proof": proof, "actor": "alice" }),
+                "a signer id or cluster name is at most 128 bytes",
+            ),
+            (
+                json!({ "op": "bindPublisher", "signer_id": "s", "org": "org",
+                        "cluster": "elsewhere", "proof": proof, "actor": "alice" }),
+                "the binding names another cluster",
+            ),
+        ],
+    );
+}
+
+/// The deployment area's refusals keep their wording and code.
+#[test]
+fn deployment_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "grantDeployer", "deployer": { "account": "nobody" },
+                        "until": null, "at": 1, "actor": OPERATOR }),
+                "no such account or organization",
+            ),
+            (
+                json!({ "op": "revokeDeployer", "deployer": { "account": "alice" },
+                        "at": 1, "actor": OPERATOR }),
+                "no such deployer grant",
+            ),
+            (
+                json!({ "op": "setClusterOwner", "owner": { "account": "alice" } }),
+                "this cluster's operator grants its deployers; it has no owner to name",
+            ),
+            (
+                json!({ "op": "withdrawApp", "deployment": "nope", "app": "a",
+                        "actor": "alice" }),
+                "no such deployment",
+            ),
+        ],
+    );
+}
+
+/// The account area's refusals keep their wording and code.
+#[test]
+fn account_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    let passkey = m.state.accounts["alice"].passkeys[0].id.clone();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "removePasskey", "account": "alice", "credential_id": passkey,
+                        "now": 1 }),
+                "cannot remove the last passkey",
+            ),
+            (
+                json!({ "op": "setPasskeyLabel", "account": "alice", "credential": passkey,
+                        "label": "l".repeat(65) }),
+                "a passkey label is at most 64 characters",
+            ),
+            (
+                json!({ "op": "revokeApiKey", "key_id": "nope", "actor": "alice" }),
+                "no such key",
+            ),
+            (
+                json!({ "op": "setSignCount", "credential_id": "nope", "count": 1,
+                        "assertion": null }),
+                "unknown credential",
+            ),
+        ],
+    );
+}
+
+/// The recovery area's refusals keep their wording and code.
+#[test]
+fn recovery_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "setAccountRecoveryKey", "account": "nobody",
+                        "recovery_key": "k", "consent": null }),
+                "unknown account",
+            ),
+            (
+                json!({ "op": "removeAccountRecoveryKey", "account": "alice", "consent": null }),
+                "no recovery code is set",
+            ),
+            (
+                json!({ "op": "startRecovery", "org": "org", "account": "alice",
+                        "nonce": "n", "signature": "s", "at": 1 }),
+                "that account owns the organization already",
+            ),
+        ],
+    );
+}
+
+/// The update area's refusals keep their wording and code.
+#[test]
+fn update_refusals_keep_their_wording_and_code() {
+    let (mut m, _alice, _bob, _carol) = proven_cluster();
+    assert_rejected(
+        &mut m,
+        vec![
+            (
+                json!({ "op": "setUpgradePolicy", "org": "nope", "app": null,
+                        "policy": null, "actor": "alice" }),
+                "no such organization",
+            ),
+            (
+                json!({ "op": "setUpgradePolicy", "org": "org", "app": "nope",
+                        "policy": null, "actor": "alice" }),
+                "no such app in that organization",
+            ),
+            (
+                json!({ "op": "undoUpgrade", "app_id": "nope", "apps": {},
+                        "actor": "alice", "at": 1 }),
+                "no such app",
+            ),
+        ],
     );
 }
 
@@ -8199,6 +9369,1045 @@ fn on_a_granted_cluster_an_instance_outside_every_deployment_keeps_out_of_a_depl
         .unwrap();
 }
 
+/// `install_at` of a release declaring `lineage: pinned`.
+fn install_pinned(by: &str, version: &str) -> SystemCmd {
+    let mut cmd = install_at(by, version, 5);
+    if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+        release.lineage = calimero_bundle::Lineage::Pinned;
+    }
+    cmd
+}
+
+/// An instance created from a pinning release records its package and signer, and every
+/// move it makes is judged at apply, the operator's too: never to another package, a raw
+/// bundle, a package now signed by another key, or an older release.
+#[test]
+fn a_pinned_instance_moves_only_forward_on_its_package_and_signer() {
+    use super::{Deployments, Rejection, LINEAGE_OLDER_RELEASE, OUTSIDE_LINEAGE};
+    let mut m = deploying(Deployments::Open);
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let _ok = m.run_unproven(install_pinned("alice", version)).unwrap();
+    }
+    let other = SystemCmd::InstallPackage {
+        package: "q".into(),
+        signer_id: "did:key:q".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "q", "mpkSize": 1, "source": "upload",
+            "services": { "": "b-q" }, "installedBy": OPERATOR, "installedAt": 5
+        }))
+        .unwrap(),
+    };
+    let _ok = m.run_unproven(other).unwrap();
+    let _ok = m.run_unproven(raw_bundle("alice", "raw", 5)).unwrap();
+    let mut create = instance("kv", "alice", "b-1.1.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.1.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    assert_eq!(
+        m.state.apps["kv"].lineage,
+        Some(crate::types::AppLineage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            floor: "1.1.0".into(),
+        })
+    );
+
+    let refuse = |m: &mut SystemMachine, why: &str, cmd: SystemCmd, refused: Rejection| {
+        assert_eq!(m.run_unproven(cmd).unwrap_err(), refused, "{why}");
+        assert_eq!(m.state.apps["kv"].bundle, "b-1.1.0", "{why}");
+    };
+    let older = || upgrade_to("kv", "alice", "b-1.0.0", Some(("p", "1.0.0")));
+    let other = || upgrade_to("kv", "alice", "b-q", Some(("q", "1.0.0")));
+    refuse(&mut m, "an older release", older(), LINEAGE_OLDER_RELEASE);
+    refuse(&mut m, "another package", other(), OUTSIDE_LINEAGE);
+    let raw = upgrade_to("kv", "alice", "raw", None);
+    refuse(&mut m, "a raw bundle", raw, OUTSIDE_LINEAGE);
+
+    // Where the operator upgrades apps, it is held to the same lineage.
+    let owners = m.state.governance.clone();
+    m.state.governance = Some(Governance {
+        app_upgrades: Authority::Operator,
+        ..m.state.governance()
+    });
+    let by_operator = |mut cmd: SystemCmd| {
+        if let SystemCmd::UpgradeApp { by_operator, .. } = &mut cmd {
+            *by_operator = true;
+        }
+        cmd
+    };
+    refuse(
+        &mut m,
+        "operator, older",
+        by_operator(older()),
+        LINEAGE_OLDER_RELEASE,
+    );
+    refuse(
+        &mut m,
+        "operator, another package",
+        by_operator(other()),
+        OUTSIDE_LINEAGE,
+    );
+    m.state.governance = owners;
+
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+
+    // The package's record signed by another key (its releases all gone and installed again).
+    m.state.packages.get_mut("p").unwrap().signer_id = "did:key:other".into();
+    assert_eq!(
+        m.run_unproven(upgrade_to("kv", "alice", "b-1.2.0", Some(("p", "1.2.0"))))
+            .unwrap_err(),
+        OUTSIDE_LINEAGE
+    );
+    m.state.packages.get_mut("p").unwrap().signer_id = "did:key:z".into();
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.2.0", Some(("p", "1.2.0"))))
+        .unwrap();
+    assert_eq!(m.state.apps["kv"].bundle, "b-1.2.0");
+    assert_eq!(m.state.apps["kv"].lineage.as_ref().unwrap().floor, "1.2.0");
+    // The floor is the instance's own: a record that names no release is judged by it.
+    m.state.apps.get_mut("kv").unwrap().release = None;
+    assert_eq!(
+        m.run_unproven(upgrade_to("kv", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+            .unwrap_err(),
+        LINEAGE_OLDER_RELEASE
+    );
+}
+
+/// An empty floor (a record written before floors) is no floor beyond the release the instance
+/// runs: forward from it goes, back from it does not, and the next upgrade sets the floor.
+#[test]
+fn an_empty_floor_is_judged_by_the_release_alone() {
+    use super::LINEAGE_OLDER_RELEASE;
+    let mut m = deploying(super::Deployments::Open);
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let _ok = m.run_unproven(install_pinned("alice", version)).unwrap();
+    }
+    let mut create = instance("kv", "alice", "b-1.1.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.1.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    m.state
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .lineage
+        .as_mut()
+        .unwrap()
+        .floor = String::new();
+    assert_eq!(
+        m.run_unproven(upgrade_to("kv", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+            .unwrap_err(),
+        LINEAGE_OLDER_RELEASE
+    );
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.2.0", Some(("p", "1.2.0"))))
+        .unwrap();
+    assert_eq!(m.state.apps["kv"].lineage.as_ref().unwrap().floor, "1.2.0");
+}
+
+/// A floor is only ever set to a version that parses.
+#[test]
+fn a_floor_is_never_set_unparseable() {
+    let mut lineage = crate::types::AppLineage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        floor: "1.1.0".into(),
+    };
+    lineage.raise_floor("nightly");
+    assert_eq!(lineage.floor, "1.1.0");
+    lineage.floor = "garbage".into();
+    lineage.raise_floor("nightly");
+    assert_eq!(lineage.floor, "garbage", "nothing better to set");
+    lineage.raise_floor("1.2.0");
+    assert_eq!(lineage.floor, "1.2.0");
+}
+
+/// A pinned instance of a release with only a compute component moves forward as any other.
+#[test]
+fn a_compute_only_pinned_instance_moves_forward() {
+    let mut m = deploying(super::Deployments::Open);
+    for version in ["1.0.0", "1.1.0"] {
+        let mut cmd = install_pinned("alice", version);
+        if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+            release.services.clear();
+            release.components = crate::types::Components::ComputeOnly;
+            let _prev = release
+                .compute
+                .insert(String::new(), format!("c-{version}"));
+        }
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    let mut create = instance("job", "alice", "c-1.0.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.components = crate::types::Components::ComputeOnly;
+        app.compute_bundle = Some("c-1.0.0".into());
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    assert!(m.state.apps["job"].lineage.is_some());
+    let mut up = upgrade_to("job", "alice", "c-1.1.0", Some(("p", "1.1.0")));
+    if let SystemCmd::UpgradeApp { compute_bundle, .. } = &mut up {
+        *compute_bundle = Some("c-1.1.0".into());
+    }
+    let _ok = m.run_unproven(up).unwrap();
+    assert_eq!(m.state.apps["job"].lineage.as_ref().unwrap().floor, "1.1.0");
+}
+
+/// `deploying` with `p@1.0.0..1.2.0` pinning, `q@1.0.0` plain (`b-q`), and `alice`'s
+/// instance `kv` on `p@1.1.0` and `plain` on `q@1.0.0`, both in `org`.
+fn lineage_fixture() -> SystemMachine {
+    let mut m = deploying(super::Deployments::Open);
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let _ok = m.run_unproven(install_pinned("alice", version)).unwrap();
+    }
+    let other = SystemCmd::InstallPackage {
+        package: "q".into(),
+        signer_id: "did:key:q".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "q", "mpkSize": 1, "source": "upload",
+            "services": { "": "b-q" }, "installedBy": "alice", "installedAt": 5
+        }))
+        .unwrap(),
+    };
+    let _ok = m.run_unproven(other).unwrap();
+    for (id, bundle, (package, version)) in [
+        ("kv", "b-1.1.0", ("p", "1.1.0")),
+        ("plain", "b-q", ("q", "1.0.0")),
+    ] {
+        let mut create = instance(id, "alice", bundle, None);
+        if let SystemCmd::CreateApp { app, .. } = &mut create {
+            app.org = "org".into();
+            app.release = Some(PackageRef {
+                package: package.into(),
+                version: version.into(),
+                service: None,
+                compute: false,
+            });
+        }
+        let _ok = m.run_unproven(create).unwrap();
+    }
+    m
+}
+
+/// An upgrade of `app` to `bundle` of `release` taking a restore point, at 10.
+fn upgrade_with_point(app: &str, bundle: &str, release: (&str, &str)) -> SystemCmd {
+    let mut cmd = upgrade_to(app, "alice", bundle, Some(release));
+    if let SystemCmd::UpgradeApp { restore_point, .. } = &mut cmd {
+        *restore_point = Some(crate::types::TakenRestorePoint::default());
+    }
+    cmd
+}
+
+fn undo(app: &str) -> SystemCmd {
+    SystemCmd::UndoUpgrade {
+        app_id: app.into(),
+        apps: serde_json::from_value(json!({ app: [] })).unwrap(),
+        actor: "alice".into(),
+        at: 20,
+        consent: Value::Null,
+        release_installed: true,
+    }
+}
+
+/// An undo goes back along the lineage, to an older release too, and keeps the pin; it
+/// never goes back to another package, as undoing the upgrade that pinned it would.
+#[test]
+fn an_undo_keeps_a_pinned_instance_on_its_lineage() {
+    use super::OUTSIDE_LINEAGE;
+    let mut m = lineage_fixture();
+    let _ok = m
+        .run_unproven(upgrade_with_point("kv", "b-1.2.0", ("p", "1.2.0")))
+        .unwrap();
+    let pinned = m.state.apps["kv"].lineage.clone();
+    assert!(pinned.is_some());
+    let _ok = m.run_unproven(undo("kv")).unwrap();
+    let kv = &m.state.apps["kv"];
+    assert_eq!(kv.release.as_ref().unwrap().version, "1.1.0");
+    assert_eq!(kv.lineage, pinned, "an undo keeps the pin");
+
+    let _ok = m
+        .run_unproven(upgrade_with_point("plain", "b-1.1.0", ("p", "1.1.0")))
+        .unwrap();
+    assert!(
+        m.state.apps["plain"].lineage.is_some(),
+        "pinned by the upgrade"
+    );
+    assert_eq!(m.run_unproven(undo("plain")).unwrap_err(), OUTSIDE_LINEAGE);
+    assert_eq!(m.state.apps["plain"].bundle, "b-1.1.0", "nothing moved");
+}
+
+/// The operator restores a pinned instance only from a backup a release of its lineage ships,
+/// never one older than its floor; the pin stays.
+#[test]
+fn a_restore_keeps_a_pinned_instance_on_its_lineage() {
+    use super::{LINEAGE_OLDER_RELEASE, OUTSIDE_LINEAGE};
+    let mut m = lineage_fixture();
+    register(&mut m, 1, "replica");
+    let _ok = m
+        .run_unproven(upgrade_with_point("kv", "b-1.2.0", ("p", "1.2.0")))
+        .unwrap();
+    let pinned = m.state.apps["kv"].lineage.clone();
+    for (why, bundle, refused) in [
+        ("another package", "b-q", OUTSIDE_LINEAGE),
+        ("an older release", "b-1.1.0", LINEAGE_OLDER_RELEASE),
+    ] {
+        assert_eq!(
+            m.run_unproven(restore_kv(bundle)).unwrap_err(),
+            refused,
+            "{why}"
+        );
+        assert_eq!(m.state.apps["kv"].bundle, "b-1.2.0", "{why}: nothing moved");
+    }
+    let _ok = m.run_unproven(restore_kv("b-1.2.0")).unwrap();
+    assert_eq!(m.state.apps["kv"].lineage, pinned);
+}
+
+/// The operator's restore of `kv` onto `bundle`, unproven.
+fn restore_kv(bundle: &str) -> SystemCmd {
+    SystemCmd::RestoreApp {
+        app_id: "kv".into(),
+        replicas: vec![1],
+        bundle: bundle.into(),
+        compute_bundle: None,
+        source: crate::types::RestoreSource {
+            name: "kv.snap".into(),
+            sha256: "ab".into(),
+            index: 7,
+        },
+        proof: Value::Null,
+    }
+}
+
+/// A pinned instance's floor is its own: uninstalling the newest release that ships its bundle
+/// opens no gap below it, for a restore as for an upgrade.
+#[test]
+fn uninstalling_a_release_lowers_no_floor() {
+    use super::LINEAGE_OLDER_RELEASE;
+    let mut m = lineage_fixture();
+    register(&mut m, 1, "replica");
+    for (version, bundle) in [("1.2.5", "b-1.2.5"), ("1.3.0", "b-1.2.0")] {
+        let mut cmd = install_pinned("alice", version);
+        if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+            let _prev = release.services.insert(String::new(), bundle.into());
+        }
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.2.0", Some(("p", "1.3.0"))))
+        .unwrap();
+    // As a restore onto another bundle leaves it.
+    m.state.apps.get_mut("kv").unwrap().release = None;
+    let _ok = m
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "p".into(),
+            version: Some("1.3.0".into()),
+            actor: "alice".into(),
+        })
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(restore_kv("b-1.2.5")).unwrap_err(),
+        LINEAGE_OLDER_RELEASE
+    );
+    assert_eq!(
+        m.run_unproven(upgrade_to("kv", "alice", "b-1.2.5", Some(("p", "1.2.5"))))
+            .unwrap_err(),
+        LINEAGE_OLDER_RELEASE
+    );
+}
+
+/// A pinned instance with only a compute component is restored onto newer code as any other.
+#[test]
+fn a_compute_only_pinned_instance_is_restored_forward() {
+    let mut m = deploying(super::Deployments::Open);
+    register(&mut m, 1, "replica");
+    for version in ["1.0.0", "1.1.0"] {
+        let mut cmd = install_pinned("alice", version);
+        if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+            release.services.clear();
+            release.components = crate::types::Components::ComputeOnly;
+            let _prev = release
+                .compute
+                .insert(String::new(), format!("c-{version}"));
+        }
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    let mut create = instance("job", "alice", "c-1.0.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.components = crate::types::Components::ComputeOnly;
+        app.compute_bundle = Some("c-1.0.0".into());
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    m.state.apps.get_mut("job").unwrap().release = None;
+    let _ok = m
+        .run_unproven(SystemCmd::RestoreApp {
+            app_id: "job".into(),
+            replicas: vec![1],
+            bundle: "c-1.1.0".into(),
+            compute_bundle: Some("c-1.1.0".into()),
+            source: crate::types::RestoreSource {
+                name: "job.snap".into(),
+                sha256: "ab".into(),
+                index: 7,
+            },
+            proof: Value::Null,
+        })
+        .unwrap();
+    assert_eq!(m.state.apps["job"].lineage.as_ref().unwrap().floor, "1.1.0");
+}
+
+/// `proven_cluster` with `app` pinned to `p` at 1.1.0 (`b1`, compute `c1`); 1.0.0 ships `b0`.
+fn pinned_proven() -> SystemMachine {
+    let (mut m, ..) = proven_cluster();
+    let signer = "did:key:z".to_owned();
+    let _prev = m.state.packages.insert(
+        "p".into(),
+        serde_json::from_value(json!({ "name": "p", "signerId": signer, "owner": "alice",
+            "versions": {
+                "1.0.0": { "version": "1.0.0", "mpk": "a", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b0" }, "installedBy": "alice", "installedAt": 0,
+                    "lineage": "pinned" },
+                "1.0.5": { "version": "1.0.5", "mpk": "c", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b1" }, "compute": { "": "c0" }, "installedBy": "alice",
+                    "installedAt": 0, "lineage": "pinned" },
+                "1.0.6": { "version": "1.0.6", "mpk": "d", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b1" }, "installedBy": "alice", "installedAt": 0,
+                    "lineage": "pinned" },
+                "1.1.0": { "version": "1.1.0", "mpk": "b", "mpkSize": 1, "source": "upload",
+                    "services": { "": "b1" }, "compute": { "": "c1" }, "installedBy": "alice",
+                    "installedAt": 0, "lineage": "pinned" } } }))
+        .unwrap(),
+    );
+    for hash in ["b0", "b1", "c0", "c1", "c9"] {
+        let _prev = m.state.bundles.insert(
+            hash.into(),
+            serde_json::from_value(json!({ "hash": hash, "size": 1, "uploadedBy": "alice" }))
+                .unwrap(),
+        );
+    }
+    let app = m.state.apps.get_mut("app").unwrap();
+    app.bundle = "b1".into();
+    app.compute_bundle = Some("c1".into());
+    app.release = Some(PackageRef {
+        package: "p".into(),
+        version: "1.1.0".into(),
+        service: None,
+        compute: false,
+    });
+    app.lineage = Some(crate::types::AppLineage {
+        package: "p".into(),
+        signer_id: signer,
+        floor: "1.1.0".into(),
+    });
+    m
+}
+
+/// The operator's restore of `app` onto `bundle` and `compute`, signed over `args`.
+fn signed_restore(bundle: &str, compute: Option<&str>, args: &Value) -> SystemCmd {
+    SystemCmd::RestoreApp {
+        app_id: "app".into(),
+        replicas: vec![2, 1, 3],
+        bundle: bundle.into(),
+        compute_bundle: compute.map(str::to_owned),
+        source: crate::types::RestoreSource {
+            name: "7.2.x.snap".into(),
+            sha256: "ab".into(),
+            index: 7,
+        },
+        proof: signed("app", "__restore_app", args),
+    }
+}
+
+/// A pinned store is not rolled back: a restore to older code is refused though the operator
+/// signed it.
+#[test]
+fn an_older_restore_of_a_pinned_instance_is_refused_though_signed() {
+    let mut m = pinned_proven();
+    let args = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b0",
+        "computeBundle": null });
+    let refused = m.run(signed_restore("b0", None, &args)).unwrap_err();
+    assert_eq!(refused, super::LINEAGE_OLDER_RELEASE);
+    assert_eq!(m.state.apps["app"].bundle, "b1");
+}
+
+/// A restore's age is judged on the release that ships its exact code, compute part included:
+/// older compute under the same app bundle, or no compute at all, is older code.
+#[test]
+fn an_older_compute_part_is_older_code() {
+    let mut m = pinned_proven();
+    for (why, compute) in [("older compute", Some("c0")), ("no compute", None)] {
+        let args = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b1",
+            "computeBundle": compute });
+        assert_eq!(
+            m.run(signed_restore("b1", compute, &args)).unwrap_err(),
+            super::LINEAGE_OLDER_RELEASE,
+            "{why}"
+        );
+        assert_eq!(
+            m.state.apps["app"].compute_bundle.as_deref(),
+            Some("c1"),
+            "{why}"
+        );
+    }
+}
+
+/// Code two releases ship is as new as the newer one: restoring it is not older, and the floor
+/// rises to that release.
+#[test]
+fn code_two_releases_ship_is_judged_at_the_newer() {
+    let mut m = pinned_proven();
+    let mut later = m.state.packages["p"].versions["1.0.5"].clone();
+    later.version = "1.3.0".into();
+    let _prev = m
+        .state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .insert("1.3.0".into(), later);
+    let args = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b1",
+        "computeBundle": "c0" });
+    let _ok = m.run(signed_restore("b1", Some("c0"), &args)).unwrap();
+    assert_eq!(m.state.apps["app"].lineage.as_ref().unwrap().floor, "1.3.0");
+}
+
+/// The operator's signature on a pinned instance's restore names the bundle and compute part
+/// it runs, and both must ship in one release of the lineage.
+#[test]
+fn a_pinned_instances_restore_is_signed_over_what_it_runs() {
+    let mut m = pinned_proven();
+    let backup = json!({ "backup": "7.2.x.snap", "sha256": "ab" });
+    assert!(
+        m.run(signed_restore("b1", Some("c1"), &backup)).is_err(),
+        "a signature over the backup alone"
+    );
+    let other = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b1",
+        "computeBundle": "c9" });
+    assert!(
+        m.run(signed_restore("b1", Some("c1"), &other)).is_err(),
+        "a signature over another compute part"
+    );
+    let app = m.state.apps["app"].clone();
+    assert_eq!(
+        m.state.ships_on_lineage(&app, "b1", Some("c9")),
+        Err(super::OUTSIDE_LINEAGE),
+        "a compute part no lineage release ships with the bundle"
+    );
+    let args = json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": "b1",
+        "computeBundle": "c1" });
+    let _ok = m.run(signed_restore("b1", Some("c1"), &args)).unwrap();
+}
+
+/// [`lineage_fixture`] with `p@2.0.0`, `3.0.0` and `4.0.0` installed after `kv` was created,
+/// `kv` upgraded to 2.0.0 and then 3.0.0 (taking restore points at 10 and 11), and a replica.
+fn late_releases() -> SystemMachine {
+    let mut m = lineage_fixture();
+    m.state.attributes_by_release = true;
+    for version in ["2.0.0", "3.0.0", "4.0.0"] {
+        let mut cmd = install_pinned("alice", version);
+        if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+            release.installed_at = 50;
+        }
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    register(&mut m, 1, "replica");
+    for (version, at) in [("2.0.0", 10), ("3.0.0", 11)] {
+        let mut up = upgrade_with_point("kv", &format!("b-{version}"), ("p", version));
+        if let SystemCmd::UpgradeApp { at: when, .. } = &mut up {
+            *when = at;
+        }
+        let _ok = m.run_unproven(up).unwrap();
+    }
+    m
+}
+
+/// A pinned instance the operator restored onto newer code moves on from there.
+#[test]
+fn a_restored_pinned_instance_still_moves_forward() {
+    let mut m = late_releases();
+    let _ok = m.run_unproven(restore_kv("b-4.0.0")).unwrap();
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-4.0.0", Some(("p", "4.0.0"))))
+        .unwrap();
+}
+
+/// An imported pinned instance keeps its pin, or takes it again from its release in the
+/// slice where the record lost it, only where its package here is held by the same signer;
+/// where it is held by another, or by none, the import is refused.
+#[test]
+fn an_import_keeps_a_pinned_instance_on_its_lineage() {
+    use super::{BackupHolder, ImportedApp, OUTSIDE_LINEAGE};
+    let old = lineage_fixture();
+    let holder = BackupHolder::Org("org".into());
+    let slice = old.state.holder_slice(&holder);
+    let pinned = old.state.apps["kv"].lineage.clone();
+    assert!(pinned.is_some() && slice.apps.contains_key("kv"));
+    let fresh = |theirs: Option<&str>| {
+        let mut m = SystemMachine::default();
+        let _ok = m.run_unproven(genesis(Governance::default())).unwrap();
+        register(&mut m, 1, "replica");
+        if let Some(signer) = theirs {
+            let mut p = old.state.packages["p"].clone();
+            p.signer_id = signer.into();
+            let _prev = m.state.packages.insert("p".into(), p);
+        }
+        m
+    };
+    let import = |slice: &super::HolderSlice| SystemCmd::ImportHolder {
+        holder: holder.clone(),
+        slice: Box::new(slice.clone()),
+        slice_sha256: "cd".repeat(32),
+        public_key: "ef".repeat(32),
+        seed: 1,
+        apps: vec![ImportedApp {
+            app_id: "kv".into(),
+            replicas: vec![1],
+            source: crate::types::RestoreSource {
+                name: "app-kv.rbak".into(),
+                sha256: "ab".repeat(32),
+                index: 9,
+            },
+        }],
+        at: 7,
+        proof: Value::Null,
+    };
+    let mut stripped = slice.clone();
+    stripped.apps.get_mut("kv").unwrap().lineage = None;
+    let mut unshipped = slice.clone();
+    let _gone = unshipped.packages.remove("p");
+    // A record naming no release, its floor stale or missing, takes the floor of the release
+    // its bundle ships in: nothing older than that is reachable after the import.
+    for floor in ["1.0.0", ""] {
+        let mut stale = slice.clone();
+        let kv = stale.apps.get_mut("kv").unwrap();
+        kv.release = None;
+        kv.lineage.as_mut().unwrap().floor = floor.into();
+        let mut m = fresh(None);
+        let _ok = m.run_unproven(import(&stale)).unwrap();
+        assert_eq!(m.state.apps["kv"].lineage, pinned, "floor {floor:?}");
+        m.state.apps.get_mut("kv").unwrap().restore = None;
+        let _prev = m
+            .state
+            .bundles
+            .insert("b-1.0.0".into(), old.state.bundles["b-1.0.0"].clone());
+        assert_eq!(
+            m.run_unproven(upgrade_to("kv", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+                .unwrap_err(),
+            super::LINEAGE_OLDER_RELEASE,
+            "floor {floor:?}"
+        );
+    }
+    // A floor behind the release the record names is raised to it.
+    let mut behind = slice.clone();
+    behind
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .lineage
+        .as_mut()
+        .unwrap()
+        .floor = "1.0.0".into();
+    let mut m = fresh(None);
+    let _ok = m.run_unproven(import(&behind)).unwrap();
+    assert_eq!(m.state.apps["kv"].lineage, pinned, "floor raised to 1.1.0");
+    for (why, slice) in [("kept", &slice), ("stripped", &stripped)] {
+        let mut m = fresh(None);
+        let _ok = m.run_unproven(import(slice)).unwrap();
+        assert_eq!(m.state.apps["kv"].lineage, pinned, "{why}");
+        let mut m = fresh(Some("did:key:z"));
+        let _ok = m.run_unproven(import(slice)).unwrap();
+        assert_eq!(
+            m.state.apps["kv"].lineage, pinned,
+            "{why}, same signer here"
+        );
+        let mut m = fresh(Some("did:key:other"));
+        assert_eq!(
+            m.run_unproven(import(slice)).unwrap_err(),
+            OUTSIDE_LINEAGE,
+            "{why}, another signer here"
+        );
+        assert!(!m.state.apps.contains_key("kv"));
+    }
+    let mut m = fresh(None);
+    assert_eq!(
+        m.run_unproven(import(&unshipped)).unwrap_err(),
+        OUTSIDE_LINEAGE,
+        "the package nowhere"
+    );
+    // The slice's release declares nothing, but this cluster holds it as pinning: pinned.
+    let mut unflagged = stripped.clone();
+    for v in unflagged
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .values_mut()
+    {
+        v.lineage = calimero_bundle::Lineage::Free;
+    }
+    let mut m = fresh(Some("did:key:z"));
+    let _ok = m.run_unproven(import(&unflagged)).unwrap();
+    assert_eq!(
+        m.state.apps["kv"].lineage, pinned,
+        "pinned as this cluster holds it"
+    );
+    // Held here as pinning under another signer: refused, nothing written.
+    let mut m = fresh(Some("did:key:other"));
+    let bundles = serde_json::to_value(&m.state.bundles).unwrap();
+    assert!(m.run_unproven(import(&unflagged)).is_err());
+    assert_eq!(
+        serde_json::to_value(&m.state.bundles).unwrap(),
+        bundles,
+        "no bundle record written"
+    );
+    assert!(!m.state.apps.contains_key("kv"));
+    // A floor that does not parse takes the release the record runs, and moves on from there.
+    let mut garbled = slice.clone();
+    garbled
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .lineage
+        .as_mut()
+        .unwrap()
+        .floor = "nightly".into();
+    let mut m = fresh(None);
+    let _ok = m.run_unproven(import(&garbled)).unwrap();
+    assert_eq!(
+        m.state.apps["kv"].lineage, pinned,
+        "floor normalized to 1.1.0"
+    );
+    m.state.apps.get_mut("kv").unwrap().restore = None;
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+    // A record that names no release is floored at the newest lineage release shipping its
+    // code; one whose code no lineage release ships is refused.
+    let mut low = slice.clone();
+    let kv = low.apps.get_mut("kv").unwrap();
+    kv.release = None;
+    kv.lineage.as_mut().unwrap().floor = "1.0.0".into();
+    let _gone = low.bundles.remove("b-1.1.0");
+    let mut m = fresh(None);
+    let _prev = m
+        .state
+        .bundles
+        .insert("b-1.1.0".into(), old.state.bundles["b-1.1.0"].clone());
+    let _ok = m.run_unproven(import(&low)).unwrap();
+    assert_eq!(
+        m.state.apps["kv"].lineage, pinned,
+        "floored at the shipping release"
+    );
+    let mut unshipped_code = low.clone();
+    unshipped_code.apps.get_mut("kv").unwrap().compute_bundle = Some("c-none".into());
+    let mut m = fresh(None);
+    let _prev = m
+        .state
+        .bundles
+        .insert("b-1.1.0".into(), old.state.bundles["b-1.1.0"].clone());
+    assert!(
+        m.run_unproven(import(&unshipped_code)).is_err(),
+        "no lineage release ships it"
+    );
+    assert!(!m.state.apps.contains_key("kv"));
+    // Neither the floor nor the release it runs parses: refused.
+    let mut hopeless = garbled.clone();
+    let mut nightly = hopeless.packages["p"].versions["1.1.0"].clone();
+    nightly.version = "nightly".into();
+    let _prev = hopeless
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .insert("nightly".into(), nightly);
+    hopeless
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .release
+        .as_mut()
+        .unwrap()
+        .version = "nightly".into();
+    let mut m = fresh(None);
+    let bundles = serde_json::to_value(&m.state.bundles).unwrap();
+    assert!(m.run_unproven(import(&hopeless)).is_err());
+    assert_eq!(serde_json::to_value(&m.state.bundles).unwrap(), bundles);
+    // A kept lineage of another package than the release it runs is refused.
+    let mut crossed = slice.clone();
+    crossed
+        .apps
+        .get_mut("kv")
+        .unwrap()
+        .lineage
+        .as_mut()
+        .unwrap()
+        .package = "q".into();
+    let mut m = fresh(None);
+    assert_eq!(
+        m.run_unproven(import(&crossed)).unwrap_err(),
+        OUTSIDE_LINEAGE,
+        "a lineage of another package"
+    );
+    // A record that names no release, created before its package's releases were installed,
+    // still moves forward once imported.
+    let mut bare = slice.clone();
+    let kv = bare.apps.get_mut("kv").unwrap();
+    kv.release = None;
+    kv.created_at = 1;
+    let mut m = fresh(None);
+    m.state.attributes_by_release = true;
+    let _ok = m.run_unproven(import(&bare)).unwrap();
+    assert_eq!(m.state.apps["kv"].release, None, "governance as imported");
+    m.state.apps.get_mut("kv").unwrap().restore = None;
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+}
+
+/// An imported record's release (named, else the one its bundle is recorded from) must ship its
+/// bundle as this cluster holds that package, under the same signer: one held here under
+/// another signer, with other bytes, is refused.
+#[test]
+fn an_import_refuses_a_release_that_does_not_ship_its_bundle_here() {
+    use super::{BackupHolder, ImportedApp};
+    let old = lineage_fixture();
+    let holder = BackupHolder::Org("org".into());
+    let slice = old.state.holder_slice(&holder);
+    let mut m = SystemMachine::default();
+    let _ok = m.run_unproven(genesis(Governance::default())).unwrap();
+    register(&mut m, 1, "replica");
+    m.state.cluster_version = Some(
+        super::cluster_version::Feature::PinnedLineage
+            .since()
+            .into(),
+    );
+    let mut theirs = old.state.packages["q"].clone();
+    theirs.signer_id = "did:key:other".into();
+    let v = theirs.versions.get_mut("1.0.0").unwrap();
+    let _prev = v.services.insert(String::new(), "b-other".into());
+    let _prev = m.state.packages.insert("q".into(), theirs);
+    let import = SystemCmd::ImportHolder {
+        holder: holder.clone(),
+        slice: Box::new(slice),
+        slice_sha256: "cd".repeat(32),
+        public_key: "ef".repeat(32),
+        seed: 1,
+        apps: vec![ImportedApp {
+            app_id: "plain".into(),
+            replicas: vec![1],
+            source: crate::types::RestoreSource {
+                name: "app-plain.rbak".into(),
+                sha256: "ab".repeat(32),
+                index: 9,
+            },
+        }],
+        at: 7,
+        proof: Value::Null,
+    };
+    // Refused whole: nothing of the slice is written, its bundle records included.
+    let before = serde_json::to_value(&m.state).unwrap();
+    let refused = m.run_unproven(import.clone()).unwrap_err();
+    assert!(refused.message().contains("ship"), "{refused}");
+    assert_eq!(serde_json::to_value(&m.state).unwrap(), before);
+    // Below the version that brings the rule, an entry applies as it did.
+    let mut old_rules = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    old_rules.state.cluster_version = Some("1.0.0-rc.38".into());
+    let _ok = old_rules.run_unproven(import.clone()).unwrap();
+    // A record that names no release is judged by the release its bundle is recorded from.
+    let SystemCmd::ImportHolder { mut slice, .. } = import.clone() else {
+        unreachable!()
+    };
+    slice.apps.get_mut("plain").unwrap().release = None;
+    let mut bare = import;
+    if let SystemCmd::ImportHolder { slice: s, .. } = &mut bare {
+        *s = slice;
+    }
+    let refused = m.run_unproven(bare).unwrap_err();
+    assert!(refused.message().contains("ship"), "{refused}");
+    assert!(!m.state.apps.contains_key("plain"));
+}
+
+/// A release-less record is judged by this cluster's own record of its bundle where it has one,
+/// which must agree with the slice's; the slice must carry the bundle and its package (the
+/// signer is always checked), and the release must ship the record's compute part too.
+#[test]
+fn an_import_judges_a_release_less_record_by_its_bundles_attribution() {
+    use super::{BackupHolder, ImportedApp};
+    let old = lineage_fixture();
+    let holder = BackupHolder::Org("org".into());
+    let mut slice = old.state.holder_slice(&holder);
+    slice.apps.get_mut("plain").unwrap().release = None;
+    let fresh = || {
+        let mut m = SystemMachine::default();
+        let _ok = m.run_unproven(genesis(Governance::default())).unwrap();
+        register(&mut m, 1, "replica");
+        m.state.cluster_version = Some(
+            super::cluster_version::Feature::PinnedLineage
+                .since()
+                .into(),
+        );
+        m
+    };
+    let import = |slice: &super::HolderSlice| SystemCmd::ImportHolder {
+        holder: holder.clone(),
+        slice: Box::new(slice.clone()),
+        slice_sha256: "cd".repeat(32),
+        public_key: "ef".repeat(32),
+        seed: 1,
+        apps: vec![ImportedApp {
+            app_id: "plain".into(),
+            replicas: vec![1],
+            source: crate::types::RestoreSource {
+                name: "app-plain.rbak".into(),
+                sha256: "ab".repeat(32),
+                index: 9,
+            },
+        }],
+        at: 7,
+        proof: Value::Null,
+    };
+    let refused = |m: &mut SystemMachine, slice: &super::HolderSlice, why: &str| {
+        let e = m.run_unproven(import(slice)).unwrap_err();
+        assert!(e.message().contains("ship"), "{why}: {e}");
+        assert!(!m.state.apps.contains_key("plain"), "{why}");
+    };
+    let _ok = fresh().run_unproven(import(&slice)).unwrap();
+
+    // Here the bundle is recorded from another release than the slice says.
+    let mut m = fresh();
+    let mut ours = old.state.bundles["b-q"].clone();
+    ours.package = Some(PackageRef {
+        package: "x".into(),
+        version: "9.0.0".into(),
+        service: None,
+        compute: false,
+    });
+    let _prev = m.state.bundles.insert("b-q".into(), ours);
+    refused(&mut m, &slice, "another attribution here");
+
+    let mut no_bundle = slice.clone();
+    let _gone = no_bundle.bundles.remove("b-q");
+    let mut m = fresh();
+    let _prev = m
+        .state
+        .bundles
+        .insert("b-q".into(), old.state.bundles["b-q"].clone());
+    refused(&mut m, &no_bundle, "no bundle entry in the slice");
+
+    // The package held here under another signer, the slice carrying none to compare.
+    let mut no_package = slice.clone();
+    let _gone = no_package.packages.remove("q");
+    let mut m = fresh();
+    let mut theirs = old.state.packages["q"].clone();
+    theirs.signer_id = "did:key:other".into();
+    let _prev = m.state.packages.insert("q".into(), theirs);
+    refused(&mut m, &no_package, "no package entry in the slice");
+
+    let mut compute = slice.clone();
+    compute.apps.get_mut("plain").unwrap().compute_bundle = Some("c-elsewhere".into());
+    refused(
+        &mut fresh(),
+        &compute,
+        "a compute part its release does not ship",
+    );
+}
+
+/// A run's upgrade is held to the lineage as any other: the rule is the instance's.
+#[test]
+fn a_runs_upgrade_keeps_a_pinned_instance_on_its_lineage() {
+    let mut m = lineage_fixture();
+    let mut in_run = upgrade_to("kv", "alice", "b-q", Some(("q", "1.0.0")));
+    if let SystemCmd::UpgradeApp { run, .. } = &mut in_run {
+        *run = Some("r1".into());
+    }
+    assert_eq!(m.run_unproven(in_run).unwrap_err(), super::OUTSIDE_LINEAGE);
+    assert_eq!(m.state.apps["kv"].bundle, "b-1.1.0");
+}
+
+/// A move to another organization keeps the pin.
+#[test]
+fn a_moved_instance_keeps_its_pin() {
+    let (mut m, mut alice, _bob) = moving();
+    let pin = Some(crate::types::AppLineage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        floor: "1.0.0".into(),
+    });
+    m.state.apps.get_mut("oa").unwrap().lineage = pin.clone();
+    let args = super::move_app_args("new", true);
+    let _ok = m
+        .run(move_app(
+            "oa",
+            "new",
+            "alice",
+            true,
+            consent(&mut alice, "oa", "__move", &args),
+        ))
+        .unwrap();
+    assert_eq!(m.state.apps["oa"].lineage, pin);
+}
+
+/// A pinning release names a semver version, so its instances can move forward; a release
+/// that pins nothing may name any version, as before.
+#[test]
+fn a_pinning_release_names_a_semver_version() {
+    let mut m = deploying(super::Deployments::Open);
+    let refused = m
+        .run_unproven(install_pinned("alice", "nightly"))
+        .unwrap_err();
+    assert!(refused.message().contains("semver"), "{refused}");
+    let _ok = m.run_unproven(install_at("alice", "nightly", 5)).unwrap();
+}
+
+/// An instance of a release that pins nothing records no lineage and moves as before.
+#[test]
+fn an_unpinned_instance_records_no_lineage() {
+    let mut m = deploying(super::Deployments::Open);
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 5)).unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.1.0", 5)).unwrap();
+    let mut create = instance("kv", "alice", "b-1.1.0", None);
+    if let SystemCmd::CreateApp { app, .. } = &mut create {
+        app.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.1.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m.run_unproven(create).unwrap();
+    assert_eq!(m.state.apps["kv"].lineage, None);
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+        .unwrap();
+}
+
 /// Where deployments are open, installs go on exactly as before.
 #[test]
 fn on_an_open_cluster_anyone_installs() {
@@ -8431,6 +10640,7 @@ fn create_deployment(id: &str, owner: super::Deployer, actor: &str) -> SystemCmd
         actor: actor.into(),
         at: 10,
         consent: serde_json::Value::Null,
+        deployment_needs_recovery: false,
     }
 }
 
@@ -8515,6 +10725,7 @@ fn deployments_are_their_managers_and_keep_what_they_offer() {
         actor: "alice".into(),
         at: 10,
         consent: serde_json::Value::Null,
+        deployment_needs_recovery: false,
     };
     assert!(m.run_unproven(bad_name).is_err());
     assert!(m
@@ -8876,6 +11087,7 @@ fn deployment_changes_carry_their_managers_consent() {
             actor: actor.into(),
             at: 10,
             consent,
+            deployment_needs_recovery: false,
         };
     assert!(m
         .run(create("d".into(), "alice", serde_json::Value::Null))
@@ -8930,11 +11142,76 @@ fn deployment_changes_carry_their_managers_consent() {
         &json!({ "app": "notes" }),
     );
     let _ok = m.run(withdraw(c)).unwrap();
-    let c = consent(&mut alice, &subject, "__delete_deployment", &json!({}));
+
+    // A transfer: each side signs its own step, naming the receiver.
+    let _ok = m.run_unproven(account("carol")).unwrap();
+    let to_bob = json!({ "to": { "account": "bob" } });
+    let offer_to = |to: &str, consent: serde_json::Value| SystemCmd::OfferDeployment {
+        deployment: id.clone(),
+        to: Deployer::Account(to.into()),
+        actor: "alice".into(),
+        at: 10,
+        consent,
+    };
+    assert!(m.run(offer_to("bob", Value::Null)).is_err(), "no consent");
+    let by_bob = consent(&mut bob, &subject, "__offer_deployment", &to_bob);
+    assert!(m.run(offer_to("bob", by_bob)).is_err(), "bob's passkey");
+    let c = consent(&mut alice, &subject, "__offer_deployment", &to_bob);
+    assert!(
+        m.run(offer_to("carol", c.clone())).is_err(),
+        "another receiver"
+    );
+    let _ok = m.run(offer_to("bob", c)).unwrap();
+    let accept = |actor: &str, consent: serde_json::Value| SystemCmd::AcceptDeployment {
+        deployment: id.clone(),
+        to: Deployer::Account("bob".into()),
+        offered_at: 10,
+        actor: actor.into(),
+        at: 11,
+        consent,
+    };
+    let the_offer = json!({ "to": { "account": "bob" }, "offeredAt": 10 });
+    assert!(m.run(accept("bob", Value::Null)).is_err(), "no consent");
+    let by_alice = consent(&mut alice, &subject, "__accept_deployment", &the_offer);
+    assert!(m.run(accept("bob", by_alice)).is_err(), "alice's passkey");
+    let other = consent(&mut bob, &subject, "__accept_deployment", &to_bob);
+    assert!(m.run(accept("bob", other)).is_err(), "another offer");
+    let c = consent(&mut bob, &subject, "__accept_deployment", &the_offer);
+    let _ok = m.run(accept("bob", c)).unwrap();
+    let cancel = |actor: &str, consent: serde_json::Value| SystemCmd::CancelDeploymentTransfer {
+        deployment: id.clone(),
+        actor: actor.into(),
+        consent,
+    };
+    let c = consent(
+        &mut bob,
+        &subject,
+        "__offer_deployment",
+        &json!({ "to": { "account": "alice" } }),
+    );
+    let _ok = m
+        .run(SystemCmd::OfferDeployment {
+            deployment: id.clone(),
+            to: Deployer::Account("alice".into()),
+            actor: "bob".into(),
+            at: 12,
+            consent: c,
+        })
+        .unwrap();
+    assert!(m.run(cancel("alice", Value::Null)).is_err(), "no consent");
+    let c = consent(
+        &mut alice,
+        &subject,
+        "__cancel_deployment_transfer",
+        &json!({}),
+    );
+    let _ok = m.run(cancel("alice", c)).unwrap();
+
+    let c = consent(&mut bob, &subject, "__delete_deployment", &json!({}));
     let _ok = m
         .run(SystemCmd::DeleteDeployment {
             deployment: id.clone(),
-            actor: "alice".into(),
+            actor: "bob".into(),
             consent: c,
         })
         .unwrap();
@@ -9488,6 +11765,112 @@ fn a_deployment_holds_secrets_the_releases_its_offers_use_declare() {
     assert!(filled("notes-1", "notes").is_empty());
 }
 
+/// A unit member a deployment's instance creates from a release of its offer's own signer
+/// (`api::apps::unit_members`) reads the deployment's secret, though no one acting for the
+/// deployment's owner may use that release.
+#[test]
+fn a_member_of_its_offers_signer_reads_the_deployments_secret() {
+    use super::{cluster_version::Feature, Deployer, Deployments, Visibility};
+    let mut m = deploying(Deployments::Open);
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    let uses = json!({ "inference": { "package": "pi", "range": "*" } });
+    for cmd in [
+        install_release("pi", "1.0.0", &["PI_KEY"], Value::Null),
+        install_release("notes", "1.0.0", &["PI_KEY"], uses),
+        create_deployment("a", Deployer::Account("alice".into()), "alice"),
+        SystemCmd::OfferApp {
+            deployment: "a".into(),
+            app: "notes".into(),
+            package: "notes".into(),
+            version: "1.0.0".into(),
+            actor: "alice".into(),
+            at: 10,
+            consent: Value::Null,
+        },
+        set_secret("a", "PI_KEY", "devs-key", "alice"),
+    ] {
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    // pi becomes private to an organization alice is not in; its signer is notes'.
+    if let Some(v) = m
+        .state
+        .packages
+        .get_mut("pi")
+        .and_then(|p| p.versions.get_mut("1.0.0"))
+    {
+        v.visibility = Some(Visibility::Private);
+        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    }
+    let _prev = m.state.apps.insert(
+        "member".into(),
+        serde_json::from_value(json!({
+            "appId": "member", "name": "member", "group": 2, "bundle": "b-pi-1.0.0",
+            "owner": "bob", "org": p("bob"), "replicas": [1], "createdAt": 10,
+            "deployment": "a", "release": { "package": "pi", "version": "1.0.0" },
+        }))
+        .unwrap(),
+    );
+    assert!(m.state.deployment_secrets_of("member", "pi").is_some());
+}
+
+/// A deployment holds no secret a used release declares that no one acting for its owner
+/// may use, from the logged version that brings private releases; below it, as it applied.
+#[test]
+fn a_used_release_its_owner_may_not_use_declares_no_deployment_secret() {
+    use super::{cluster_version::Feature, Deployer, Deployments, Visibility, UNDECLARED_SECRET};
+    let mut m = deploying(Deployments::Open);
+    let _ok = m
+        .run_unproven(install_release("pi", "1.0.0", &["PI_KEY"], Value::Null))
+        .unwrap();
+    let uses = json!({ "inference": { "package": "pi", "range": "*" } });
+    let _ok = m
+        .run_unproven(install_release("notes", "1.0.0", &[], uses))
+        .unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::OfferApp {
+            deployment: "a".into(),
+            app: "notes".into(),
+            package: "notes".into(),
+            version: "1.0.0".into(),
+            actor: "alice".into(),
+            at: 10,
+            consent: Value::Null,
+        })
+        .unwrap();
+    // pi, another publisher's, becomes private to an organization alice is not in.
+    if let Some(pi) = m.state.packages.get_mut("pi") {
+        pi.signer_id = "did:key:other".into();
+        if let Some(v) = pi.versions.get_mut("1.0.0") {
+            v.visibility = Some(Visibility::Private);
+            v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+        }
+    }
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    assert!(old
+        .run_unproven(set_used_secret("a", "PI_KEY", "k", "alice"))
+        .is_ok());
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(
+        m.run_unproven(set_used_secret("a", "PI_KEY", "k", "alice"))
+            .unwrap_err(),
+        UNDECLARED_SECRET
+    );
+    assert!(m
+        .state
+        .deployment_declarers(&m.state.deployments["a"])
+        .is_empty());
+}
+
 /// A release recorded before its `uses` were kept reads with none and writes as it did; an
 /// install of the same `.mpk` again fills them in, and nothing else of the record changes.
 /// An entry from before `used` reads as `false` and writes as it was.
@@ -9788,6 +12171,7 @@ fn add_origin(actor: &str, package: &str, origin: &str, rp_id: &str, consent: Va
         origin: origin.into(),
         rp_id: rp_id.into(),
         served: false,
+        registration: String::new(),
         actor: actor.into(),
         at: 1,
         consent,
@@ -9800,6 +12184,7 @@ fn add_served(actor: &str, origin: &str, rp_id: &str, consent: Value) -> SystemC
         origin: origin.into(),
         rp_id: rp_id.into(),
         served: true,
+        registration: String::new(),
         actor: actor.into(),
         at: 1,
         consent,
@@ -10242,6 +12627,7 @@ fn set_key(key: Option<String>, actor: &str, consent: serde_json::Value) -> Syst
         at: 10,
         actor: actor.into(),
         consent,
+        deployment_needs_recovery: false,
     }
 }
 
@@ -10377,6 +12763,18 @@ fn recovery_needs_the_owners_passkey_the_seed_and_the_delay() {
     );
     let by_alice_for_carol = consent(&mut alice, "org:org", "__finish_recovery", &args);
     assert!(m.run(finish("carol", ready, by_alice_for_carol)).is_err());
+    let _prev = m.state.package_origins.insert(
+        NOTES.into(),
+        crate::origins::PackageOrigin {
+            package: "p".into(),
+            rp_id: "notes.example.com".into(),
+            added_by: "alice".into(),
+            added_at: 1,
+            served: false,
+            app: Some("app".into()),
+            registration: "r".into(),
+        },
+    );
     let done = m
         .run(finish(
             "carol",
@@ -10393,6 +12791,11 @@ fn recovery_needs_the_owners_passkey_the_seed_and_the_delay() {
     assert_eq!(
         m.state.apps["app"].owner, "carol",
         "the org's apps moved with it"
+    );
+    assert_eq!(m.state.origins_of_app("app").count(), 0);
+    assert!(
+        m.state.origin_registration(NOTES, Some("p"), "r").is_none(),
+        "the previous owner's sessions there end"
     );
     // Alice's passkeys and account are her own still.
     assert!(m.state.accounts.contains_key("alice"));
@@ -12038,9 +14441,72 @@ fn an_instance_from_a_deployment_moves_only_to_what_it_offers() {
     );
 }
 
-/// C8's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
-/// member) with `inst` on `p@1.0.0`; `p@1.0.1` ships the same WASM and destinations
-/// (green), `p@1.1.0` adds a telemetry host (red).
+/// A deployment's offer moves an instance only while it serves: once the release it names is
+/// one nobody who acts for the deployment's owner may use, an upgrade to it is refused
+/// `OUTSIDE_DEPLOYMENT` from the logged version that brings private releases; an entry
+/// logged below it replays as it applied.
+#[test]
+fn an_offer_that_no_longer_serves_moves_no_instance_from_the_version_that_brings_the_rule() {
+    use super::{cluster_version::Feature, Deployer, Deployments, OUTSIDE_DEPLOYMENT};
+    let mut m = deploying(Deployments::Open);
+    let _ok = m.run_unproven(install_declaring("alice", "1.0.0")).unwrap();
+    let _ok = m.run_unproven(install_declaring("alice", "2.0.0")).unwrap();
+    let _ok = m
+        .run_unproven(create_deployment(
+            "a",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "1.0.0", "alice"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(instance("i1", "bob", "b-1.0.0", Some("a")))
+        .unwrap();
+    m.state.apps.get_mut("i1").unwrap().release = Some(PackageRef {
+        package: "p".into(),
+        version: "1.0.0".into(),
+        service: None,
+        compute: false,
+    });
+    let _ok = m
+        .run_unproven(offer_app("a", "notes", "2.0.0", "alice"))
+        .unwrap();
+    // 2.0.0 becomes private to an organization alice is not in: her offer no longer serves.
+    if let Some(v) = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.get_mut("2.0.0"))
+    {
+        v.visibility = Some(super::Visibility::Private);
+        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    }
+    let mut up = upgrade_to("i1", "bob", "b-2.0.0", Some(("p", "2.0.0")));
+    if let SystemCmd::UpgradeApp { in_deployment, .. } = &mut up {
+        *in_deployment = true;
+    }
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    old.state.cluster_version = Some(Feature::UpgradeInDeployment.since().to_owned());
+    assert!(
+        old.run_unproven(up.clone()).is_ok(),
+        "replayed as it applied"
+    );
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(m.run_unproven(up).unwrap_err(), OUTSIDE_DEPLOYMENT);
+    assert_eq!(
+        m.state.apps["i1"].release.as_ref().unwrap().version,
+        "1.0.0"
+    );
+}
+
+/// The update-classification fixture: `publishing`'s customer `cust` (cora its owner, eve
+/// an admin, dan a member) with `inst` on `p@1.0.0`; `p@1.0.1` ships the same WASM and
+/// destinations (green), `p@1.1.0` adds a telemetry host (red).
 fn classified() -> SystemMachine {
     let (_key, signer) = publisher_key(41);
     let mut m = publishing(&signer, "owner");
@@ -12195,6 +14661,94 @@ fn an_updates_class_is_judged_against_the_log_and_recorded() {
             .unwrap_err(),
         UPGRADE_CLASS_MISMATCH
     );
+}
+
+/// An upgrade into a release declaring `lineage: pinned` is red with `pinsLineage`, judged
+/// against the log, and pins the instance to the package and its signer: an older release
+/// is refused from then on, and a later release that declares nothing keeps the pin.
+#[test]
+fn an_upgrade_into_a_pinning_release_pins_the_instance() {
+    use super::cluster_version::Feature;
+    use super::{LINEAGE_OLDER_RELEASE, UPGRADE_CLASS_MISMATCH};
+    let mut m = classified();
+    m.state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .get_mut("1.0.1")
+        .unwrap()
+        .lineage = calimero_bundle::Lineage::Pinned;
+    let pins = crate::types::UpgradeClass {
+        class: calimero_bundle::update::Class::Red,
+        reasons: vec![calimero_bundle::update::Reason::PinsLineage {
+            member: None,
+            package: "p".into(),
+        }],
+    };
+    assert_eq!(
+        m.run_unproven(classified_upgrade("cora", "1.0.1", Some(green()), 10)),
+        Err(UPGRADE_CLASS_MISMATCH),
+        "the log shows the pin"
+    );
+    assert_eq!(m.state.apps["inst"].lineage, None);
+    let up = classified_upgrade("cora", "1.0.1", Some(pins), 10);
+    assert!(up.features().contains(&Feature::PinnedLineage));
+    let _ok = m.run_unproven(up).unwrap();
+    let signer = m.state.packages["p"].signer_id.clone();
+    let pinned = |floor: &str| {
+        Some(crate::types::AppLineage {
+            package: "p".into(),
+            signer_id: signer.clone(),
+            floor: floor.into(),
+        })
+    };
+    assert_eq!(m.state.apps["inst"].lineage, pinned("1.0.1"));
+    assert_eq!(
+        m.run_unproven(classified_upgrade("cora", "1.0.0", None, 11)),
+        Err(LINEAGE_OLDER_RELEASE)
+    );
+    let _ok = m
+        .run_unproven(classified_upgrade(
+            "cora",
+            "1.1.0",
+            Some(red(&["https://telemetry.example/"])),
+            12,
+        ))
+        .unwrap();
+    assert_eq!(
+        m.state.apps["inst"].lineage,
+        pinned("1.1.0"),
+        "nothing clears it"
+    );
+}
+
+/// `pinsLineage` names a new pin only: an instance pinned already, now on a release that
+/// declares nothing, moves into a pinning one green, and a green claim applies.
+#[test]
+fn an_instance_pinned_already_is_not_pinned_again() {
+    let mut m = classified();
+    m.state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .get_mut("1.0.1")
+        .unwrap()
+        .lineage = calimero_bundle::Lineage::Pinned;
+    let signer = m.state.packages["p"].signer_id.clone();
+    let pinned = |floor: &str| {
+        Some(crate::types::AppLineage {
+            package: "p".into(),
+            signer_id: signer.clone(),
+            floor: floor.into(),
+        })
+    };
+    m.state.apps.get_mut("inst").unwrap().lineage = pinned("1.0.0");
+    let _ok = m
+        .run_unproven(classified_upgrade("cora", "1.0.1", Some(green()), 10))
+        .unwrap();
+    assert_eq!(m.state.apps["inst"].lineage, pinned("1.0.1"));
 }
 
 /// An organization's update policy, and an app's own over it, are set by an owner or
@@ -12447,12 +15001,66 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
     assert!(m.state.orgs["cust"].pending_upgrades.is_empty());
 }
 
+/// A first approval names only a release its approver may use, from the logged version that
+/// brings private releases: one private to another organization is refused as a missing
+/// one, and an entry logged below it replays as it applied.
+#[test]
+fn a_first_approval_of_a_release_its_approver_may_not_use_is_refused() {
+    use super::cluster_version::Feature;
+    use crate::types::UpgradePolicy;
+    let mut m = classified();
+    let _ok = m
+        .run_unproven(SystemCmd::SetUpgradePolicy {
+            org: "cust".into(),
+            app: None,
+            policy: Some(UpgradePolicy {
+                second_approver: true,
+                ..UpgradePolicy::default()
+            }),
+            actor: "eve".into(),
+            consent: Value::Null,
+        })
+        .unwrap();
+    if let Some(v) = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.get_mut("1.1.0"))
+    {
+        v.visibility = Some(super::Visibility::Private);
+        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    }
+    let approve = SystemCmd::ApproveUpgrade {
+        app_id: "inst".into(),
+        package: "p".into(),
+        version: "1.1.0".into(),
+        targets: std::collections::BTreeMap::new(),
+        class: red(&["https://telemetry.example/"]),
+        actor: "cora".into(),
+        at: 5,
+        consent: Value::Null,
+    };
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    assert!(
+        old.run_unproven(approve.clone()).is_ok(),
+        "replayed as it applied"
+    );
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert_eq!(
+        m.run_unproven(approve),
+        Err("that release is not installed".into())
+    );
+}
+
 // ------------------------------------------------------- updates on their own, undo
 
-/// C9's fixture: `publishing`'s customer `cust` (cora its owner, eve an admin, dan a
-/// member) with `inst` on `p@1.0.0` (bundle `b1`), and nodes 1 and 2. No release sends
-/// data out but `1.1.0`: `1.0.1` (`b3`, installed at 1000) and `1.0.2` (`b3` again) are
-/// green, `1.1.0` (`b2`) adds a telemetry host.
+/// The fixture of updates on their own and undo: `publishing`'s customer `cust` (cora its
+/// owner, eve an admin, dan a member) with `inst` on `p@1.0.0` (bundle `b1`), and nodes 1
+/// and 2. No release sends data out but `1.1.0`: `1.0.1` (`b3`, installed at 1000) and
+/// `1.0.2` (`b3` again) are green, `1.1.0` (`b2`) adds a telemetry host.
 fn auto_fixture() -> SystemMachine {
     let (_key, signer) = publisher_key(43);
     let mut m = publishing(&signer, "owner");
@@ -12696,6 +15304,58 @@ fn a_green_update_applies_on_its_own_after_its_hold_under_the_policy() {
         )),
         Err(AUTO_UPDATE_REFUSED)
     );
+}
+
+/// An update applies on its own only to a release the app's owner may use: a stranger to
+/// the organization a private release was installed for never moves onto it, from a public
+/// one or any other, from the logged version that brings private releases; an entry logged
+/// below it replays as it applied.
+#[test]
+fn an_update_on_its_own_moves_only_to_a_release_its_owner_may_use() {
+    use super::cluster_version::Feature;
+    use super::{Visibility, AUTO_UPDATE_REFUSED};
+    let hold_over = 1000 + 24 * 3600;
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let p = m.state.packages.get_mut("p").unwrap();
+    p.versions.get_mut("1.0.0").unwrap().visibility = Some(Visibility::Public);
+    for v in ["1.0.1", "1.0.2"] {
+        let v = p.versions.get_mut(v).unwrap();
+        v.visibility = Some(Visibility::Private);
+        v.orgs = BTreeSet::from(["pub".to_owned()]);
+    }
+    let cmd = auto_upgrade(
+        "1.0.1",
+        "b3",
+        Some(green()),
+        hold_over,
+        Some(taken_on(1, 7)),
+    );
+    let mut old = SystemMachine {
+        state: m.state.clone(),
+        ..Default::default()
+    };
+    let _ok = old.run(cmd.clone()).expect("replayed as it applied");
+
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert!(m.state.auto_update_candidates(hold_over).is_empty());
+    assert_eq!(m.run(cmd.clone()), Err(AUTO_UPDATE_REFUSED.to_owned()));
+    assert_eq!(m.state.apps["inst"].bundle, "b1");
+    // Installed for the app's own organization too, it is its owner's to move onto.
+    let _new = m
+        .state
+        .packages
+        .get_mut("p")
+        .unwrap()
+        .versions
+        .get_mut("1.0.1")
+        .unwrap()
+        .orgs
+        .insert("cust".to_owned());
+    let found = m.state.auto_update_candidates(hold_over);
+    assert_eq!(found[0].1.len(), 1, "{found:?}");
+    assert_eq!(found[0].1[0].version, "1.0.1");
+    let _ok = m.run(cmd).unwrap();
 }
 
 /// For a week after an upgrade, an owner or admin undoes it with their passkey: the app
@@ -13056,6 +15716,42 @@ fn a_deployment_instances_hold_runs_from_its_offer() {
     );
     let _ok = m.run(up(2000 + day)).unwrap();
     assert_eq!(m.state.apps["inst"].bundle, "b3");
+}
+
+/// An instance of a deployment updates on its own only from an offer that still serves: once
+/// nobody who acts for the deployment's owner may use the offered release, the leader finds
+/// nothing to apply, from the logged version that brings private releases.
+#[test]
+fn a_deployment_instance_updates_on_its_own_only_from_an_offer_that_serves() {
+    use super::{cluster_version::Feature, Deployer};
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let _ok = m
+        .run_unproven(create_deployment(
+            "d",
+            Deployer::Account("pam".into()),
+            "pam",
+        ))
+        .unwrap();
+    let _ok = m
+        .run_unproven(offer_app("d", "notes", "1.0.1", "pam"))
+        .unwrap();
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.deployment = Some("d".into());
+    }
+    if let Some(v) = m
+        .state
+        .packages
+        .get_mut("p")
+        .and_then(|p| p.versions.get_mut("1.0.1"))
+    {
+        v.visibility = Some(super::Visibility::Private);
+        v.orgs = std::collections::BTreeSet::from(["elsewhere".to_owned()]);
+    }
+    let later = 10 * 24 * 3600;
+    assert_eq!(m.state.auto_update_candidates(later).len(), 1, "as before");
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().to_owned());
+    assert!(m.state.auto_update_candidates(later).is_empty());
 }
 
 /// A move the log cannot rebuild (the release the app runs, or a member's, no longer
@@ -13604,6 +16300,473 @@ fn an_automatic_failure_is_judged_on_the_derived_release_of_an_app_without_one()
         .is_some_and(|u| !u.ok));
 }
 
+/// From the cluster version that brings `Feature::DeploymentNeedsRecovery`, or an entry
+/// judged by it, an organization owns a deployment only with a recovery key: it creates
+/// one only holding a key, and cannot remove the key while it owns one, though it may
+/// rotate it. An account's deployment needs none, and an entry logged before applies as it did.
+#[test]
+fn an_organization_owns_a_deployment_only_with_a_recovery_key() {
+    use super::{Deployer, Deployments, RECOVERY_KEY_REQUIRED};
+    let mut m = deploying(Deployments::Open);
+    let org = || Deployer::Org("org".into());
+    let needing = |mut cmd: SystemCmd| {
+        if let SystemCmd::CreateDeployment {
+            deployment_needs_recovery,
+            ..
+        }
+        | SystemCmd::SetRecoveryKey {
+            deployment_needs_recovery,
+            ..
+        } = &mut cmd
+        {
+            *deployment_needs_recovery = true;
+        }
+        cmd
+    };
+
+    // Logged before the rule: an organization without a key creates one, and removes a key.
+    let _ok = m
+        .run_unproven(create_deployment("before", org(), "carol"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(set_key(Some(public(&SEED)), "alice", Value::Null))
+        .unwrap();
+    let _ok = m.run_unproven(set_key(None, "alice", Value::Null)).unwrap();
+    // An entry judged by the rule is refused below the version too.
+    assert_eq!(
+        m.run_unproven(needing(create_deployment("flagged", org(), "carol")))
+            .unwrap_err(),
+        RECOVERY_KEY_REQUIRED
+    );
+    let _ok = m
+        .run_unproven(set_key(Some(public(&SEED)), "alice", Value::Null))
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(needing(set_key(None, "alice", Value::Null)))
+            .unwrap_err(),
+        RECOVERY_KEY_REQUIRED
+    );
+    let _ok = m.run_unproven(set_key(None, "alice", Value::Null)).unwrap();
+
+    let rc38 = "1.0.0-rc.38";
+    register(&mut m, 1, "replica");
+    let _ok = m
+        .run_unproven(SystemCmd::SetClusterVersion {
+            version: rc38.into(),
+            nodes: [(1, rc38.to_owned())].into(),
+        })
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(create_deployment("after", org(), "carol"))
+            .unwrap_err(),
+        RECOVERY_KEY_REQUIRED
+    );
+    // An account's deployment needs no key.
+    let _ok = m
+        .run_unproven(create_deployment(
+            "mine",
+            Deployer::Account("alice".into()),
+            "alice",
+        ))
+        .unwrap();
+
+    let _ok = m
+        .run_unproven(set_key(Some(public(&SEED)), "alice", Value::Null))
+        .unwrap();
+    let _ok = m
+        .run_unproven(create_deployment("after", org(), "carol"))
+        .unwrap();
+    // Owning one: the key rotates but is not removed; a member is told only that the key is
+    // the owner's, never whether the organization owns a deployment.
+    assert_eq!(
+        m.run_unproven(set_key(None, "carol", Value::Null))
+            .unwrap_err(),
+        super::OWNER_ONLY_RECOVERY
+    );
+    assert_eq!(
+        m.run_unproven(set_key(None, "alice", Value::Null))
+            .unwrap_err(),
+        RECOVERY_KEY_REQUIRED
+    );
+    let _ok = m
+        .run_unproven(set_key(Some(public(&[7; 32])), "alice", Value::Null))
+        .unwrap();
+    assert_eq!(
+        m.state.orgs["org"]
+            .recovery
+            .as_ref()
+            .map(|r| r.public_key.clone()),
+        Some(public(&[7; 32]))
+    );
+}
+
+// ------------------------------------------------------ deployment transfer
+
+fn offer_deployment(deployment: &str, to: super::Deployer, actor: &str, at: u64) -> SystemCmd {
+    SystemCmd::OfferDeployment {
+        deployment: deployment.into(),
+        to,
+        actor: actor.into(),
+        at,
+        consent: serde_json::Value::Null,
+    }
+}
+
+/// An acceptance of the offer made at `offered_at`.
+fn accept_deployment(
+    deployment: &str,
+    to: super::Deployer,
+    offered_at: u64,
+    actor: &str,
+    at: u64,
+) -> SystemCmd {
+    SystemCmd::AcceptDeployment {
+        deployment: deployment.into(),
+        to,
+        offered_at,
+        actor: actor.into(),
+        at,
+        consent: serde_json::Value::Null,
+    }
+}
+
+fn cancel_transfer(deployment: &str, actor: &str) -> SystemCmd {
+    SystemCmd::CancelDeploymentTransfer {
+        deployment: deployment.into(),
+        actor: actor.into(),
+        consent: serde_json::Value::Null,
+    }
+}
+
+/// A deployment changes hands when its owner offers it and a manager of the receiver accepts
+/// in time; see `governance.mdx`, "Transfer", for every rule this walks through.
+#[test]
+fn a_deployment_changes_hands_when_its_receiver_accepts() {
+    use super::{
+        Deployer, Deployments, NOT_A_DEPLOYER, NO_TRANSFER, OFFERS_NOT_USABLE,
+        RECOVERY_KEY_REQUIRED, TRANSFER_LAPSED, TRANSFER_PENDING, TRANSFER_STALE,
+        TRANSFER_TTL_SECS,
+    };
+    let mut m = deploying(Deployments::Granted);
+    // Transfers are proposed only once every node runs the release that brings them.
+    register(&mut m, 1, "replica");
+    let _ok = m
+        .run_unproven(SystemCmd::SetClusterVersion {
+            version: "1.0.0-rc.38".into(),
+            nodes: [(1, "1.0.0-rc.38".to_owned())].into(),
+        })
+        .unwrap();
+    for who in ["dave", "erin"] {
+        let _ok = m.run_unproven(account(who)).unwrap();
+    }
+    let org = || Deployer::Org("org".into());
+    let dave = || Deployer::Account("dave".into());
+    let erin = || Deployer::Account("erin".into());
+    let grant = |who: Deployer| SystemCmd::GrantDeployer {
+        deployer: who,
+        until: None,
+        at: 1,
+        actor: super::OPERATOR.into(),
+        proof: None,
+        consent: None,
+    };
+    for who in [dave(), org()] {
+        let _ok = m.run_unproven(grant(who)).unwrap();
+    }
+    let _ok = m
+        .run_unproven(create_deployment("d", dave(), "dave"))
+        .unwrap();
+    let _ok = m.run_unproven(install_declaring("dave", "1.0.0")).unwrap();
+    let _ok = m
+        .run_unproven(offer_app("d", "notes", "1.0.0", "dave"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(set_secret("d", "API_KEY", "dave-key", "dave"))
+        .unwrap();
+    let _ok = m
+        .run_unproven(instance("i1", "bob", "b-1.0.0", Some("d")))
+        .unwrap();
+    let manages_not = |e: super::Rejection| assert!(e.message().contains("manage"), "{e}");
+
+    // Only a manager offers, to another owner that exists.
+    manages_not(
+        m.run_unproven(offer_deployment("d", org(), "carol", 100))
+            .unwrap_err(),
+    );
+    assert_eq!(
+        m.run_unproven(offer_deployment("d", dave(), "dave", 100)),
+        Err("the deployment is that owner's already".into())
+    );
+    assert_eq!(
+        m.run_unproven(offer_deployment(
+            "d",
+            Deployer::Org("nope".into()),
+            "dave",
+            100
+        )),
+        Err("no such account or organization".into())
+    );
+    let _ok = m
+        .run_unproven(offer_deployment("d", org(), "dave", 100))
+        .unwrap();
+    assert_eq!(
+        m.run_unproven(offer_deployment("d", erin(), "dave", 101)),
+        Err(TRANSFER_PENDING)
+    );
+
+    // The receiver: a manager of `to`, naming it and the offer, with a recovery key for an
+    // organization.
+    let accepted_by = |e: super::Rejection| assert!(e.message().contains("accepted by"), "{e}");
+    accepted_by(
+        m.run_unproven(accept_deployment("d", org(), 100, "bob", 110))
+            .unwrap_err(),
+    );
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", erin(), 100, "erin", 110)),
+        Err(NO_TRANSFER)
+    );
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", org(), 99, "carol", 110)),
+        Err(NO_TRANSFER),
+        "another offer than the one waiting"
+    );
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", org(), 100, "carol", 110)),
+        Err(RECOVERY_KEY_REQUIRED)
+    );
+    let _ok = m
+        .run_unproven(set_key(Some(public(&SEED)), "alice", Value::Null))
+        .unwrap();
+    // Lapsed one second after its last day: refused, and no longer blocking a new offer.
+    let last = 100 + TRANSFER_TTL_SECS;
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", org(), 100, "carol", last + 1)),
+        Err(TRANSFER_LAPSED)
+    );
+    let late = last + 1;
+    let _ok = m
+        .run_unproven(offer_deployment("d", erin(), "dave", late))
+        .unwrap();
+    // erin holds no deployer grant on this granted cluster, nor after one is revoked.
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", erin(), late, "erin", late + 1)),
+        Err(NOT_A_DEPLOYER)
+    );
+    // Either side cancels; a stranger does not, and a cancelled offer is not accepted.
+    assert!(m
+        .run_unproven(cancel_transfer("d", "bob"))
+        .unwrap_err()
+        .message()
+        .contains("cancelled by"));
+    let _ok = m.run_unproven(cancel_transfer("d", "erin")).unwrap();
+    assert_eq!(
+        m.run_unproven(cancel_transfer("d", "dave")),
+        Err(NO_TRANSFER)
+    );
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", erin(), late, "erin", late + 2)),
+        Err(NO_TRANSFER)
+    );
+
+    // On its last second the offer is still live; the deployment changes hands, its offers
+    // and instances stay, and dave's secret values do not go with it.
+    let at = late + 3;
+    let _ok = m
+        .run_unproven(offer_deployment("d", org(), "dave", at))
+        .unwrap();
+    accepted_by(
+        m.run_unproven(accept_deployment("d", org(), at, "bob", at))
+            .unwrap_err(),
+    );
+    // The receiver must use every release the deployment offers, or the offer would stop
+    // serving its customers: dave's install is his alone until carol installs it too.
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", org(), at, "carol", at)),
+        Err(OFFERS_NOT_USABLE)
+    );
+    let _ok = m.run_unproven(install_declaring("carol", "1.0.0")).unwrap();
+    let done = m
+        .run_unproven(accept_deployment(
+            "d",
+            org(),
+            at,
+            "carol",
+            at + TRANSFER_TTL_SECS,
+        ))
+        .unwrap();
+    assert_eq!(done["secretsDropped"], json!(["API_KEY"]), "{done}");
+    assert!(!m.state.deployment_secrets.contains_key("d"));
+    let d = &m.state.deployments["d"];
+    assert_eq!(d.owner, org());
+    assert_eq!(d.transfer, None);
+    assert_eq!(
+        d.transferred,
+        Some(super::Transferred {
+            from: dave(),
+            at: at + TRANSFER_TTL_SECS
+        })
+    );
+    assert_eq!(d.apps["notes"].version, "1.0.0");
+    assert_eq!(m.state.apps["i1"].deployment.as_deref(), Some("d"));
+    // The old owner no longer manages it; the new one does.
+    manages_not(
+        m.run_unproven(withdraw_app("d", "notes", "dave"))
+            .unwrap_err(),
+    );
+    manages_not(
+        m.run_unproven(offer_deployment("d", dave(), "dave", at + 1))
+            .unwrap_err(),
+    );
+    // The org's key stays while it owns the deployment.
+    assert_eq!(
+        m.run_unproven(set_key(None, "alice", Value::Null)),
+        Err(RECOVERY_KEY_REQUIRED)
+    );
+
+    // Managing an organization's deployment is not handing it over: carol, who holds
+    // MANAGE_APPLICATION, cannot move it to her own account; an owner or admin can.
+    let now = at + TRANSFER_TTL_SECS + 1;
+    let carol = || Deployer::Account("carol".into());
+    let _ok = m.run_unproven(grant(carol())).unwrap();
+    assert_eq!(
+        m.run_unproven(offer_deployment("d", carol(), "carol", now)),
+        Err(super::NOT_HANDING_OVER)
+    );
+    // An offer outlives nobody's authority: bob, an admin, offers it, then is made a plain
+    // member again, though one who still manages its apps (as a removal or the
+    // organization's recovery would end it too), and the offer is stale.
+    if let Some(o) = m.state.orgs.get_mut("org") {
+        let _prev = o
+            .capabilities
+            .insert("bob".into(), crate::types::caps::MANAGE_APPLICATION);
+    }
+    let role = |m: &mut SystemMachine, r: OrgRole| {
+        if let Some(o) = m.state.orgs.get_mut("org") {
+            let _prev = o.members.insert("bob".into(), r);
+        }
+    };
+    role(&mut m, OrgRole::Admin);
+    let _ok = m
+        .run_unproven(offer_deployment("d", dave(), "bob", now))
+        .unwrap();
+    role(&mut m, OrgRole::Member);
+    assert_eq!(
+        m.run_unproven(accept_deployment("d", dave(), now, "dave", now + 1)),
+        Err(TRANSFER_STALE)
+    );
+
+    // The receiver's quota counts at acceptance too.
+    let _ok = m.run_unproven(cancel_transfer("d", "alice")).unwrap();
+    for n in 0..super::MAX_DEPLOYMENTS_PER_OWNER {
+        let _ok = m
+            .run_unproven(create_deployment(&format!("dave{n}"), dave(), "dave"))
+            .unwrap();
+    }
+    let _ok = m
+        .run_unproven(offer_deployment("d", dave(), "alice", now + 2))
+        .unwrap();
+    assert!(m
+        .run_unproven(accept_deployment("d", dave(), now + 2, "dave", now + 3))
+        .unwrap_err()
+        .message()
+        .starts_with(super::QUOTA_PREFIX));
+}
+
+/// A customer is shown a deployment's new owner until a person approves an update of
+/// their instance; meanwhile nothing updates it on its own. An update that applied on its
+/// own, failed or was undone showed no sheet, so it does not count.
+#[test]
+fn a_new_owner_reaches_its_customers_on_a_sheet_before_any_update_applies_alone() {
+    use super::{Deployer, Transferred, AUTO_UPDATE_REFUSED};
+    let mut m = auto_fixture();
+    automatic(&mut m, 24);
+    let _ok = m
+        .run_unproven(create_deployment(
+            "d",
+            Deployer::Account("pam".into()),
+            "pam",
+        ))
+        .unwrap();
+    let mut offer = offer_app("d", "notes", "1.0.1", "pam");
+    if let SystemCmd::OfferApp { at, .. } = &mut offer {
+        *at = 2000;
+    }
+    let _ok = m.run_unproven(offer).unwrap();
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.deployment = Some("d".into());
+    }
+    let after_hold = 2000 + 24 * 3600;
+    let ready = |m: &SystemMachine| !m.state.auto_update_candidates(after_hold).is_empty();
+    assert!(ready(&m));
+    assert!(!m.state.handed_over_unseen(&m.state.apps["inst"]));
+
+    if let Some(d) = m.state.deployments.get_mut("d") {
+        d.transferred = Some(Transferred {
+            from: Deployer::Account("pam".into()),
+            at: 1500,
+        });
+    }
+    assert!(m.state.handed_over_unseen(&m.state.apps["inst"]));
+    assert!(!ready(&m));
+    let up = auto_upgrade(
+        "1.0.1",
+        "b3",
+        Some(green()),
+        after_hold,
+        Some(taken_on(1, 4)),
+    );
+    assert_eq!(m.run(up), Err(AUTO_UPDATE_REFUSED));
+
+    // A person's own upgrade after the hand-over is seen, and stays seen after an update
+    // that then applies on its own.
+    assert_eq!(m.state.apps["inst"].owner_seen_at, None);
+    let mut by_cora = classified_upgrade("cora", "1.0.1", Some(green()), 1600);
+    if let SystemCmd::UpgradeApp { bundle, .. } = &mut by_cora {
+        *bundle = "b3".into();
+    }
+    let _ok = m.run_unproven(by_cora).unwrap();
+    assert_eq!(m.state.apps["inst"].owner_seen_at, Some(1600));
+    assert!(!m.state.handed_over_unseen(&m.state.apps["inst"]));
+    if let Some(a) = m.state.apps.get_mut("inst") {
+        a.owner_seen_at = Some(1501);
+        a.bundle = "b1".into();
+        a.release = Some(PackageRef {
+            package: "p".into(),
+            version: "1.0.0".into(),
+            service: None,
+            compute: false,
+        });
+    }
+    let _ok = m
+        .run(auto_upgrade(
+            "1.0.1",
+            "b3",
+            Some(green()),
+            after_hold,
+            Some(taken_on(1, 5)),
+        ))
+        .unwrap();
+    assert_eq!(
+        m.state.apps["inst"].owner_seen_at,
+        Some(1501),
+        "an update on its own"
+    );
+    assert!(!m.state.handed_over_unseen(&m.state.apps["inst"]));
+}
+
+/// A deployment written before transfers has neither a pending offer nor a hand-over,
+/// and writes the bytes it did.
+#[test]
+fn a_deployment_from_before_transfers_reads_with_none_and_writes_as_before() {
+    let before = json!({
+        "id": "d", "name": "acme", "owner": { "account": "alice" }, "apps": {},
+        "createdBy": "alice", "createdAt": 1,
+    });
+    let d: super::Deployment = serde_json::from_value(before.clone()).unwrap();
+    assert_eq!((d.transfer.clone(), d.transferred.clone()), (None, None));
+    assert_eq!(serde_json::to_value(&d).unwrap(), before);
+}
+
 /// `inst` with a member `kv` of package `q` on 0.1.0, under the automatic policy:
 /// `p` 1.0.1's lock pins `kv` at 0.1.1 (it would move the member), 1.0.2's at 0.1.0.
 fn auto_unit_fixture() -> SystemMachine {
@@ -13698,7 +16861,11 @@ fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
             .collect()
     };
     assert_eq!(versions(&m), ["1.0.2", "1.0.1"]);
-    m.state.cluster_version = Some(Feature::AutoUpdateMembersStay.since().into());
+    // rc.38 also brings who may use a release: the owner uses these, as public ones.
+    for v in m.state.packages.get_mut("p").unwrap().versions.values_mut() {
+        v.visibility = Some(super::Visibility::Public);
+    }
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().into());
     assert_eq!(versions(&m), ["1.0.2"]);
     assert_eq!(m.run(moving(false)), Err(AUTO_UPDATE_REFUSED));
     // A release whose lock keeps the member where it is still applies on its own.
@@ -13717,4 +16884,839 @@ fn an_update_on_its_own_that_would_move_the_units_members_is_refused() {
         m.state.apps["inst"].release.as_ref().unwrap().version,
         "1.0.2"
     );
+}
+
+/// A member's release is chosen as `unit_members` chooses it for the instance's owner: a
+/// private release installed for another organization never makes an update on its own
+/// move the unit's members.
+#[test]
+fn another_orgs_private_member_release_does_not_refuse_an_update_on_its_own() {
+    use super::cluster_version::Feature;
+    let mut m = auto_unit_fixture();
+    let hold_over = 1000 + 24 * 3600;
+    m.state.cluster_version = Some(Feature::PrivateReleases.since().into());
+    let q = m.state.packages.get_mut("q").unwrap();
+    q.signer_id = "did:key:other".into();
+    for v in q.versions.values_mut() {
+        v.visibility = Some(super::Visibility::Public);
+    }
+    let private: super::PackageVersion = serde_json::from_value(json!({
+        "version": "0.1.2", "mpk": "0.1.2", "mpkSize": 1, "source": "registry",
+        "services": { "": "bq" }, "installedBy": "zed", "installedAt": 0,
+        "visibility": "private", "orgs": [p("other")],
+    }))
+    .unwrap();
+    let _prev = q.versions.insert("0.1.2".into(), private);
+    // The member runs 0.1.1; 1.0.2's lock names no release, only the range.
+    m.state.apps.get_mut("kv").unwrap().release = Some(super::PackageRef {
+        package: "q".into(),
+        version: "0.1.1".into(),
+        service: None,
+        compute: false,
+    });
+    let p = m.state.packages.get_mut("p").unwrap();
+    for v in p.versions.values_mut() {
+        v.visibility = Some(super::Visibility::Public);
+    }
+    p.versions
+        .get_mut("1.0.2")
+        .unwrap()
+        .uses
+        .get_mut("kv")
+        .unwrap()
+        .version = None;
+    let to = super::PackageRef {
+        package: "p".into(),
+        version: "1.0.2".into(),
+        service: None,
+        compute: false,
+    };
+    assert!(
+        !m.state.moves_members(&m.state.apps["inst"], &to),
+        "0.1.2 is another organization's"
+    );
+    m.state
+        .auto_update_allows(
+            &m.state.apps["inst"],
+            Some(&to),
+            Some(&green()),
+            hold_over,
+            true,
+        )
+        .unwrap();
+}
+
+/// The account that uploaded a raw bundle still names it after an organization installs a
+/// private release shipping the same WASM; no one else gains it.
+#[test]
+fn an_uploader_keeps_a_raw_bundle_a_private_release_later_ships() {
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    let _prev = m.state.bundles.insert(
+        "b9".into(),
+        serde_json::from_value(json!({ "hash": "b9", "size": 1, "uploadedBy": "alice" })).unwrap(),
+    );
+    assert!(m.state.sees_bundle("b9", "alice") && m.state.sees_bundle("b9", "bob"));
+    let _ok = m
+        .run_authorized(SystemCmd::InstallPackage {
+            package: "p".into(),
+            signer_id: "did:key:z".into(),
+            release: serde_json::from_value(json!({
+                "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "registry",
+                "services": { "": "b9" }, "installedBy": "bob", "installedAt": 1,
+                "visibility": "private", "orgs": [p("bob")],
+            }))
+            .unwrap(),
+        })
+        .unwrap();
+    assert!(m.state.sees_bundle("b9", "bob"));
+    assert!(m.state.sees_bundle("b9", "alice"), "she uploaded it");
+    assert!(!m.state.sees_bundle("b9", OPERATOR));
+}
+
+/// A deployment owned by an organization serves a private release only if one who acts
+/// for it is in an organization the release is private to, a public or catalog one always,
+/// and judges a release recorded before `visibility` member by member.
+#[test]
+fn an_org_deployment_serves_a_private_release_of_its_own_org_alone() {
+    use super::{Deployer, Deployment};
+    let mut m = SystemMachine::default();
+    let _ok = m.run_authorized(genesis(all(Authority::Owner))).unwrap();
+    for who in ["alice", "bob"] {
+        let _ok = m.run_authorized(account(who)).unwrap();
+    }
+    // alice owns A and bob owns B; alice is also a member of B, where she manages nothing.
+    let _prev = m
+        .state
+        .orgs
+        .get_mut(&p("bob"))
+        .unwrap()
+        .members
+        .insert("alice".into(), OrgRole::Member);
+    let deployment = |org: &str| Deployment {
+        id: org.into(),
+        name: org.into(),
+        owner: Deployer::Org(p(org)),
+        apps: BTreeMap::new(),
+        created_by: org.into(),
+        created_at: 0,
+        transfer: None,
+        transferred: None,
+    };
+    let release = |extra: Value| -> super::PackageVersion {
+        let mut v = json!({
+            "version": "1.0.0", "mpk": "ab", "mpkSize": 1, "source": "registry",
+            "services": { "": "b1" }, "installedBy": "alice", "installedAt": 1,
+        });
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(v).unwrap()
+    };
+    let (a, b) = (deployment("alice"), deployment("bob"));
+    let private = |orgs: &[&str]| {
+        release(json!({
+            "visibility": "private", "orgs": orgs.iter().map(|o| p(o)).collect::<Vec<_>>(),
+        }))
+    };
+    assert!(m.state.offer_serves(&a, &private(&["alice"])));
+    assert!(!m.state.offer_serves(&b, &private(&["alice"])), "not B's");
+    assert!(m.state.offer_serves(&b, &private(&["alice", "bob"])));
+    assert!(!m.state.offer_serves(&a, &private(&["zed"])), "no one of A");
+    assert!(
+        m.state.offer_serves(&a, &private(&["bob"])),
+        "alice is in B"
+    );
+    assert!(m
+        .state
+        .offer_serves(&b, &release(json!({ "visibility": "public" }))));
+    let catalog = release(json!({ "visibility": "private", "installedBy": OPERATOR }));
+    assert!(m.state.offer_serves(&b, &catalog));
+    // Before `visibility`: whoever shares an organization with an installer.
+    assert!(m.state.offer_serves(&b, &release(json!({}))));
+    assert!(!m
+        .state
+        .offer_serves(&b, &release(json!({ "installedBy": "carol" }))));
+}
+
+// ------------------------------------- held grants, invite creators, backup keys (rc.38)
+
+use super::{INVITE_CREATOR_LACKS, TEAM_NOT_SEEN};
+
+/// [`proven_cluster`] where the logged cluster version is `version` (none: a
+/// cluster that has not logged one, whose entries apply as an earlier release's).
+fn cluster_at(version: Option<&str>) -> (SystemMachine, Soft, Soft, Soft) {
+    let (mut m, alice, bob, carol) = proven_cluster();
+    m.state.cluster_version = version.map(str::to_owned);
+    (m, alice, bob, carol)
+}
+
+/// `actor`'s `SetTeamMember` writing `account`'s row in `team` with
+/// `capabilities`, with `pk`'s consent over exactly that.
+fn team_row(
+    pk: &mut Soft,
+    team: &str,
+    account: &str,
+    capabilities: Option<u32>,
+    actor: &str,
+) -> SystemCmd {
+    let c = consent(
+        pk,
+        "org:org",
+        "__set_team_member",
+        &json!({ "team": team, "account": account, "lead": false, "role": null,
+                 "capabilities": capabilities }),
+    );
+    SystemCmd::SetTeamMember {
+        org: "org".into(),
+        team: team.into(),
+        account: account.into(),
+        lead: false,
+        role: None,
+        capabilities,
+        actor: actor.into(),
+        consent: c,
+    }
+}
+
+/// `actor`'s `SetCapabilities` of `account`'s row in `team`.
+fn team_caps(
+    pk: &mut Soft,
+    team: &str,
+    account: &str,
+    capabilities: u32,
+    actor: &str,
+) -> SystemCmd {
+    let c = consent(
+        pk,
+        "org:org",
+        "__set_capabilities",
+        &json!({ "team": team, "account": account, "capabilities": capabilities }),
+    );
+    SystemCmd::SetCapabilities {
+        org: "org".into(),
+        team: Some(team.into()),
+        account: account.into(),
+        capabilities,
+        actor: actor.into(),
+        consent: c,
+    }
+}
+
+/// `actor`'s `SetDefaultCapabilities` of `team`.
+fn team_default(pk: &mut Soft, team: &str, capabilities: u32, actor: &str) -> SystemCmd {
+    let c = consent(
+        pk,
+        "org:org",
+        "__set_default_capabilities",
+        &json!({ "team": team, "capabilities": capabilities }),
+    );
+    SystemCmd::SetDefaultCapabilities {
+        org: "org".into(),
+        team: Some(team.into()),
+        capabilities,
+        actor: actor.into(),
+        consent: c,
+    }
+}
+
+/// Regression: a member holding `MANAGE_MEMBERS` (org-wide, which
+/// `Org::may` falls back to on a team without a row) wrote their own row into
+/// a restricted team they could not see, with `MANAGE_APPLICATION` there, and
+/// so managed its apps and could open them to `anyone`. From the logged
+/// version that brings `heldTeamGrants`, below admin a row, a row's
+/// capabilities and a team's default are set only on a team the actor sees
+/// and grant only bits the actor holds organization-wide, as an invite's; an
+/// entry logged before replays as it applied.
+#[test]
+fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
+    use super::cluster_version::Feature;
+    use crate::types::caps;
+
+    let escalate = caps::MANAGE_MEMBERS | caps::MANAGE_APPLICATION;
+    // Bob, a member, holds MANAGE_MEMBERS organization-wide; team `t` is closed
+    // (`join: invite`) and he is not in it.
+    let with_manage_members = |m: &mut SystemMachine| {
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.capabilities.insert("bob".into(), caps::MANAGE_MEMBERS);
+        assert!(!o.sees_team("bob", "t"));
+    };
+
+    // Before the version: the escalation applies, as an earlier release logged it.
+    let (mut m, _alice, mut bob, _carol) = cluster_at(None);
+    with_manage_members(&mut m);
+    let _ok = m
+        .run(team_row(&mut bob, "t", "bob", Some(escalate), "bob"))
+        .unwrap();
+    assert!(m.state.orgs["org"].in_team("bob", "t"));
+    assert!(
+        m.state.manages_apps("org", "bob", Some("t")),
+        "the old rule"
+    );
+
+    // From it: a team he does not see is refused, and nothing is written.
+    let (mut m, mut alice, mut bob, _carol) = cluster_at(Some(Feature::HeldTeamGrants.since()));
+    with_manage_members(&mut m);
+    assert_eq!(
+        refused(
+            &mut m,
+            team_row(&mut bob, "t", "bob", Some(escalate), "bob")
+        ),
+        TEAM_NOT_SEEN
+    );
+    assert_eq!(
+        refused(&mut m, team_row(&mut bob, "t", "bob", None, "bob")),
+        TEAM_NOT_SEEN,
+        "no row in a restricted team either"
+    );
+    assert!(!m.state.orgs["org"].in_team("bob", "t"));
+    assert!(!m.state.manages_apps("org", "bob", Some("t")));
+
+    // Once the owner puts him in `t` holding MANAGE_MEMBERS there, he still
+    // grants no bit he lacks organization-wide: not to his own row, not
+    // through the team's default, not to someone else.
+    let _ok = m
+        .run(team_row(
+            &mut alice,
+            "t",
+            "bob",
+            Some(caps::MANAGE_MEMBERS),
+            "alice",
+        ))
+        .unwrap();
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .members
+        .insert("carol".into(), OrgRole::Member);
+    assert_eq!(
+        refused(&mut m, team_caps(&mut bob, "t", "bob", escalate, "bob")),
+        super::CANNOT_GRANT_UNHELD
+    );
+    assert_eq!(
+        refused(
+            &mut m,
+            team_default(&mut bob, "t", caps::MANAGE_APPLICATION, "bob")
+        ),
+        super::CANNOT_GRANT_UNHELD
+    );
+    assert_eq!(
+        refused(
+            &mut m,
+            team_row(&mut bob, "t", "carol", Some(escalate), "bob")
+        ),
+        super::CANNOT_GRANT_UNHELD
+    );
+    assert!(!m.state.manages_apps("org", "bob", Some("t")));
+    assert!(!m.state.orgs["org"].in_team("carol", "t"));
+    // What he holds he hands on, and an unknown bit is refused to anyone.
+    let _ok = m
+        .run(team_row(
+            &mut bob,
+            "t",
+            "carol",
+            Some(caps::MANAGE_MEMBERS),
+            "bob",
+        ))
+        .unwrap();
+    assert!(m.state.orgs["org"].in_team("carol", "t"));
+    assert_eq!(
+        refused(
+            &mut m,
+            team_caps(&mut alice, "t", "carol", 1 << 31, "alice")
+        ),
+        super::UNKNOWN_CAPABILITIES
+    );
+    // The owner grants any defined bit.
+    let _ok = m
+        .run(team_caps(&mut alice, "t", "carol", escalate, "alice"))
+        .unwrap();
+    assert!(m.state.manages_apps("org", "carol", Some("t")));
+}
+
+/// `bob`'s invite of `org` under `token`: `role`, `teams`, five uses.
+fn bobs_invite(m: &mut SystemMachine, token: &str, role: &str, teams: &[&str]) {
+    keep_invite(m, token, role, teams, 5);
+    m.state
+        .invites
+        .get_mut(&crate::proof::invite_key(token))
+        .unwrap()
+        .created_by = "bob".into();
+}
+
+/// Regression: an organization invite clamped its capabilities to what
+/// its creator holds at redemption, but not its role or teams, and removing
+/// a member left their invites, so an admin about to be removed minted an
+/// admin invite and came back as admin with it. From the logged version that
+/// brings `inviteCreatorStanding`, a creator removed, demoted below the
+/// invite's role, or no longer seeing a team it names gives nothing; an
+/// entry logged before replays as it applied.
+#[test]
+fn a_removed_or_demoted_creators_invite_gives_nothing() {
+    use super::cluster_version::Feature;
+
+    let since = Feature::InviteCreatorStanding.since();
+    // Bob was an admin, minted an admin invite naming the closed team `t`,
+    // then was removed.
+    let removed = |m: &mut SystemMachine| {
+        bobs_invite(m, "inv_back", "admin", &["t"]);
+        let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
+    };
+
+    // Before the version he is back as admin, as an earlier release applied it.
+    let (mut m, ..) = cluster_at(None);
+    removed(&mut m);
+    let _ok = m.run(redemption("inv_back", "bob", 10)).unwrap();
+    assert_eq!(m.state.orgs["org"].members["bob"], OrgRole::Admin);
+
+    // From it, neither he nor anyone else redeems it, and no use is spent.
+    let (mut m, ..) = cluster_at(Some(since));
+    removed(&mut m);
+    let key = crate::proof::invite_key("inv_back");
+    assert_eq!(
+        refused(&mut m, redemption("inv_back", "bob", 10)),
+        INVITE_CREATOR_LACKS
+    );
+    assert_eq!(
+        refused(&mut m, redemption("inv_back", "carol", 11)),
+        INVITE_CREATOR_LACKS
+    );
+    assert!(!m.state.orgs["org"].members.contains_key("bob"));
+    assert!(!m.state.orgs["org"].members.contains_key("carol"));
+    assert_eq!(m.state.invites[&key].uses_left, 5);
+
+    // Demoted to member: his admin invite gives nothing, nor one naming a
+    // team he does not see; a member invite naming none still works.
+    let (mut m, ..) = cluster_at(Some(since));
+    bobs_invite(&mut m, "inv_admin", "admin", &[]);
+    bobs_invite(&mut m, "inv_team", "member", &["t"]);
+    bobs_invite(&mut m, "inv_member", "member", &[]);
+    assert_eq!(m.state.orgs["org"].members["bob"], OrgRole::Member);
+    assert_eq!(
+        refused(&mut m, redemption("inv_admin", "carol", 10)),
+        INVITE_CREATOR_LACKS
+    );
+    assert_eq!(
+        refused(&mut m, redemption("inv_team", "carol", 11)),
+        INVITE_CREATOR_LACKS
+    );
+    let _ok = m.run(redemption("inv_member", "carol", 12)).unwrap();
+    assert_eq!(m.state.orgs["org"].members["carol"], OrgRole::Member);
+
+    // An admin who still is one gives what the invite says.
+    let (mut m, ..) = cluster_at(Some(since));
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .members
+        .insert("bob".into(), OrgRole::Admin);
+    bobs_invite(&mut m, "inv_ok", "admin", &["t"]);
+    let _ok = m.run(redemption("inv_ok", "carol", 10)).unwrap();
+    assert_eq!(m.state.orgs["org"].members["carol"], OrgRole::Admin);
+    assert!(m.state.orgs["org"].in_team("carol", "t"));
+}
+
+/// Regression: an organization's backup key, which every app of it is
+/// backed up to in full, was set by any member holding `MANAGE_APPLICATION`
+/// organization-wide, though only its owner and admins upgrade its apps. From
+/// the logged version that brings `backupKeyApprovers`, it is set only by
+/// those who approve its upgrades; an entry logged before replays as it
+/// applied.
+#[test]
+fn an_organizations_backup_key_is_set_by_its_owner_and_admins() {
+    use super::cluster_version::Feature;
+    use crate::types::caps;
+
+    let key = "ab".repeat(32);
+    let args = json!({ "publicKey": key });
+    let set = |m: &mut SystemMachine, pk: &mut Soft, actor: &str| {
+        let c = consent(pk, "org:org", "__set_backup_key", &args);
+        m.run(set_backup_key(
+            BackupHolder::Org("org".into()),
+            &key,
+            actor,
+            c,
+        ))
+    };
+    let manages_apps = |m: &mut SystemMachine| {
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .capabilities
+            .insert("bob".into(), caps::MANAGE_APPLICATION);
+        assert!(m.state.manages_apps("org", "bob", None));
+        assert!(!m.state.approves_upgrades("org", "bob"));
+    };
+
+    // Before the version, as an earlier release applied it.
+    let (mut m, _alice, mut bob, _carol) = cluster_at(None);
+    manages_apps(&mut m);
+    let _ok = set(&mut m, &mut bob, "bob").unwrap();
+    assert_eq!(m.state.backup_keys["org:org"].set_by, "bob");
+
+    // From it, refused for him; the owner, and an admin, set it.
+    let (mut m, mut alice, mut bob, _carol) = cluster_at(Some(Feature::BackupKeyApprovers.since()));
+    manages_apps(&mut m);
+    assert_eq!(set(&mut m, &mut bob, "bob").unwrap_err(), NOT_BACKUP_HOLDER);
+    assert!(!m.state.backup_keys.contains_key("org:org"));
+    let _ok = set(&mut m, &mut alice, "alice").unwrap();
+    assert_eq!(m.state.backup_keys["org:org"].set_by, "alice");
+    let _prev = m
+        .state
+        .orgs
+        .get_mut("org")
+        .unwrap()
+        .members
+        .insert("bob".into(), OrgRole::Admin);
+    let _ok = set(&mut m, &mut bob, "bob").unwrap();
+    assert_eq!(m.state.backup_keys["org:org"].set_by, "bob");
+}
+
+/// Security review, the instance-invite side of `inviteCreatorStanding`: an instance invite
+/// was judged only by its token, so a manager who lost the instance (demoted, removed) still
+/// named people on it through an invite made before. From the logged version that brings the
+/// rule, an instance invite names nobody once its creator no longer manages the instance's
+/// grants; an entry logged before replays as it applied.
+#[test]
+fn an_instance_invite_gives_nothing_once_its_creator_no_longer_manages_the_instance() {
+    use super::cluster_version::Feature;
+
+    // Bob, an admin of `org`, mints an invite to Alice's instance `oa` of it; Carol is a
+    // member, so redeeming names her on it.
+    let made_by_bob = |version: Option<&str>| {
+        let (mut m, ..) = cluster_at(version);
+        let mut oa = m.state.apps["app"].clone();
+        oa.app_id = "oa".into();
+        oa.org = "org".into();
+        let _prev = m.state.apps.insert("oa".into(), oa);
+        let o = m.state.orgs.get_mut("org").unwrap();
+        let _prev = o.members.insert("bob".into(), OrgRole::Admin);
+        let _prev = o.members.insert("carol".into(), OrgRole::Member);
+        for token in ["inv_bob", "inv_alice"] {
+            let _ok = m
+                .run_unproven(SystemCmd::CreateAppInvite {
+                    invite_key: crate::proof::invite_key(token),
+                    invite: crate::types::AppInvite {
+                        app: "oa".into(),
+                        expires_at: 1_000,
+                        uses_left: 3,
+                        created_by: String::new(),
+                        created_at: 10,
+                        scope: None,
+                    },
+                    actor: if token == "inv_bob" { "bob" } else { "alice" }.into(),
+                    consent: Value::Null,
+                })
+                .unwrap();
+        }
+        // Then Bob is demoted: he no longer manages the instance.
+        let _prev = m
+            .state
+            .orgs
+            .get_mut("org")
+            .unwrap()
+            .members
+            .insert("bob".into(), OrgRole::Member);
+        assert!(!m.state.manages_grants(&m.state.apps["oa"], "bob"));
+        m
+    };
+    let redeem = |token: &str, who: &str| SystemCmd::RedeemAppInvite {
+        invite_key: crate::proof::invite_key(token),
+        account: who.into(),
+        now: 20,
+        signature: crate::proof::sign_invite_redeem(token, who, 20),
+    };
+
+    // Before the version, his invite still names Carol, as an earlier release applied it.
+    let mut m = made_by_bob(None);
+    let _ok = m.run(redeem("inv_bob", "carol")).unwrap();
+    assert!(m.state.apps["oa"].access.names("carol"));
+
+    // From it, his invite names nobody and spends no use; the owner's still works.
+    let mut m = made_by_bob(Some(Feature::InviteCreatorStanding.since()));
+    assert_eq!(
+        m.run(redeem("inv_bob", "carol")).unwrap_err(),
+        INVITE_CREATOR_LACKS
+    );
+    assert!(!m.state.apps["oa"].access.names("carol"));
+    assert_eq!(
+        m.state.app_invites[&crate::proof::invite_key("inv_bob")].uses_left,
+        3
+    );
+    let _ok = m.run(redeem("inv_alice", "carol")).unwrap();
+    assert!(m.state.apps["oa"].access.names("carol"));
+}
+
+/// Instance `a` of package `q`, whose component bundle `p` shipped first.
+fn instance_of_a_shared_bundle() -> SystemMachine {
+    let mut m = machine_with_apps(100, &[("a", Some("acme"))]);
+    let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
+    let _ok = m.run_unproven(account("alice")).unwrap();
+    let _ok = m.run_unproven(install_at("alice", "1.0.0", 1)).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::InstallPackage {
+            package: "q".into(),
+            signer_id: "did:key:q".into(),
+            release: serde_json::from_value(json!({
+                "version": "1.0.0", "mpk": "q1", "mpkSize": 1, "source": "upload",
+                "services": { "": "b-1.0.0" }, "installedBy": "alice", "installedAt": 1
+            }))
+            .unwrap(),
+        })
+        .unwrap();
+    let app = m.state.apps.get_mut("a").unwrap();
+    app.bundle = "b-1.0.0".into();
+    app.release = serde_json::from_value(json!({ "package": "q", "version": "1.0.0" })).unwrap();
+    m
+}
+
+fn add_app_origin() -> SystemCmd {
+    SystemCmd::AddAppOrigin {
+        app_id: "a".into(),
+        origin: NOTES.into(),
+        rp_id: "notes.example.com".into(),
+        registration: "r".into(),
+        actor: "alice".into(),
+        at: 1,
+        consent: Value::Null,
+    }
+}
+
+/// An instance's origin binds its sessions to the package of the release the
+/// instance runs, which `Principal::within` checks: not the first package
+/// recorded for its shared component bundle.
+#[test]
+fn an_app_origin_records_the_package_its_instance_runs() {
+    let mut m = instance_of_a_shared_bundle();
+    assert_eq!(m.state.package_of(&m.state.apps["a"]), Some("p"));
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    assert_eq!(m.state.package_origins[NOTES].package, "q");
+}
+
+/// An instance whose release was uninstalled (its bundle kept by another
+/// package) registers no origin: none of its sessions would reach it.
+#[test]
+fn an_app_origin_needs_its_instances_release_installed() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m
+        .run_unproven(SystemCmd::UninstallPackage {
+            package: "q".into(),
+            version: None,
+            actor: "alice".into(),
+        })
+        .unwrap();
+    let refused = m.run_unproven(add_app_origin()).unwrap_err();
+    assert!(
+        refused.message().contains("no installed release"),
+        "{refused}"
+    );
+}
+
+/// A bound publisher's manager takes back an origin an instance of the package
+/// holds, under a new registration; a first installer without a bound publisher
+/// does not, and an instance of another package keeps it.
+#[test]
+fn a_packages_manager_takes_back_its_instances_origin() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let unbound = m
+        .run_unproven(add_origin(
+            "alice",
+            "q",
+            NOTES,
+            "notes.example.com",
+            Value::Null,
+        ))
+        .unwrap_err();
+    assert!(unbound.message().contains("publisher"), "{unbound}");
+    assert_eq!(m.state.origins_of_app("a").count(), 1);
+    let _prev = m.state.publishers.insert(
+        "did:key:q".into(),
+        super::PublisherBinding {
+            org: "acme".into(),
+            generation: 1,
+        },
+    );
+    let refused = m
+        .run_unproven(add_origin(
+            "alice",
+            "p",
+            NOTES,
+            "notes.example.com",
+            Value::Null,
+        ))
+        .unwrap_err();
+    assert!(refused.message().contains("another"), "{refused}");
+    let mut reclaim = add_origin("alice", "q", NOTES, "notes.example.com", Value::Null);
+    if let SystemCmd::AddPackageOrigin { registration, .. } = &mut reclaim {
+        *registration = "r2".into();
+    }
+    let _ok = m.run_unproven(reclaim).unwrap();
+    let held = &m.state.package_origins[NOTES];
+    assert_eq!(
+        (held.app.as_deref(), held.registration.as_str()),
+        (None, "r2")
+    );
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+}
+
+/// An upgrade into another package forgets the instance's origins: each was
+/// bound to the package it was added under, which no longer reaches the instance.
+#[test]
+fn an_upgrade_into_another_package_forgets_the_instances_origins() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let _ok = m
+        .run_unproven(upgrade_to("a", "alice", "b-1.0.0", Some(("q", "1.0.0"))))
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 1);
+    let _ok = m
+        .run_unproven(upgrade_to("a", "alice", "b-1.0.0", Some(("p", "1.0.0"))))
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+    let mut fresh = add_origin("alice", "q", NOTES, "notes.example.com", Value::Null);
+    if let SystemCmd::AddPackageOrigin { registration, .. } = &mut fresh {
+        *registration = "r2".into();
+    }
+    let _ok = m.run_unproven(fresh).unwrap();
+    assert_eq!(m.state.package_origins[NOTES].app, None);
+}
+
+/// An undo or a restore that leaves the instance on another package forgets
+/// its origins as an upgrade does.
+#[test]
+fn an_undo_or_restore_into_another_package_forgets_the_instances_origins() {
+    let mut m = instance_of_a_shared_bundle();
+    let mut up = upgrade_to("a", "alice", "b-1.0.0", Some(("p", "1.0.0")));
+    if let SystemCmd::UpgradeApp { restore_point, .. } = &mut up {
+        *restore_point = Some(crate::types::TakenRestorePoint::default());
+    }
+    let _ok = m.run_unproven(up).unwrap();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let _ok = m
+        .run_unproven(SystemCmd::UndoUpgrade {
+            app_id: "a".into(),
+            apps: serde_json::from_value(json!({ "a": [] })).unwrap(),
+            actor: "alice".into(),
+            at: 20,
+            consent: Value::Null,
+            release_installed: true,
+        })
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    register(&mut m, 1, "replica");
+    let _prev = m.state.bundles.insert(
+        "b-other".into(),
+        serde_json::from_value(json!({ "hash": "b-other", "size": 1, "uploadedBy": "alice" }))
+            .unwrap(),
+    );
+    let _ok = m
+        .run_unproven(SystemCmd::RestoreApp {
+            app_id: "a".into(),
+            replicas: vec![1],
+            bundle: "b-other".into(),
+            compute_bundle: None,
+            source: crate::types::RestoreSource {
+                name: "a.snap".into(),
+                sha256: "ab".into(),
+                index: 1,
+            },
+            proof: Value::Null,
+        })
+        .unwrap();
+    assert_eq!(m.state.origins_of_app("a").count(), 0);
+}
+
+/// Instances' origins have a cluster-wide budget of their own: filled, it
+/// leaves packages' origins room.
+#[test]
+fn instance_origins_filling_their_cap_leave_packages_room() {
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let held = m.state.package_origins[NOTES].clone();
+    for i in 0..crate::origins::MAX_APP_ORIGINS {
+        let site = crate::origins::PackageOrigin {
+            app: Some(format!("app{i}")),
+            ..held.clone()
+        };
+        let _prev = m
+            .state
+            .package_origins
+            .insert(format!("https://s{i}.example.com"), site);
+    }
+    let _ok = m
+        .run_unproven(add_origin(
+            "alice",
+            "q",
+            "https://q.example.com",
+            "q.example.com",
+            Value::Null,
+        ))
+        .unwrap();
+    let _gone = m.state.package_origins.remove(NOTES);
+    let refused = m.run_unproven(add_app_origin()).unwrap_err();
+    assert!(refused.is_quota(), "{refused}");
+}
+
+/// A registration a session names is never empty, where it applies: an
+/// instance's always, and a package's once the cluster brings instances' origins.
+#[test]
+fn an_origin_without_a_registration_is_refused_once_registrations_exist() {
+    let mut m = instance_of_a_shared_bundle();
+    let mut unnamed = add_app_origin();
+    if let SystemCmd::AddAppOrigin { registration, .. } = &mut unnamed {
+        registration.clear();
+    }
+    let refused = m.run_unproven(unnamed).unwrap_err();
+    assert!(refused.message().contains("registration"), "{refused}");
+    let package = add_origin("alice", "q", NOTES, "notes.example.com", Value::Null);
+    let _ok = m.run_unproven(package.clone()).unwrap();
+    let _gone = m.state.package_origins.remove(NOTES);
+    m.state.cluster_version = Some(
+        super::cluster_version::Feature::AppOrigins
+            .since()
+            .to_owned(),
+    );
+    let refused = m.run_unproven(package).unwrap_err();
+    assert!(refused.message().contains("registration"), "{refused}");
+}
+
+/// One organization's instances register a share of the cluster's instance origins, not all
+/// of them: filled, its next instance is refused, and another organization's still fit.
+#[test]
+fn one_orgs_instances_fill_only_their_share_of_origins() {
+    const _: () =
+        assert!(crate::origins::MAX_APP_ORIGINS_PER_ORG < crate::origins::MAX_APP_ORIGINS);
+    let mut m = instance_of_a_shared_bundle();
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
+    let held = m.state.package_origins.remove(NOTES).unwrap();
+    let instance = m.state.apps["a"].clone();
+    for i in 0..crate::origins::MAX_APP_ORIGINS_PER_ORG {
+        let _prev = m.state.apps.insert(format!("app{i}"), instance.clone());
+        let _prev = m.state.package_origins.insert(
+            format!("https://s{i}.example.com"),
+            crate::origins::PackageOrigin {
+                app: Some(format!("app{i}")),
+                ..held.clone()
+            },
+        );
+    }
+    let refused = m.run_unproven(add_app_origin()).unwrap_err();
+    assert!(refused.is_quota(), "{refused}");
+
+    for i in 0..crate::origins::MAX_APP_ORIGINS_PER_ORG {
+        m.state.apps.get_mut(&format!("app{i}")).unwrap().org = "elsewhere".into();
+    }
+    let _ok = m.run_unproven(add_app_origin()).unwrap();
 }

@@ -8,7 +8,7 @@
 //! whose shape, when the ABI carries one, is in [`crate::abi::AppAbi::types`]
 //! ([`Type::named_parts`] splits `Page<Booking>` into the entry's name and its arguments).
 //!
-//! Two spellings describe what plain serde writes where the SDK's defaults (D20) would not:
+//! Two spellings describe what plain serde writes where the SDK's defaults would not:
 //! `u64_number` / `i64_number`, a 64-bit integer as a JSON number (JavaScript reads it exactly
 //! only up to 2^53), and `byte_list`, a `Vec<u8>` as a JSON array of numbers. `#[derive(AbiType)]`
 //! writes them for a field marked `#[abi(plain)]`.
@@ -30,9 +30,9 @@ pub enum Int {
     I64,
     I128,
     Isize,
-    /// `u64_number`: a `u64` as a JSON number, not D20's decimal string.
+    /// `u64_number`: a `u64` as a JSON number, not the SDK's decimal string.
     U64Number,
-    /// `i64_number`: an `i64` as a JSON number, not D20's decimal string.
+    /// `i64_number`: an `i64` as a JSON number, not the SDK's decimal string.
     I64Number,
 }
 
@@ -78,7 +78,7 @@ impl Int {
         }
     }
 
-    /// Whether JSON carries it as a decimal string (D20): `u64` and `i64`, not `u64_number`
+    /// Whether JSON carries it as a decimal string: `u64` and `i64`, not `u64_number`
     /// and `i64_number`.
     #[must_use]
     pub const fn is_string(self) -> bool {
@@ -128,7 +128,7 @@ pub enum Type {
     Float(bool),
     Char,
     String,
-    /// `Vec<u8>`: base64url without padding in JSON (D20).
+    /// `Vec<u8>`: base64url without padding in JSON.
     Bytes,
     Option(Box<Type>),
     /// A JSON array. `List(Int(U8))` is spelled `byte_list` (`list<u8>` reads as [`Type::Bytes`]):

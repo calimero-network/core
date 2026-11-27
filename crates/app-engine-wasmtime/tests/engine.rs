@@ -735,25 +735,37 @@ fn a_new_engine_deletes_artifacts_of_another_wasmtime_or_config() {
         age(p);
     }
     let sha = hex::encode(Sha256::digest(&component));
+    // The previous wasmtime's artifact of another component, under this engine's own
+    // config hash, so only the tag tells it apart.
+    let own_name = own[0].file_name().unwrap().to_str().unwrap();
+    let config_hash = own_name
+        .strip_suffix(".cwasm")
+        .and_then(|n| n.rsplit('-').next())
+        .unwrap();
+    assert_eq!(
+        own_name,
+        format!("{sha}-wasmtime51-{config_hash}.cwasm"),
+        "artifacts are tagged with the wasmtime release line"
+    );
     let old_wasmtime = plant(
         fx.cache.path(),
-        &format!("{sha}-wasmtime49-0123456789abcdef.cwasm"),
+        &format!("{}-wasmtime50-{config_hash}.cwasm", "ef".repeat(32)),
         false,
     );
     let old_config = plant(
         fx.cache.path(),
-        &format!("{}-wasmtime50-0123456789abcdef.cwasm", "ab".repeat(32)),
+        &format!("{}-wasmtime51-0123456789abcdef.cwasm", "ab".repeat(32)),
         false,
     );
     let just_written = plant(
         fx.cache.path(),
-        &format!("{}-wasmtime50-fedcba9876543210.cwasm", "cd".repeat(32)),
+        &format!("{}-wasmtime51-fedcba9876543210.cwasm", "cd".repeat(32)),
         true,
     );
     let stray_temp = fx
         .cache
         .path()
-        .join(format!("{sha}-wasmtime50-0123456789abcdef.tmp-1-0"));
+        .join(format!("{sha}-wasmtime51-0123456789abcdef.tmp-1-0"));
     std::fs::write(&stray_temp, b"half").unwrap();
     age(&stray_temp);
     let unrelated = fx.cache.path().join("notes.txt");
@@ -881,14 +893,32 @@ fn writes_past_the_run_cap_trap_host_denied_at_the_call() {
     );
 
     // Event audiences count too; 100 events naming a 1 MiB account each are all refused.
-    // Past the run's bytes an event is the soft error `emit` returns (C10), which this guest
-    // ignores: the run ends `Ok` and keeps none of them.
+    // Past the run's bytes an event is the soft error `emit` returns, which this guest
+    // ignores: the run ends `Ok` and keeps none of them. Each refused event still pays for the
+    // 1 MiB it was handed (host fuel per byte), 100 MiB of fuel in all, more than a call's default budget, so
+    // it runs on a larger one.
+    let out = fx
+        .engine
+        .invoke(&app, host(InvocationKind::Call, "shout", b""), heavy());
+    assert_eq!(out.status, Status::Ok);
+    assert!(out.events.is_empty());
+    let handed = 100 * (1u64 << 20) * calimero_app_host::FUEL_PER_BYTE;
+    assert!(
+        out.usage.fuel > handed,
+        "100 refused events of 1 MiB cost {} fuel",
+        out.usage.fuel
+    );
     let out = fx.engine.invoke(
         &app,
         host(InvocationKind::Call, "shout", b""),
         Budget::call(),
     );
-    assert_eq!(out.status, Status::Ok);
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}",
+        out.status
+    );
     assert!(out.events.is_empty());
 
     // Under the cap the same writes succeed: 15 versions of 64 KiB.
@@ -1560,7 +1590,7 @@ fn each_engine_refuses_an_abi_of_the_other_world() {
     assert!(matches!(err, PrepareError::BadAbi(_)), "{err:?}");
 }
 
-// --- host work and fuel (C7) ---------------------------------------------------------------
+// --- host work and fuel --------------------------------------------------------------------
 
 /// A 64 KiB value under `big`, as the node's state holds it.
 const BIG_VALUE_BYTES: usize = 64 << 10;
@@ -1622,7 +1652,7 @@ fn u64_at(bytes: &[u8], at: usize) -> u64 {
     u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
 }
 
-/// C7: a view that reads 64 MiB of state through `storage.get` pays for the host's work, so a
+/// A view that reads 64 MiB of state through `storage.get` pays for the host's work, so a
 /// small budget runs out of fuel instead of finishing.
 #[test]
 fn reading_megabytes_of_state_costs_fuel() {
@@ -1661,7 +1691,7 @@ fn reading_megabytes_of_state_costs_fuel() {
     assert_eq!(out.usage.fuel, budget.fuel);
 }
 
-/// C7: a view's searches are capped per run, however much fuel it has.
+/// A view's searches are capped per run, however much fuel it has.
 #[test]
 fn a_view_makes_at_most_max_searches_per_run() {
     let fx = fixture();
@@ -1682,44 +1712,135 @@ fn a_view_makes_at_most_max_searches_per_run() {
     );
 }
 
-/// Below the cluster version that brings host fuel the node runs with `with_host_fuel(false)`:
-/// the same view finishes on the same budget, as it did before (an earlier release's
-/// answer is kept through a rolling upgrade).
-#[test]
-fn a_host_without_host_fuel_charges_as_before() {
-    let fx = fixture();
-    let app = prepare(&fx, "host_work");
-    // The run is judged on fuel alone: 64 MiB copied by a debug build on a loaded runner
-    // can take longer than a call's 2 s, so the wall clock is out of the way.
-    let budget = Budget {
-        fuel: 10_000_000,
-        wall_clock: Duration::from_secs(60),
-        ..Budget::call()
-    };
-    let host = host_work(InvocationKind::View, "reads", 1_000).with_host_fuel(false);
-    let out = fx.engine.invoke(&app, host, budget);
-    assert_eq!(out.status, Status::Ok, "{:?}", out.status);
-    assert_eq!(u64_at(&out.result, 0), 1_000 * BIG_VALUE_BYTES as u64);
-    assert!(out.usage.fuel < budget.fuel / 10, "{}", out.usage.fuel);
-}
-
-/// One read costs exactly what the table says: the base of a state access and a fuel per
-/// byte of the key and the value, on top of the guest's own fuel.
+/// One more read costs what the table says: the engine's base, a state access and a fuel
+/// per byte of the key and the value, plus the guest's own loop step (well under 10,000).
 #[test]
 fn a_read_costs_what_the_fuel_table_says() {
     let fx = fixture();
     let app = prepare(&fx, "host_work");
-    let run = |charged: bool| {
-        let host = host_work(InvocationKind::View, "reads", 1).with_host_fuel(charged);
+    let run = |reads: u32| {
+        let host = host_work(InvocationKind::View, "reads", reads);
         let out = fx.engine.invoke(&app, host, Budget::call());
         assert_eq!(out.status, Status::Ok, "{:?}", out.status);
         out.usage.fuel
     };
-    let (charged, free) = (run(true), run(false));
-    let key = b"big".len() as u64;
+    let one_more = run(2) - run(1);
+    let host = calimero_app_host::FUEL_HOST_CALL
+        + calimero_app_host::FUEL_STATE_ACCESS
+        + (b"big".len() + BIG_VALUE_BYTES) as u64 * calimero_app_host::FUEL_PER_BYTE;
+    assert!(
+        (host..host + 10_000).contains(&one_more),
+        "one more read cost {one_more}; the table says {host} for the host"
+    );
+}
+
+/// The last count `spin` printed before its run ended.
+fn last_count(out: &Outcome) -> u64 {
+    out.logs
+        .iter()
+        .rev()
+        .find_map(|l| l.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Fuel the host already charged is not spent again by the guest.
+/// A view whose reads owe about nine tenths of its budget may then run only the last tenth
+/// of guest code, not a whole budget more.
+#[test]
+fn a_guest_cannot_spend_fuel_its_host_calls_already_owe() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let budget = Budget {
+        fuel: 50_000_000,
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    };
+    let run = |reads: u32| {
+        let host = host_work(InvocationKind::View, "spin", reads).with_logs(true);
+        let out = fx.engine.invoke(&app, host, budget);
+        assert_eq!(
+            trap_kind(&out),
+            Some(TrapKind::OutOfFuel),
+            "{:?}",
+            out.status
+        );
+        last_count(&out)
+    };
+    let alone = run(0);
+    // About 67,500 fuel a read: 650 of them owe about 44M of the 50M.
+    let after_debt = run(650);
+    eprintln!("spun {alone} steps on the whole budget, {after_debt} after 650 reads of 64 KiB");
+    // A tenth of the budget is left for the guest: about a tenth of the steps, never a
+    // whole budget's worth.
+    assert!(
+        after_debt * 5 < alone,
+        "the guest spun {after_debt} steps after owing ~44M of 50M fuel; {alone} alone"
+    );
+}
+
+/// A host call pays for the bytes it is handed before it checks
+/// them, so refused 32 MiB xcall arguments cost fuel.
+#[test]
+fn refused_xcall_arguments_cost_fuel() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let budget = Budget {
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    };
+    let out = fx.engine.invoke(
+        &app,
+        host_work(InvocationKind::Call, "refused", 100),
+        budget,
+    );
+    let refused = if out.status == Status::Ok {
+        u64_at(&out.result, 0)
+    } else {
+        0
+    };
+    eprintln!(
+        "100 refused xcalls of 32 MiB: {:?}, {refused} refused, {} fuel",
+        out.status, out.usage.fuel
+    );
     assert_eq!(
-        charged - free,
-        calimero_app_host::FUEL_STATE_ACCESS
-            + (key + BIG_VALUE_BYTES as u64) * calimero_app_host::FUEL_PER_BYTE
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}: {refused} xcalls of 32 MiB refused for {} fuel",
+        out.status,
+        out.usage.fuel
+    );
+}
+
+/// Stdout costs fuel per byte, also once the log is full and the
+/// bytes are dropped.
+#[test]
+fn stdout_costs_fuel_after_the_log_is_full() {
+    let fx = fixture();
+    let app = prepare(&fx, "host_work");
+    let budget = Budget {
+        wall_clock: Duration::from_secs(60),
+        ..Budget::call()
+    };
+    // 16,384 writes of 64 KiB: 1 GiB.
+    let out = fx.engine.invoke(
+        &app,
+        host_work(InvocationKind::Call, "shout", 16_384),
+        budget,
+    );
+    let written = if out.status == Status::Ok {
+        u64_at(&out.result, 0)
+    } else {
+        0
+    };
+    eprintln!(
+        "1 GiB to stdout: {:?}, {written} bytes written, {} fuel",
+        out.status, out.usage.fuel
+    );
+    assert_eq!(
+        trap_kind(&out),
+        Some(TrapKind::OutOfFuel),
+        "{:?}: {written} bytes written to stdout for {} fuel",
+        out.status,
+        out.usage.fuel
     );
 }

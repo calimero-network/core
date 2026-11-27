@@ -14,6 +14,10 @@ pub struct SoftAuthenticator {
     rp_id: String,
     origin: String,
     counter: u32,
+    /// `crossOrigin` in the client data, left out when `None`.
+    cross_origin: Option<bool>,
+    /// `topOrigin` in the client data, left out when `None`.
+    top_origin: Option<String>,
 }
 
 impl SoftAuthenticator {
@@ -31,6 +35,8 @@ impl SoftAuthenticator {
             rp_id: rp_id.to_owned(),
             origin: origin.to_owned(),
             counter: 0,
+            cross_origin: Some(false),
+            top_origin: None,
         }
     }
 
@@ -43,6 +49,8 @@ impl SoftAuthenticator {
             rp_id: rp_id.to_owned(),
             origin: origin.to_owned(),
             counter: other.counter + 100,
+            cross_origin: other.cross_origin,
+            top_origin: other.top_origin.clone(),
         }
     }
 
@@ -85,6 +93,8 @@ impl SoftAuthenticator {
                 .as_u64()
                 .and_then(|c| u32::try_from(c).ok())
                 .unwrap_or(0),
+            cross_origin: Some(false),
+            top_origin: None,
         })
     }
 
@@ -102,14 +112,33 @@ impl SoftAuthenticator {
         b64url(&self.credential_id)
     }
 
+    /// Use `id` as the credential's id from now on.
+    pub fn set_credential_id(&mut self, id: Vec<u8>) {
+        self.credential_id = id;
+    }
+
+    /// The frame the ceremonies claim to run in: `crossOrigin` and
+    /// `topOrigin` of the client data, each left out when `None` (as an older
+    /// browser does). A new passkey writes `crossOrigin: false` and no
+    /// `topOrigin`, as a top-level page does.
+    pub fn set_frame(&mut self, cross_origin: Option<bool>, top_origin: Option<&str>) {
+        self.cross_origin = cross_origin;
+        self.top_origin = top_origin.map(str::to_owned);
+    }
+
     fn client_data(&self, kind: &str, challenge: &[u8]) -> Vec<u8> {
-        serde_json::to_vec(&serde_json::json!({
+        let mut cd = serde_json::json!({
             "type": kind,
             "challenge": b64url(challenge),
             "origin": self.origin,
-            "crossOrigin": false,
-        }))
-        .expect("json")
+        });
+        if let Some(cross) = self.cross_origin {
+            cd["crossOrigin"] = cross.into();
+        }
+        if let Some(top) = &self.top_origin {
+            cd["topOrigin"] = top.as_str().into();
+        }
+        serde_json::to_vec(&cd).expect("json")
     }
 
     fn auth_data(&self, flags: u8, attested: Option<Vec<u8>>) -> Vec<u8> {

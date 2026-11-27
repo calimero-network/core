@@ -33,6 +33,7 @@ import kotlinx.serialization.Contextual
  *
  * @param `package` 
  * @param version 
+ * @param org 
  */
 @Serializable
 
@@ -42,7 +43,10 @@ data class PackageInstallRequest (
     val `package`: kotlin.String,
 
     @SerialName(value = "version")
-    val version: kotlin.String
+    val version: kotlin.String,
+
+    @SerialName(value = "org")
+    val org: kotlin.String? = null
 
 ) {
 

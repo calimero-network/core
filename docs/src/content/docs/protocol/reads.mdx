@@ -74,8 +74,7 @@ memory, built from the table's records and the ABI's `state.search`
   it re-reads just those; otherwise it rebuilds from a full scan of the
   records. A field is indexed from its first 64 KiB of text.
 - Indexes are derived data. They are never replicated, never written to disk,
-  and rebuilt after a restart or when the app moves to this node. Indexes that
-  survive a restart are not done yet.
+  and rebuilt after a restart or when the app moves to this node.
 - Only views search. A call cannot, so node-local derived data never steers a
   write.
 
@@ -110,7 +109,12 @@ frame like any other response.
   A call's answer carries the events its caller is in the audience of, under
   the same rule.
 - A node serves at most 4096 event and presence streams at once
-  (`MAX_EVENT_STREAMS`); past that it answers `429 RATE_LIMITED`.
+  (`MAX_EVENT_STREAMS`), at most 64 of them for one account, through its
+  sessions and API keys together (`MAX_EVENT_STREAMS_PER_ACCOUNT`), and at most
+  1024 for one app (`MAX_EVENT_STREAMS_PER_APP`), so one account or app cannot
+  take a node's streams from everyone else. A caller without an account (an app
+  anyone reaches) counts toward its app's and the node's limits only. Past any
+  of them the node answers `429 RATE_LIMITED`, the message naming which.
 - Events are not the place for secrets: they are returned in call answers and
   stored in the ring.
 
@@ -132,3 +136,109 @@ Each goes through the same gate as a view: the caller must reach the app.
 
 Nothing on this page. The [Ops API](/protocol/operator/) has no view, event or
 storage route; its status and metrics report counts and Raft positions only.
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Fresh system reads
+
+`Node::sys_fresh` is a read index (the leader names its applied index, `internal/system/index`; this
+replica waits for it).
+Org and team reads use it, and so does an access check before it refuses.
+Concurrent callers share a round (`ReadRounds`): one that arrives while a round runs waits for the
+next one, never takes the one already under way.
+One round per request: `principal` (or `gate`, anonymous) keeps the index its round named
+(`Principal::sys_index`, `Node::sys_fresh_index`); the request's later checks and the app leader's
+(`CallRequest::sys_index`, carried on `internal/call`) wait to apply it (`Node::sys_fresh_from`,
+whose doc is the argument that this is as fresh as a round of their own) instead of running another.
+Counted in `calimero_system_read_rounds_total` (`Node::sys_rounds`).
+A credential that cannot be valid costs no round (`api::credential`, D4): an API key not of
+`new_api_key`'s shape, or one a caught-up read found missing in the last `UNKNOWN_API_KEY_TTL`
+(`UnknownApiKeys`, `MAX_UNKNOWN_API_KEYS`), a visitor credential whose signature fails, a session
+token its issuer did not sign; a missing key waits (`sys_until`) only when the round did not catch
+up.
+
+### Access is judged fresh
+
+Every request carrying a credential, every gated request, an anonymous `GET /apps/{app}` (#4723) and
+every client call's leader read the system state through `sys_fresh` (a read index), so a removal
+committed elsewhere holds before the next request; an event stream judges each event the same way
+([events](/protocol/execution/)).
+
+By default every newly-arrived request runs its own read-index round (requests waiting at the same
+moment share one, `ReadRounds`), so a removal, revocation or demotion is enforced the moment its
+write commits. A node may instead be given a **read-index lease** (`Config::sys_read_lease`,
+`--sys-read-lease-ms`, zero by default): within the lease a check serves access from the last
+confirmed index rather than running a round of its own (`Node::sys_round`). The lease is the
+**maximum a revocation may lag on a replica that has not yet applied it** — a write committed during
+the lease is enforced once the lease lapses and a fresh round runs, or sooner once the write has
+replicated and applied to that node (a check reads the local applied state, which a round only sets
+a floor under). It never weakens the leader or an up-to-date replica, which apply the write at once,
+and never skips judging the credential; it is a governance trade of a bounded revocation delay for
+fewer rounds, so set it only to a bound the deployment accepts. The bound is two-sided and
+fail-closed: a just-written credential (a session or grant committed on another node) may be judged
+against the pre-write view and refused until it replicates here or the lease lapses, so a lease
+longer than a client's own retry spacing can transiently reject a credential it just rotated — the
+default zero keeps every credential judged the moment it commits.
+The owner, admin and read-only checks made after `gate` (`manages_app`, `may_handle_files`,
+`read_only_in`) read the app's record again from that state (`api::fresh_record`), never the one the
+handler read before the round, so a transfer or move committed elsewhere holds too.
+
+### Read-your-writes across nodes
+
+Lookups of system objects (`Node::sys_until`) wait up to `Config::read_wait` (2 s) for the local
+replica to apply a write committed elsewhere (`sys_fresh` waits as long, and says whether it caught
+up).
+A refresh is judged by the system log, not by a stale replica: a token this replica cannot find, or
+whose exchange the log refuses, goes to the log as `RefreshReused`, which revokes the session if the
+token was exchanged before and is refused if it never was (then a replica that is behind answers
+503, never "unknown").
+
+### Declared views
+
+A call (`/intents`) of a method the ABI declares `#[app::view]` runs as a strong view: it writes
+nothing and may search.
+
+### Search in views
+
+(Spec section 7, `component/search.rs`, `Node::component_search`.)
+
+The ABI's `state.search` names each searchable table's text fields; every record (`generation ‖
+(table, "r", key..)`, `record_table`) is a `calimero-search` document (id = SHA-256 of the stored
+key).
+Under the app's read lock a view only takes what its search needs (`ComponentSearch::for_view`,
+inside `read_local`: the state's `Arc` and the record keys the entries since the indexes' mark
+touched, `AppMachine::note_touched` at apply, the same `TOUCHED_RING`) and indexes nothing; its
+first query brings the app's indexes up to that state on the view's own thread (`RunSearch::ready`):
+from those keys for every table whose declared fields are what it was built with, across an upgrade
+too; a table that is new or whose fields changed starts from a new index and one no longer declared
+is dropped; when the keys since are unknown (the first search after a start, keys the ring lost, a
+view on an older state than the indexes hold) each index is compared with the state
+(`TableIndex::reconcile`: every record's document digest, `calimero_search::index::doc_digest`,
+against the one the index holds) and only what differs is indexed again.
+A view that never searches indexes nothing.
+A view searches the state it reads and no other (C4): once the indexes reach its state it keeps a
+point-in-time snapshot of them (a tantivy `Searcher` and the document keys per table,
+`AppIndexes::snapshot`) for all its searches, and the views queued on earlier states
+(`AppEntry::waiting`, weak) are brought up first, in order (`AppEntry::due`), so the shared indexes
+never jump past a live view's state.
+Indexes are kept under `<data dir>/search/<sha256(app)>/<sha256(table)>` (tantivy `MmapDirectory`)
+only when `Config::kms_keys.disk` is set (`--kms-disk-evidence`: mero-tee's LUKS2 data disk with
+integrity, keyed by mero-kms and opened inside the TD), since tantivy writes its files as they are;
+otherwise in memory.
+One on disk is never trusted to be current: it is compared with the state on its first use, and one
+under another schema or format is made anew; `drop_app` removes its files.
+A tantivy writer holds three threads (indexing, segment updater, merges) and an arena of up to
+`calimero_search::index::WRITER_MEMORY` while it indexes, so only the apps refreshed last keep
+theirs between refreshes, `MAX_OPEN_WRITERS` (16) across every app's tables (`Writers`, least
+recently refreshed released first, the latest app kept whatever its count; an app whose indexes a
+refresh or query holds is put back first in line, never waited for); a released writer finishes its
+merges on a thread of its own (`ContextIndex::release_writer`), and the app's next refresh opens it
+again.
+A batch that fails releases its writer at once, so its uncommitted changes never reach a later
+commit.
+The run gets it through `HostCore::with_search` (`RunSearch`): hits are the guest's record keys.
+Derived, in memory, dropped with the app group.

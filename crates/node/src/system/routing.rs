@@ -159,9 +159,9 @@ mod tests {
     }
 
     /// A Raft message costs the same at 10,000 apps as at 100: routing it is
-    /// an index probe and a cached decision, not a scan of the apps (B6).
+    /// an index probe and a cached decision, not a scan of the apps.
     /// A scaling guard (docs/benchmarking.md): the same 100,000 messages, a
-    /// 100x larger directory; it was ~100x slower with the scan.
+    /// 100x larger directory; a scan would make it ~100x slower.
     #[test]
     fn routing_a_raft_message_does_not_scan_the_apps() {
         const MESSAGES: u64 = 100_000;

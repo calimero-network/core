@@ -7,8 +7,8 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.account_view import AccountView
 from ...models.error import Error
-from ...models.me_response_200 import MeResponse200
 from typing import cast
 
 
@@ -24,9 +24,9 @@ def _get_kwargs() -> dict[str, Any]:
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, MeResponse200]]:
+) -> Optional[Union[AccountView, Error]]:
     if response.status_code == 200:
-        response_200 = MeResponse200.from_dict(response.json())
+        response_200 = AccountView.from_dict(response.json())
 
         return response_200
 
@@ -53,7 +53,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, MeResponse200]]:
+) -> Response[Union[AccountView, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -65,12 +65,14 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, MeResponse200]]:
+) -> Response[Union[AccountView, Error]]:
     """The caller's account
 
      The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a
     sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a
-    sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened
+    on an instance's own site reads the account's id and name and that instance's organization alone:
+    `passkeys` empty, no recovery state.
 
     **Who:** signed in (a session or an API key).
 
@@ -79,7 +81,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, MeResponse200]]
+        Response[Union[AccountView, Error]]
     """
 
     kwargs = _get_kwargs()
@@ -94,12 +96,14 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, MeResponse200]]:
+) -> Optional[Union[AccountView, Error]]:
     """The caller's account
 
      The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a
     sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a
-    sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened
+    on an instance's own site reads the account's id and name and that instance's organization alone:
+    `passkeys` empty, no recovery state.
 
     **Who:** signed in (a session or an API key).
 
@@ -108,7 +112,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, MeResponse200]
+        Union[AccountView, Error]
     """
 
     return sync_detailed(
@@ -119,12 +123,14 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, MeResponse200]]:
+) -> Response[Union[AccountView, Error]]:
     """The caller's account
 
      The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a
     sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a
-    sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened
+    on an instance's own site reads the account's id and name and that instance's organization alone:
+    `passkeys` empty, no recovery state.
 
     **Who:** signed in (a session or an API key).
 
@@ -133,7 +139,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, MeResponse200]]
+        Response[Union[AccountView, Error]]
     """
 
     kwargs = _get_kwargs()
@@ -146,12 +152,14 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, MeResponse200]]:
+) -> Optional[Union[AccountView, Error]]:
     """The caller's account
 
      The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a
     sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a
-    sign-up makes none from then on), recovery state, and how the caller came (`via`).
+    sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened
+    on an instance's own site reads the account's id and name and that instance's organization alone:
+    `passkeys` empty, no recovery state.
 
     **Who:** signed in (a session or an API key).
 
@@ -160,7 +168,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, MeResponse200]
+        Union[AccountView, Error]
     """
 
     return (

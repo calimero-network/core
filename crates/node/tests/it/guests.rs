@@ -64,6 +64,7 @@ fn release(package: &str, guests: Option<calimero_bundle::GuestPolicy>) -> Vec<u
         upgrades: None,
         instance_org: None,
         guests,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -174,18 +175,19 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     use calimero_bundle::GuestPolicy;
     let c = Cluster::start(3).await;
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let carol_id = id(&carol).await;
     let bob_id = id(&bob).await;
     let _ok = alice
         .packages()
-        .upload(release(ALLOWS, Some(GuestPolicy::Allowed)))
+        .upload(release(ALLOWS, Some(GuestPolicy::Allowed)), None)
         .await
         .unwrap();
     let _ok = alice
         .packages()
-        .upload(release(FORBIDS, None))
+        .upload(release(FORBIDS, None), None)
         .await
         .unwrap();
     let acme = s(&alice
@@ -210,7 +212,10 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     refused(&reads(&carol, &closed).await.unwrap_err(), "404");
     // Nothing else of the organization, and she manages nothing.
     refused(&reads(&carol, &other).await.unwrap_err(), "404");
-    refused(&carol.orgs().get(&acme).await.unwrap_err(), "404");
+    refused(
+        &carol.orgs().get(&acme, None, None, None).await.unwrap_err(),
+        "404",
+    );
     refused(
         &carol.orgs().apps(&acme, None, None).await.unwrap_err(),
         "404",
@@ -248,7 +253,12 @@ async fn a_guest_reaches_one_instance_only_while_both_switches_allow() {
     // The organization turns guests off: refused at her next request; on again: back.
     guests_switch(&alice, &mut a, &acme, false).await;
     assert_eq!(
-        alice.orgs().get(&acme).await.map(wire).unwrap()["allowGuests"],
+        alice
+            .orgs()
+            .get(&acme, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["allowGuests"],
         json!(false)
     );
     refused(&reads(&carol, &open).await.unwrap_err(), "404");
@@ -281,16 +291,17 @@ async fn an_instance_invite_makes_its_redeemer_a_guest() {
     use calimero_bundle::GuestPolicy;
     let c = Cluster::start(3).await;
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (dave, _d) = signed_up(&c, 1, "dave").await;
     let (erin, _e) = signed_up(&c, 2, "erin").await;
     let _ok = alice
         .packages()
-        .upload(release(ALLOWS, Some(GuestPolicy::Allowed)))
+        .upload(release(ALLOWS, Some(GuestPolicy::Allowed)), None)
         .await
         .unwrap();
     let _ok = alice
         .packages()
-        .upload(release(FORBIDS, Some(GuestPolicy::Forbidden)))
+        .upload(release(FORBIDS, Some(GuestPolicy::Forbidden)), None)
         .await
         .unwrap();
     let acme = s(&alice
@@ -425,6 +436,7 @@ async fn a_team_and_two_partners_reach_one_instance_by_their_grants() {
     use calimero_bundle::GuestPolicy;
     let c = Cluster::start(3).await;
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (dan, _d) = signed_up(&c, 2, "dan").await;
     let (carol, _c) = signed_up(&c, 0, "carol").await;
@@ -432,7 +444,7 @@ async fn a_team_and_two_partners_reach_one_instance_by_their_grants() {
     let (carol_id, erin_id, dan_id) = (id(&carol).await, id(&erin).await, id(&dan).await);
     let _ok = alice
         .packages()
-        .upload(release(ALLOWS, Some(GuestPolicy::Allowed)))
+        .upload(release(ALLOWS, Some(GuestPolicy::Allowed)), None)
         .await
         .unwrap();
     let acme = s(&alice
@@ -549,11 +561,12 @@ async fn a_team_and_two_partners_reach_one_instance_by_their_grants() {
 async fn an_old_clients_access_field_is_refused_not_read_as_no_grants() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let bob_id = id(&bob).await;
     let _ok = alice
         .packages()
-        .upload(release(ALLOWS, None))
+        .upload(release(ALLOWS, None), None)
         .await
         .unwrap();
     let acme = s(&alice

@@ -56,7 +56,9 @@ try {
 | `CALIMERO_API_KEY` | The API key the client signs in with. Required. |
 | `CALIMERO_KV_STORE` | The store `kv()` binds; `kv(store)` overrides it. |
 | `CALIMERO_MIN_RELEASE` | The oldest mero-tee release trusted, e.g. `2.3.109`. Required unless the node is unattested. |
-| `CALIMERO_TEE_PROFILE` | The image profile trusted (`release.profile`), `locked-read-only` by default. A profile whose name starts with `debug` also opts into a debug image (`release.allowDebugProfile`), whose memory the operator can read, so only for testing; any other is trusted as named. Needs `CALIMERO_MIN_RELEASE`. |
+| `CALIMERO_ENVIRONMENT` | The Calimero Cloud the cluster is in: `production` (the default when unset) or `staging`; any other value throws. `staging` uses staging's node directory, release mirror and collateral mirror (`https://staging.cloud.calimero.network`) and trusts its image profiles (`locked-read-only`, `debug`, `debug-read-only`, with the debug opt-in), as a page staging serves does, so a service on staging calls nothing of production's. `CALIMERO_TEE_PROFILE` overrides the trusted profiles. |
+| `CALIMERO_DIRECTORY` | Another node directory to read `CALIMERO_CLUSTER`'s nodes from, an http(s) URL; default the environment's. Only with `CALIMERO_CLUSTER`. |
+| `CALIMERO_TEE_PROFILE` | The image profile trusted (`release.profile`), `locked-read-only` by default (staging's three with `CALIMERO_ENVIRONMENT=staging`). A profile whose name starts with `debug` also opts into a debug image (`release.allowDebugProfile`), whose memory the operator can read, so only for testing; any other is trusted as named. Needs `CALIMERO_MIN_RELEASE`. |
 | `CALIMERO_ALLOW_UNATTESTED` | Exactly `1` to accept a node without a real TEE (`merod --dev`). Only with `CALIMERO_NODE_URL`; a cluster refuses it. |
 
 A missing or contradictory variable throws an error naming it, before anything is sent.

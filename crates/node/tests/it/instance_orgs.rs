@@ -62,6 +62,7 @@ fn release(package: &str, mode: Option<calimero_bundle::InstanceOrg>) -> Vec<u8>
         upgrades: None,
         instance_org: mode,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -145,14 +146,19 @@ async fn an_instance_goes_where_its_release_says() {
         orgs(&zed).await.is_empty(),
         "a sign-up makes no organization"
     );
-    for who in [&zed, &yan] {
-        for (package, mode) in [
-            (STANDALONE, Some(InstanceOrg::Standalone)),
-            (IN_ORG, Some(InstanceOrg::Org)),
-            (EITHER, None),
-        ] {
-            let _ok = who.packages().upload(release(package, mode)).await.unwrap();
-        }
+    // The operator's catalog: an account's install is for an organization it is in.
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    for (package, mode) in [
+        (STANDALONE, Some(InstanceOrg::Standalone)),
+        (IN_ORG, Some(InstanceOrg::Org)),
+        (EITHER, None),
+    ] {
+        let _ok = ops
+            .ops()
+            .package_upload(release(package, mode))
+            .await
+            .unwrap();
     }
     let recorded = c.nodes[0].as_ref().unwrap().node.sys(|s| {
         [STANDALONE, IN_ORG, EITHER].map(|p| s.packages[p].versions["1.0.0"].instance_org)
@@ -191,7 +197,12 @@ async fn an_instance_goes_where_its_release_says() {
     assert!(orgs(&zed).await.is_empty(), "no refusal made one");
     let home = create(&zed, EITHER, "Notes", json!({})).await.unwrap();
     assert_eq!(orgs(&zed).await, std::slice::from_ref(&home));
-    let org = zed.orgs().get(&home).await.map(wire).unwrap();
+    let org = zed
+        .orgs()
+        .get(&home, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(org["name"], "Notes", "named after the instance: {org}");
     assert_eq!(
         org["members"][&s(&zed.auth().me().await.map(wire).unwrap()["accountId"])],
@@ -207,7 +218,11 @@ async fn an_instance_goes_where_its_release_says() {
         .unwrap();
     assert_ne!(own, home);
     assert_eq!(
-        zed.orgs().get(&own).await.map(wire).unwrap()["name"],
+        zed.orgs()
+            .get(&own, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["name"],
         "Board",
         "the instance's name made to fit"
     );
@@ -230,7 +245,11 @@ async fn an_instance_goes_where_its_release_says() {
         .await
         .unwrap();
     assert_eq!(
-        zed.orgs().get(&fresh).await.map(wire).unwrap()["name"],
+        zed.orgs()
+            .get(&fresh, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["name"],
         "Fresh"
     );
     let named = create(
@@ -242,7 +261,11 @@ async fn an_instance_goes_where_its_release_says() {
     .await
     .unwrap();
     assert_eq!(
-        zed.orgs().get(&named).await.map(wire).unwrap()["name"],
+        zed.orgs()
+            .get(&named, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["name"],
         "Named"
     );
     refused(
@@ -272,10 +295,11 @@ async fn an_instance_goes_where_its_release_says() {
 async fn an_app_is_transferred_only_to_a_member_of_its_organization() {
     let c = Cluster::start(3).await;
     let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let _ok = alice
         .packages()
-        .upload(release(EITHER, None))
+        .upload(release(EITHER, None), None)
         .await
         .unwrap();
     let app = alice

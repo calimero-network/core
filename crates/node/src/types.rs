@@ -27,7 +27,7 @@ pub enum Caller {
     /// The app itself: an `xcall` from app `app` (then the caller is the calling
     /// app). Never from a client: the API builds callers from credentials.
     App { app: AppId },
-    /// The platform itself: a component's timer ticks (D34), which reach only
+    /// The platform itself: a component's timer ticks, which reach only
     /// methods whose ABI says `allowSystem`. Never from a client.
     System,
     /// An anonymous visitor through one of the instance's public links
@@ -71,7 +71,7 @@ impl Caller {
         matches!(self, Self::Account { .. } | Self::ApiKey { .. })
     }
 
-    /// The caller as the component host core sees it (the WIT `caller`, D13).
+    /// The caller as the component host core sees it (the WIT `caller`).
     #[must_use]
     pub fn to_host(&self) -> calimero_app_host::Caller {
         use calimero_app_host::Caller as H;
@@ -513,6 +513,10 @@ pub struct AppRecord {
     /// The last upgrade tried on this app, done or failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_upgrade: Option<UpgradeRecord>,
+    /// When a person's own upgrade of it last applied after its deployment changed hands
+    /// (`SystemState::handed_over_unseen`); set only once a deployment has. Left out when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_seen_at: Option<u64>,
     /// The deployment it was created from (`system::Deployment`), at a
     /// release that deployment offered then. Absent (a record from before,
     /// or an instance made from a release directly): none, and it is left
@@ -558,6 +562,53 @@ pub struct AppRecord {
     /// (egress on, the default), so a record writes as it did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub egress_off: bool,
+    /// The package and signer it is pinned to, set once it runs a release declaring
+    /// `lineage: pinned` and never cleared (`SystemState::within_lineage`). Left out when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<AppLineage>,
+}
+
+/// What a pinned instance stays on ([`AppRecord::lineage`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppLineage {
+    pub package: String,
+    pub signer_id: String,
+    /// The newest release version it has been judged at, raised by every move that applies and
+    /// never lowered: nothing older is reachable again, whatever is installed. Empty in a record
+    /// written before it, which an import raises to the release it runs.
+    #[serde(default)]
+    pub floor: String,
+}
+
+impl AppLineage {
+    /// Whether `version` is no older than the floor and than `runs`, the release the instance
+    /// runs, all read as semver. An empty floor is none beyond `runs`; with neither, or a
+    /// version that does not parse, nothing is.
+    #[must_use]
+    pub fn at_least(&self, version: &str, runs: Option<&str>) -> bool {
+        let parse = |v: &str| semver::Version::parse(v).ok();
+        let Some(to) = parse(version) else {
+            return false;
+        };
+        let floor = (!self.floor.is_empty()).then(|| parse(&self.floor));
+        let runs = runs.map(parse);
+        (floor.is_some() || runs.is_some())
+            && floor.is_none_or(|f| f.is_some_and(|f| to >= f))
+            && runs.is_none_or(|r| r.is_some_and(|r| to >= r))
+    }
+
+    /// Raise the floor to `version` when it is newer, or set it where there is none (or none
+    /// that parses); a `version` that does not parse is never written.
+    pub fn raise_floor(&mut self, version: &str) {
+        if semver::Version::parse(version).is_err() {
+            return;
+        }
+        let unreadable = semver::Version::parse(&self.floor).is_err();
+        if unreadable || self.at_least(version, None) && version != self.floor {
+            self.floor = version.to_owned();
+        }
+    }
 }
 
 /// The backup a restore takes an app's state from (`crate::backup`): the
@@ -1000,7 +1051,7 @@ impl KeyFollowUp {
 }
 
 /// A follow-up with its arguments only by a salted hash (hex SHA-256 of the
-/// salt, then [`KeyFollowUp::args_bytes`]): the system log reaches nodes
+/// salt, then `KeyFollowUp::args_bytes`): the system log reaches nodes
 /// the app's organization never approved, so it holds none of an app's data.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1040,6 +1091,9 @@ pub struct RefreshRecord {
     /// The registered origin that opened it (`SessionClaims::origin`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// That origin's registration (`SessionClaims::registration`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub registration: String,
     /// The token's public key (`proof::refresh_key`, hex), which signs its
     /// exchange (`UseRefresh`). Empty in records from before: those are not
     /// exchanged, and their holders sign in again.
@@ -1052,6 +1106,59 @@ pub struct RefreshRecord {
     /// they did.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub opened_at: u64,
+    /// The holder key the session is bound to (base64url, an uncompressed P-256 point,
+    /// [`crate::proof::check_holder_key`]): its private half is a browser's non-extractable
+    /// WebCrypto key, and every use of the token carries its signature
+    /// ([`crate::proof::verify_refresh_holder`]), so the token alone, copied off the device,
+    /// refreshes nothing. Stated in the sign-in's challenge, so the passkey signs the
+    /// binding, and carried unchanged by every exchange. Such a token lives
+    /// [`HOLDER_REFRESH_TTL_SECS`] rather than [`REFRESH_TTL_SECS`]. Left out when `None`, so
+    /// records without one read, write and are signed as they were.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holder: Option<String>,
+}
+
+/// A holder's proof that it uses a refresh token: `signature` (base64url, the 64-byte `r ‖ s`
+/// of ECDSA P-256 with SHA-256) by the session's holder key ([`RefreshRecord::holder`]) over
+/// [`crate::proof::refresh_holder_message`] of the token's hash and `at` (Unix seconds). A
+/// refresh carries it, and so does the `RefreshReused` a reused token logs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HolderProof {
+    pub at: u64,
+    pub signature: String,
+}
+
+/// How long a refresh token lives (seconds) when no holder key binds it: 30 days.
+pub const REFRESH_TTL_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// How long a refresh token bound to a holder key lives (seconds): 7 days. Only a browser
+/// binds one, so this is a browser session's lifetime: a device that stays away a week
+/// signs in again.
+pub const HOLDER_REFRESH_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
+impl RefreshRecord {
+    /// How long a token of this record lives: [`HOLDER_REFRESH_TTL_SECS`] when a holder key
+    /// binds it, else [`REFRESH_TTL_SECS`].
+    #[must_use]
+    pub const fn ttl(&self) -> u64 {
+        refresh_ttl(self.holder.is_some())
+    }
+
+    /// When the token was issued: its expiry less its lifetime.
+    #[must_use]
+    pub const fn issued_at(&self) -> u64 {
+        self.expires_at.saturating_sub(self.ttl())
+    }
+}
+
+/// A refresh token's lifetime, by whether a holder key binds it ([`RefreshRecord::ttl`]).
+#[must_use]
+pub const fn refresh_ttl(held: bool) -> u64 {
+    if held {
+        HOLDER_REFRESH_TTL_SECS
+    } else {
+        REFRESH_TTL_SECS
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -1215,7 +1322,7 @@ pub struct Org {
     #[serde(default)]
     pub upgrade_runs: std::collections::BTreeMap<String, UpgradeRun>,
     /// The organization's recovery key and any recovery under way
-    /// (`docs/specs/org-recovery.md`); absent for an organization that never
+    /// ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)); absent for an organization that never
     /// set one, as every organization written before this field was.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery: Option<OrgRecovery>,
@@ -1504,7 +1611,7 @@ pub struct PendingRecovery {
 pub const RECOVERY_DELAY_SECS: u64 = 72 * 60 * 60;
 
 /// An account recovery started with the account's recovery code, not
-/// finished or cancelled yet (`docs/specs/account-recovery.md`): the passkey
+/// finished or cancelled yet ([Account recovery](https://calimero-network.github.io/core/protocol/identities/#account-recovery)): the passkey
 /// it adds, [`RECOVERY_DELAY_SECS`] after the start (the same delay as an
 /// organization's), unless one of the account's passkeys cancels first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1519,17 +1626,27 @@ pub struct PendingAccountRecovery {
 }
 
 impl PendingAccountRecovery {
-    /// What the start answers and `/auth/me` shows: never the credential's
-    /// public key.
+    /// What the start answers and `/auth/me` shows: never the credential's public key.
     #[must_use]
-    pub fn json(&self, account: &str) -> serde_json::Value {
-        serde_json::json!({
-            "accountId": account,
-            "credentialId": self.credential.id,
-            "startedAt": self.started_at,
-            "readyAt": self.ready_at,
-        })
+    pub fn view(&self, account: &str) -> AccountRecoveryPending {
+        AccountRecoveryPending {
+            account_id: account.to_owned(),
+            credential_id: self.credential.id.clone(),
+            started_at: self.started_at,
+            ready_at: self.ready_at,
+        }
     }
+}
+
+/// An account recovery under way: the passkey it would add, when it started and when it may
+/// finish (Unix seconds).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountRecoveryPending {
+    pub account_id: AccountId,
+    pub credential_id: String,
+    pub started_at: u64,
+    pub ready_at: u64,
 }
 
 /// The most bytes of JSON one metadata value holds (org, member, team, app).
@@ -1869,7 +1986,7 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
-/// Who receives an event (R9). Resolved when the event is sent to a
+/// Who receives an event. Resolved when the event is sent to a
 /// subscriber, against the system state of that moment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -1917,7 +2034,7 @@ pub struct EventRecord {
     pub seq: u32,
     pub kind: String,
     pub data: serde_json::Value,
-    /// A component's event: who receives it (R9), checked when it is sent.
+    /// A component's event: who receives it, checked when it is sent.
     /// `None` for an event that goes to everyone who reaches the app (one an SDK
     /// 0.12 app recorded).
     #[serde(default, skip_serializing_if = "Option::is_none")]

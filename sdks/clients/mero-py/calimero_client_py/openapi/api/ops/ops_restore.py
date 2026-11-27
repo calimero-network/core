@@ -7,9 +7,9 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
+from ...models.app_restored import AppRestored
 from ...models.error import Error
 from ...models.ops_restore_body import OpsRestoreBody
-from ...models.ops_restore_response_200 import OpsRestoreResponse200
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsRestoreResponse200]]:
+) -> Optional[Union[AppRestored, Error]]:
     if response.status_code == 200:
-        response_200 = OpsRestoreResponse200.from_dict(response.json())
+        response_200 = AppRestored.from_dict(response.json())
 
         return response_200
 
@@ -81,7 +81,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsRestoreResponse200]]:
+) -> Response[Union[AppRestored, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -95,16 +95,20 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: OpsRestoreBody,
-) -> Response[Union[Error, OpsRestoreResponse200]]:
+) -> Response[Union[AppRestored, Error]]:
     """Restore an app from its sealed backup
 
-     Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup
-    (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every
-    replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
+     Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's
+    `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the
+    backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once
+    every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
-    the file's name and `sha256` its body's.
+    the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only
+    from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`),
+    never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the
+    signature is asked for.
 
     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first;
     send it again with `operatorProof`, the operator key's signature over `details.message` and its
@@ -119,7 +123,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsRestoreResponse200]]
+        Response[Union[AppRestored, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -139,16 +143,20 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: OpsRestoreBody,
-) -> Optional[Union[Error, OpsRestoreResponse200]]:
+) -> Optional[Union[AppRestored, Error]]:
     """Restore an app from its sealed backup
 
-     Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup
-    (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every
-    replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
+     Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's
+    `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the
+    backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once
+    every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
-    the file's name and `sha256` its body's.
+    the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only
+    from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`),
+    never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the
+    signature is asked for.
 
     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first;
     send it again with `operatorProof`, the operator key's signature over `details.message` and its
@@ -163,7 +171,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsRestoreResponse200]
+        Union[AppRestored, Error]
     """
 
     return sync_detailed(
@@ -178,16 +186,20 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: OpsRestoreBody,
-) -> Response[Union[Error, OpsRestoreResponse200]]:
+) -> Response[Union[AppRestored, Error]]:
     """Restore an app from its sealed backup
 
-     Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup
-    (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every
-    replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
+     Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's
+    `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the
+    backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once
+    every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
-    the file's name and `sha256` its body's.
+    the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only
+    from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`),
+    never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the
+    signature is asked for.
 
     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first;
     send it again with `operatorProof`, the operator key's signature over `details.message` and its
@@ -202,7 +214,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsRestoreResponse200]]
+        Response[Union[AppRestored, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -220,16 +232,20 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: OpsRestoreBody,
-) -> Optional[Union[Error, OpsRestoreResponse200]]:
+) -> Optional[Union[AppRestored, Error]]:
     """Restore an app from its sealed backup
 
-     Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup
-    (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every
-    replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
+     Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's
+    `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the
+    backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once
+    every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
-    the file's name and `sha256` its body's.
+    the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only
+    from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`),
+    never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the
+    signature is asked for.
 
     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first;
     send it again with `operatorProof`, the operator key's signature over `details.message` and its
@@ -244,7 +260,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsRestoreResponse200]
+        Union[AppRestored, Error]
     """
 
     return (

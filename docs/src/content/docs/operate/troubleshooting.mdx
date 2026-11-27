@@ -17,6 +17,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `no data directory: --data-dir DIR (or --node NAME)` | `run` without `--node` and without `--data-dir` | Pass one. |
 | `peer must be id=url` | A `--peers` entry without `=` | `--peers 1=https://n1/,2=https://n2/`. |
 | `a TDX node takes its storage key from mero-kms only` | `--storage-key` or `--storage-key-file` without `--dev` | Use `--kms-url` with `--kms-identity`, or add `--dev` on a development machine. |
+| `--dev attests with mock quotes, so it never takes a key from mero-kms` | `--dev` with `--kms-url` | A development node never asks mero-kms: drop `--kms-url` and `--kms-identity`, or run without `--dev`. |
 | `no storage key: pass --kms-url with --kms-identity` | TDX mode with no key source | As it says. |
 | `mero-kms needs both --kms-url and --kms-identity` | One of the two | Give both. |
 | `a TDX node needs MERO_TEE_VERSION and MERO_TEE_PROFILE` | Not running in a mero-tee image, or the image did not set them | Run in the image, or set `--tee-release`/`--tee-profile` (or `--peer-profiles`); for a local node use `--dev`. |
@@ -50,6 +51,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `401` "the passkey this session used was removed" | The device was revoked | Sign in with another passkey. |
 | `403` "this needs a passkey session, not an API key" | Managing credentials, approvals or upgrades with an API key | Use a passkey session. |
 | `403` "this API key is scoped; installing code …" | A scoped or read-only key installing or creating apps | Use an unscoped key or a session. |
+| `403` "API key not scoped to this app" or "this API key is scoped; this needs …" | A key scoped to other apps reading or changing this one, or a scoped key changing an organization's settings | Use a key scoped to this app, an unscoped key, or a session. |
 | `403` "a session opened on an app's frontend can use that app only" | An app-bound session doing account work | Do it on the cluster's own page (its `--origins`, the Cloud console on Calimero Cloud), or, for creating an organization, minting an invite or joining with one, have the app ask the [consent page](/protocol/consent-page/#organizations-and-invites) (`createOrg`, `createInvite`, `acceptInvite`). |
 | `403` "a session opened on an app's frontend changes only that app's own teams" | An app-bound session changing a team outside its package's app team, or the app team itself | Do it on the cluster's own page. |
 | `403` "the Ops API is disabled on this node" | No `--ops-token` / `--ops-token-sha256` | Configure one and restart. |
@@ -60,6 +62,8 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `403 SIGN_UP_REFUSED` | The cluster's sign-up policy is `invite` or `closed` and no valid invite came with the sign-up | Sign up with an organization or cluster sign-up invite ([Sign-up policy](/operate/auth/#sign-up-policy)). |
 | `403 DEPLOY_NOT_GRANTED` | An install where `--deployments granted` and the account (or its organization) holds no live deployer grant | The operator (or the cluster's owner) grants one: `POST /ops/deployers`. |
 | `409 CONSENT_STALE` | What a consent page showed changed before the person approved it | The app asks again (`POST /consent/requests`). |
+| `403 SIGN_COUNT_REPLAYED` | The passkey's signature counter did not move past the one the cluster last saw: another copy of the passkey signed since (two `meroctl` commands at once with one `--dev-passkey` file, or a file restored from an older copy) | Sign again with the passkey's current copy; run commands that share one passkey file one at a time. |
+| `403 ASSERTION_REFUSED` | A step-up approval (`confirm`) whose assertion did not verify: wrong origin, relying party or signature | Sign the challenge again from an origin in `--origins`; the session itself is still good. |
 | `412 CONFIRM_REQUIRED` | The action needs a passkey assertion | A browser or SDK client answers it; `meroctl` needs `--dev-passkey` on development clusters. |
 
 ## Calls, reads and leaders
@@ -74,7 +78,7 @@ See the [node API reference](/operate/admin-api/#errors) for the full list.
 | `404 NOT_FOUND` "no such app" | The app does not exist, or the caller does not reach it | Check the id or alias, and the app's access. |
 | `403` "read-only in this team: the call would write" | A read-only team member called a method that is not a view | Change their role, or call a view. |
 | `422 APP_ERROR` | The app's method returned an error | The app's own logic; see `message` and `details`. |
-| `413 ARGS_TOO_LARGE` | A call's arguments over the node's argument cap, refused before the call runs | Send less per call; pass large content as a blob and its id. |
+| `413 ARGS_TOO_LARGE` | A call's or view's arguments over the node's argument cap, refused before it runs | Send less per call; pass large content as a blob and its id. |
 | `413 TOO_LARGE` | A call's log entry over 1 MiB, or a bundle over 16 MiB | Write less per call; keep large content in blobs. |
 | `429 RATE_LIMITED` on events | The node has 4096 open streams | Use another node, or close idle streams. |
 

@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.passkey_add_finish_body import PasskeyAddFinishBody
-from ...models.passkey_add_finish_response_200 import PasskeyAddFinishResponse200
+from ...models.passkey_added import PasskeyAdded
 from typing import cast
 
 
@@ -34,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PasskeyAddFinishResponse200]]:
+) -> Optional[Union[Error, PasskeyAdded]]:
     if response.status_code == 200:
-        response_200 = PasskeyAddFinishResponse200.from_dict(response.json())
+        response_200 = PasskeyAdded.from_dict(response.json())
 
         return response_200
 
@@ -73,7 +73,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PasskeyAddFinishResponse200]]:
+) -> Response[Union[Error, PasskeyAdded]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -86,7 +86,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: PasskeyAddFinishBody,
-) -> Response[Union[Error, PasskeyAddFinishResponse200]]:
+) -> Response[Union[Error, PasskeyAdded]]:
     """Finish adding a passkey
 
      Answers `412` first; sent again with `confirm` signed by a passkey the account already has.
@@ -103,7 +103,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PasskeyAddFinishResponse200]]
+        Response[Union[Error, PasskeyAdded]]
     """
 
     kwargs = _get_kwargs(
@@ -121,7 +121,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: PasskeyAddFinishBody,
-) -> Optional[Union[Error, PasskeyAddFinishResponse200]]:
+) -> Optional[Union[Error, PasskeyAdded]]:
     """Finish adding a passkey
 
      Answers `412` first; sent again with `confirm` signed by a passkey the account already has.
@@ -138,7 +138,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PasskeyAddFinishResponse200]
+        Union[Error, PasskeyAdded]
     """
 
     return sync_detailed(
@@ -151,7 +151,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: PasskeyAddFinishBody,
-) -> Response[Union[Error, PasskeyAddFinishResponse200]]:
+) -> Response[Union[Error, PasskeyAdded]]:
     """Finish adding a passkey
 
      Answers `412` first; sent again with `confirm` signed by a passkey the account already has.
@@ -168,7 +168,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PasskeyAddFinishResponse200]]
+        Response[Union[Error, PasskeyAdded]]
     """
 
     kwargs = _get_kwargs(
@@ -184,7 +184,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: PasskeyAddFinishBody,
-) -> Optional[Union[Error, PasskeyAddFinishResponse200]]:
+) -> Optional[Union[Error, PasskeyAdded]]:
     """Finish adding a passkey
 
      Answers `412` first; sent again with `confirm` signed by a passkey the account already has.
@@ -201,7 +201,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PasskeyAddFinishResponse200]
+        Union[Error, PasskeyAdded]
     """
 
     return (

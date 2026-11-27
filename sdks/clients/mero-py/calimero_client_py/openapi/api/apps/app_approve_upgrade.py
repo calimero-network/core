@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_approve_upgrade_body import AppApproveUpgradeBody
-from ...models.app_approve_upgrade_response_200 import AppApproveUpgradeResponse200
+from ...models.approval_logged import ApprovalLogged
 from ...models.error import Error
 from typing import cast
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppApproveUpgradeResponse200, Error]]:
+) -> Optional[Union[ApprovalLogged, Error]]:
     if response.status_code == 200:
-        response_200 = AppApproveUpgradeResponse200.from_dict(response.json())
+        response_200 = ApprovalLogged.from_dict(response.json())
 
         return response_200
 
@@ -86,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppApproveUpgradeResponse200, Error]]:
+) -> Response[Union[ApprovalLogged, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -100,7 +100,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppApproveUpgradeBody,
-) -> Response[Union[AppApproveUpgradeResponse200, Error]]:
+) -> Response[Union[ApprovalLogged, Error]]:
     """Approve a red update first, for a second approver to apply
 
      Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green
@@ -127,7 +127,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppApproveUpgradeResponse200, Error]]
+        Response[Union[ApprovalLogged, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -147,7 +147,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppApproveUpgradeBody,
-) -> Optional[Union[AppApproveUpgradeResponse200, Error]]:
+) -> Optional[Union[ApprovalLogged, Error]]:
     """Approve a red update first, for a second approver to apply
 
      Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green
@@ -174,7 +174,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppApproveUpgradeResponse200, Error]
+        Union[ApprovalLogged, Error]
     """
 
     return sync_detailed(
@@ -189,7 +189,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppApproveUpgradeBody,
-) -> Response[Union[AppApproveUpgradeResponse200, Error]]:
+) -> Response[Union[ApprovalLogged, Error]]:
     """Approve a red update first, for a second approver to apply
 
      Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green
@@ -216,7 +216,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppApproveUpgradeResponse200, Error]]
+        Response[Union[ApprovalLogged, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -234,7 +234,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppApproveUpgradeBody,
-) -> Optional[Union[AppApproveUpgradeResponse200, Error]]:
+) -> Optional[Union[ApprovalLogged, Error]]:
     """Approve a red update first, for a second approver to apply
 
      Where the app's policy asks for a second approver (`409 ONE_APPROVAL` otherwise, and for a green
@@ -261,7 +261,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppApproveUpgradeResponse200, Error]
+        Union[ApprovalLogged, Error]
     """
 
     return (

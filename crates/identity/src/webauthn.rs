@@ -18,6 +18,11 @@ const FLAG_UP: u8 = 0x01;
 const FLAG_UV: u8 = 0x04;
 const FLAG_AT: u8 = 0x40;
 
+/// The longest credential id a registration takes, in bytes: WebAuthn's own
+/// bound on `credentialIdLength`. A new credential is held in a sign-up's
+/// ceremony and logged with its account, so a longer one is refused.
+pub const MAX_CREDENTIAL_ID_BYTES: usize = 1023;
+
 /// A credential's public key.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "alg", content = "key")]
@@ -184,6 +189,20 @@ pub fn claimed_origin(client_data_json: &str) -> Option<String> {
     Some(cd.origin)
 }
 
+/// The frame a ceremony ran in, as the browser reports it: `crossOrigin` is
+/// true in a frame whose ancestors are on another origin, and `topOrigin`
+/// names the top-level page then. An older browser names neither. Read only
+/// where the node takes a ceremony (`check_client_data`), not by the checks
+/// every replica runs at apply.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Frame {
+    #[serde(default)]
+    cross_origin: bool,
+    #[serde(default)]
+    top_origin: Option<String>,
+}
+
 fn check_client_data(
     rp: &RelyingParty,
     client_data_json: &[u8],
@@ -191,6 +210,8 @@ fn check_client_data(
     challenge: &[u8],
 ) -> Result<(), Error> {
     let cd: ClientData =
+        serde_json::from_slice(client_data_json).map_err(|_| Error::Malformed("client data"))?;
+    let frame: Frame =
         serde_json::from_slice(client_data_json).map_err(|_| Error::Malformed("client data"))?;
     if cd.kind != kind {
         return Err(Error::Mismatch("ceremony type"));
@@ -200,6 +221,10 @@ fn check_client_data(
     }
     if !rp.origins.iter().any(|o| o == &cd.origin) {
         return Err(Error::Mismatch("origin"));
+    }
+    // A passkey ceremony another site framed is not the person acting on ours.
+    if frame.cross_origin || frame.top_origin.is_some_and(|top| top != cd.origin) {
+        return Err(Error::Mismatch("cross-origin frame"));
     }
     Ok(())
 }
@@ -265,6 +290,9 @@ pub fn verify_registration(
         .credential
         .as_ref()
         .ok_or(Error::Malformed("no attested credential"))?;
+    if id.len() > MAX_CREDENTIAL_ID_BYTES {
+        return Err(Error::Malformed("credential id"));
+    }
     Ok(Credential {
         id: enc(id),
         public_key: cose_public_key(key)?,

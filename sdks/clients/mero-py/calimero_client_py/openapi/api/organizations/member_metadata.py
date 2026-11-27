@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.member_metadata_body import MemberMetadataBody
 from ...models.member_metadata_response_200 import MemberMetadataResponse200
+from ...models.metadata_body import MetadataBody
 from typing import cast
 
 
@@ -17,7 +17,7 @@ def _get_kwargs(
     org: str,
     account: str,
     *,
-    body: MemberMetadataBody,
+    body: MetadataBody,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
@@ -50,6 +50,11 @@ def _parse_response(
 
         return response_401
 
+    if response.status_code == 404:
+        response_404 = Error.from_dict(response.json())
+
+        return response_404
+
     if response.status_code == 421:
         response_421 = Error.from_dict(response.json())
 
@@ -77,7 +82,7 @@ def sync_detailed(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberMetadataBody,
+    body: MetadataBody,
 ) -> Response[Union[Error, MemberMetadataResponse200]]:
     """Set a member's metadata
 
@@ -88,7 +93,8 @@ def sync_detailed(
     Args:
         org (str):
         account (str):
-        body (MemberMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -116,7 +122,7 @@ def sync(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberMetadataBody,
+    body: MetadataBody,
 ) -> Optional[Union[Error, MemberMetadataResponse200]]:
     """Set a member's metadata
 
@@ -127,7 +133,8 @@ def sync(
     Args:
         org (str):
         account (str):
-        body (MemberMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -150,7 +157,7 @@ async def asyncio_detailed(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberMetadataBody,
+    body: MetadataBody,
 ) -> Response[Union[Error, MemberMetadataResponse200]]:
     """Set a member's metadata
 
@@ -161,7 +168,8 @@ async def asyncio_detailed(
     Args:
         org (str):
         account (str):
-        body (MemberMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -187,7 +195,7 @@ async def asyncio(
     account: str,
     *,
     client: AuthenticatedClient,
-    body: MemberMetadataBody,
+    body: MetadataBody,
 ) -> Optional[Union[Error, MemberMetadataResponse200]]:
     """Set a member's metadata
 
@@ -198,7 +206,8 @@ async def asyncio(
     Args:
         org (str):
         account (str):
-        body (MemberMetadataBody):
+        body (MetadataBody): The request body of `POST /apps/{app}/metadata`, `POST
+            /orgs/{org}/metadata`, `POST /orgs/{org}/members/{account}/metadata`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

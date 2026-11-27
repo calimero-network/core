@@ -3,6 +3,10 @@
 //! Every request goes through a sealed channel to a node whose attestation was
 //! verified first ([`attest`]). People sign in with a passkey ([`Passkey`]);
 //! machines use an API key. Calls, views and events address one app instance.
+//!
+//! Spec: [What the verifier checks](https://calimero-network.github.io/core/protocol/tee-attestation/#what-the-verifier-checks),
+//! [Networking & sealed channels](https://calimero-network.github.io/core/protocol/networking/).
+//! Crate guide: [`crates/client/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/client/AGENTS.md).
 
 use calimero_identity::{Assertion, Registration};
 use futures_util::{Stream, StreamExt};
@@ -25,7 +29,7 @@ pub use files::ExportedFile;
 pub use generated::{routes, types};
 pub use route::OperatorSigner;
 pub use transport::{Body, Credential, Request, Transport};
-use types::AppAttestationResponseReplicasItem;
+use types::ReplicaAttestation;
 
 /// An error from a node, or from getting to one.
 #[derive(Debug, thiserror::Error)]
@@ -76,7 +80,7 @@ fn why(code: &str, details: &Value) -> String {
     }
 }
 
-/// How often a retry-safe route (`client.apps().call(..)`, D70) is sent again
+/// How often a retry-safe route (`client.apps().call(..)`) is sent again
 /// while the node is unavailable, and how long it waits first: 200 ms,
 /// doubling, at most 2 s (about 9 s in all, past a leader election).
 const CALL_RETRIES: u32 = 6;
@@ -124,7 +128,7 @@ impl Error {
         }
     }
 
-    /// Whether the same request may succeed if sent again (D70): the node
+    /// Whether the same request may succeed if sent again: the node
     /// answered `503`, or it could not be reached or timed out. A refusal, an
     /// attestation failure or a bad answer will not change on a retry.
     #[must_use]
@@ -237,10 +241,8 @@ impl Client {
         let mut governance: Option<attest::Governance> = None;
         for r in answer.replicas {
             let (node, doc) = match r {
-                AppAttestationResponseReplicasItem::Attestation { node, attestation } => {
-                    (node, attestation)
-                }
-                AppAttestationResponseReplicasItem::Error { node, error } => {
+                ReplicaAttestation::Attestation { node, attestation } => (node, attestation),
+                ReplicaAttestation::Error { node, error } => {
                     return Err(eyre::eyre!("replica {node} gave no attestation: {error}").into());
                 }
             };
@@ -348,7 +350,13 @@ impl Client {
         let registration = passkey.create(&begin.options);
         let s = self
             .auth()
-            .register_finish(&begin.challenge_id, registration, invite, Some(passkey))
+            .register_finish(
+                &begin.challenge_id,
+                registration,
+                invite,
+                None,
+                Some(passkey),
+            )
             .await?;
         self.use_session(s.clone()).await;
         Ok(s)
@@ -385,7 +393,7 @@ impl Client {
         passkey: &mut dyn Passkey,
         origin: Option<&str>,
     ) -> Result<Session> {
-        let begin = self.auth().login_begin(origin).await?;
+        let begin = self.auth().login_begin(origin, None).await?;
         let challenge =
             calimero_identity::from_b64url(begin.options["challenge"].as_str().unwrap_or_default())
                 .map_err(|e| eyre::eyre!("{e}"))?;
@@ -427,7 +435,7 @@ impl Client {
         let me = self.auth().me().await?;
         me.orgs
             .iter()
-            .find(|o| o.personal == Some(true))
+            .find(|o| o.personal)
             .map(|o| o.org_id.clone())
             .ok_or_else(|| {
                 Error::Transport(eyre::eyre!("the account has no personal organization"))
@@ -552,7 +560,7 @@ impl Client {
 
     /// One pipeline run: its state and each step's status, runs, outputs and reason.
     pub async fn pipeline_run(&self, app: &str, run: &str) -> Result<Value> {
-        Ok(Value::Object(self.apps().pipelines_get(app, run).await?))
+        route::value(&self.apps().pipelines_get(app, run).await?)
     }
 
     /// A pipeline run's progress as typed events (metadata only): `Snapshot`, then `Run` and
@@ -643,7 +651,8 @@ impl Client {
 
     /// The app's recent pipeline runs, newest first.
     pub async fn pipeline_runs(&self, app: &str) -> Result<Value> {
-        Ok(Value::Object(self.apps().pipelines_list(app, None).await?))
+        let runs = self.apps().pipelines_list(app, None).await?;
+        serde_json::to_value(runs).map_err(|e| Error::Transport(e.into()))
     }
 
     /// Starts a new run of an ended pipeline run's pipeline, release, inputs and params; `body` is

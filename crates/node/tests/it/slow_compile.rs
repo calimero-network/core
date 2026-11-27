@@ -8,7 +8,7 @@
 //! ticking beside it. Told by order, not latency: while the install still
 //! compiles, the ticker must keep ticking. The watch starts when the install is
 //! spawned, so what the install does on the worker before its compile (a `.mpk`
-//! verified there held it 50-75 ms idle, up to 300 ms loaded, before #5336) is
+//! verified there held it 50-75 ms idle, up to 300 ms loaded, when that ran on the worker) is
 //! watched too, and the longest gap between ticks is judged: a worker the install
 //! holds shows a gap as long as the hold.
 
@@ -31,7 +31,7 @@ const TICK: Duration = Duration::from_millis(10);
 /// longest a thread of its own did (a runner that stalls both stalls them alike).
 /// Measured on four cores, idle and beside six busy loops (20 runs): the free
 /// worker's longest gap was 11-29 ms, the free thread's 10-33 ms; a `.mpk` verified
-/// on the worker (before #5336) gave 52-61 ms idle beside a free thread's 10-12 ms,
+/// on the worker gave 52-61 ms idle beside a free thread's 10-12 ms,
 /// and up to 324 ms loaded; a compile on it gives the whole `WATCH`.
 const MAX_EXTRA_GAP: Duration = Duration::from_millis(30);
 /// A free worker ticks at least this share of what a thread of its own ticks in
@@ -79,7 +79,7 @@ async fn an_install_that_compiles_slowly_leaves_the_async_worker_free() {
     let install = {
         let node = Arc::clone(&node);
         tokio::spawn(async move {
-            node.install_upload(mpk, calimero_node::system::OPERATOR)
+            node.install_upload(mpk, calimero_node::system::OPERATOR, None)
                 .await
         })
     };
@@ -112,7 +112,8 @@ async fn an_install_that_compiles_slowly_leaves_the_async_worker_free() {
         "the async worker ticked {during} times in {WATCH:?} while an install compiled, \
          a free thread {free}: the install blocked it"
     );
-    let installed = installed.expect("the release installs once it compiles");
+    let installed = serde_json::to_value(installed.expect("the release installs once it compiles"))
+        .expect("serializes");
     assert_eq!(installed["package"], "com.test.slow-compile");
 }
 
@@ -135,4 +136,54 @@ fn watched(ticks: &Mutex<Vec<Instant>>, start: Instant, end: Instant) -> (usize,
         .max()
         .unwrap_or(end - start);
     (seen.len(), longest)
+}
+
+/// How long each compile holds its thread in
+/// [`one_account_filling_the_compile_queue_leaves_room_for_another`].
+const FAIR_COMPILE: Duration = Duration::from_millis(500);
+
+/// One account that sends more compiles at once than the queue holds takes
+/// one place in it, not all of them: another account's compile still waits its
+/// turn and compiles, where before it was refused `503 BUSY`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_account_filling_the_compile_queue_leaves_room_for_another() {
+    use calimero_node::compile::{Engine, MAX_CONCURRENT_COMPILES, MAX_QUEUED_COMPILES};
+
+    let wasm = common::component("fixture-kv");
+    let c = Cluster::start(1).await;
+    let node = Arc::clone(&c.nodes[0].as_ref().unwrap().node);
+    calimero_node::testing::slow_compiles(&node.config.public_url, FAIR_COMPILE);
+
+    let flood: Vec<_> = (0..=MAX_CONCURRENT_COMPILES + MAX_QUEUED_COMPILES)
+        .map(|i| {
+            let (node, wasm) = (Arc::clone(&node), wasm.clone());
+            tokio::spawn(async move {
+                node.compile(Engine::App, "busy-account", &format!("busy-{i}"), wasm)
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .collect();
+    // Every one of the flood has asked before the other account does.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let other = node
+        .compile(Engine::App, "other-account", "other", wasm.clone())
+        .await
+        .map(|_| ());
+    let mut refused = Vec::new();
+    for f in flood {
+        if let Err(e) = f.await.unwrap() {
+            refused.push((e.status, e.code));
+        }
+    }
+    eprintln!("the busy account's refusals: {refused:?}");
+    assert!(
+        other.is_ok(),
+        "another account's compile was refused while one account filled the queue: {:?}",
+        other.err().map(|e| (e.status, e.code))
+    );
+    assert!(
+        !refused.is_empty(),
+        "every compile of the account that filled the queue was taken"
+    );
 }

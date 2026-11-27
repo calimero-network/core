@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.origins_list_response_200 import OriginsListResponse200
+from ...models.origin_list import OriginList
 from typing import cast
 
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OriginsListResponse200]]:
+) -> Optional[Union[Error, OriginList]]:
     if response.status_code == 200:
-        response_200 = OriginsListResponse200.from_dict(response.json())
+        response_200 = OriginList.from_dict(response.json())
 
         return response_200
 
@@ -52,7 +52,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OriginsListResponse200]]:
+) -> Response[Union[Error, OriginList]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -65,7 +65,7 @@ def sync_detailed(
     package: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OriginsListResponse200]]:
+) -> Response[Union[Error, OriginList]]:
     """A package's frontend origins
 
      The custom origins (and rp-ids) the package's manager registered for its frontend.
@@ -80,7 +80,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OriginsListResponse200]]
+        Response[Union[Error, OriginList]]
     """
 
     kwargs = _get_kwargs(
@@ -98,7 +98,7 @@ def sync(
     package: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OriginsListResponse200]]:
+) -> Optional[Union[Error, OriginList]]:
     """A package's frontend origins
 
      The custom origins (and rp-ids) the package's manager registered for its frontend.
@@ -113,7 +113,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OriginsListResponse200]
+        Union[Error, OriginList]
     """
 
     return sync_detailed(
@@ -126,7 +126,7 @@ async def asyncio_detailed(
     package: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, OriginsListResponse200]]:
+) -> Response[Union[Error, OriginList]]:
     """A package's frontend origins
 
      The custom origins (and rp-ids) the package's manager registered for its frontend.
@@ -141,7 +141,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OriginsListResponse200]]
+        Response[Union[Error, OriginList]]
     """
 
     kwargs = _get_kwargs(
@@ -157,7 +157,7 @@ async def asyncio(
     package: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, OriginsListResponse200]]:
+) -> Optional[Union[Error, OriginList]]:
     """A package's frontend origins
 
      The custom origins (and rp-ids) the package's manager registered for its frontend.
@@ -172,7 +172,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OriginsListResponse200]
+        Union[Error, OriginList]
     """
 
     return (

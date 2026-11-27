@@ -24,8 +24,8 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   `CATCH_UP`, then `Unavailable`) until it has applied its whole log: a leader
   restored into its old term (a restart, no election) can hold entries it
   appended past the commit index it saved, which is not synced. The node's
-  component apps take their unique ids (D52, `term.seq.n`) from it.
-- `Group::propose_led_staged` (C2) is `propose_led` in two steps, for a build that is slow
+  component apps take their unique ids (`term.seq.n`) from it.
+- `Group::propose_led_staged` is `propose_led` in two steps, for a build that is slow
   (the node's logged runs: a guest that may wait in its host calls). The builder gets
   `Stage::Read(&M, applied)` under the applied state's read lock and answers
   `Staged::Done(Proposal)` or `Staged::Run(P)`; the lock is released and it gets
@@ -135,7 +135,7 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   the applied index stays where it was, and the batch's error stops the group's
   Raft core there (stop rather than diverge); restarted, it stops there again, with backoff. Regression:
   `a_failed_batch_stops_that_nodes_group_on_the_entry`,
-  `a_row_a_replica_cannot_read_stops_it_rather_than_applying_differently` (B3; the
+  `a_row_a_replica_cannot_read_stops_it_rather_than_applying_differently` (the
   `testing::fail_state_reads` hook makes a node's reads of a group fail).
   `GroupState::get` (views, routes) still reads a fault as absent and logs it; a
   machine's `restore` reads with `GroupState::try_get`, and `scan_hidden` fails on a
@@ -166,9 +166,22 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
   being deleted, a removed group's), before any group starts
   (`machine::clean_snapshot_dir`). Regressions: `tests/snapshot_files.rs`.
   A group builds a full snapshot every `Config::snapshot_every` (1,000) applied
-  entries whatever the state's size: openraft 0.9's `SnapshotPolicy` knows only
-  `LogsSinceLast(n)` and `Never`, so a size-aware policy would mean `Never` and
-  triggering builds from the engine (not done).
+  entries whatever the state's size (`openraft::SnapshotPolicy::LogsSinceLast`).
+  A whole snapshot re-seals the whole state, so a large app re-seals hundreds of
+  MB for a few MB of new log. `Config::snapshot_scale_bytes` (off by default)
+  makes the cadence size-aware: openraft's policy becomes `Never` and the engine
+  drives builds itself (`snapshot_supervisor`, a per-engine 1 s loop; spawned
+  only when the option is set). A group then snapshots every
+  `snapshot_every * clamp(state_bytes / scale, 1, MAX_SNAPSHOT_SCALE)` applied
+  entries, where `state_bytes` is its last snapshot file's size (a disk machine
+  streams its snapshot from RocksDB, never holding it in memory, so the file is
+  the cheapest size estimate): a small state keeps the base cadence, a `k`-unit
+  state re-seals every `k` intervals (so `k` times less often, capped), at the
+  cost of a longer log between snapshots. `snapshot_due` decides it; the trigger
+  is leader-only and openraft serializes builds, so an extra trigger while one
+  runs is a no-op. Regressions: `snapshot_cadence` (the policy math),
+  `the_engine_drives_snapshots_when_the_cadence_is_size_aware`,
+  `snapshot_amplification` (the re-seal count, fixed vs size-aware).
 - State digests (`digest.rs`): a disk machine's state has a digest, the sum mod 2^256 of
   `SHA-256(label ‖ len(key) ‖ key ‖ value)` over its rows (`StateDigest`), so it depends on
   the rows alone. `StateTx::put`/`delete` move it by the row written less the row replaced
@@ -207,12 +220,19 @@ app instance plus a system group per cluster, on [openraft](https://docs.rs/open
 - Entries are capped at `MAX_ENTRY_BYTES` (1 MiB; `WriteError::TooLarge`): openraft
   gives each append RPC one heartbeat interval, so a huge entry would never reach a
   follower. Large content goes to the sealed blob store (`Engine::put_blob`/`get_blob`).
-- Heartbeats travel batched per peer, always (B6; `network::Batcher`): openraft's own
+- Heartbeats travel batched per peer, always (`network::Batcher`): openraft's own
   heartbeat timer is off in every group (`enable_heartbeat: false`), and one engine
   ticker (`heartbeat_ticker`, every `heartbeat_ms`) triggers every group's heartbeats at
-  once (`RpcTarget::tick`); each empty append to a peer then waits up to
-  `HEARTBEAT_BATCH_WINDOW` (5 ms) and goes in one `Transport::send_batch` of at most
-  `MAX_HEARTBEATS_PER_BATCH` (1024). A batch not answered as a whole (unreachable,
+  once (`RpcTarget::tick`); the burst to a peer waits up to `HEARTBEAT_BATCH_WINDOW`
+  (5 ms) to coalesce and goes in one `Transport::send_batch` of at most
+  `MAX_HEARTBEATS_PER_BATCH` (1024). The wait is only for that burst: the ticker marks
+  each firing (`HeartbeatPacing::mark_tick`) and a heartbeat within
+  `TICK_COALESCE_GRACE` (10 ms) of a mark waits the window, while any other empty append
+  — a read-index confirm on a hot group's write path, which openraft sends as an empty
+  append between ticks — sees a zero window and goes at once (`HeartbeatPacing::window`).
+  So idle heartbeats still batch (one message per peer per tick at any group count) but a
+  write no longer pays the batching delay once per read-index round. A batch not answered
+  as a whole (unreachable,
   refused, the wrong number of answers) is sent again item by item, so each group gets
   its own answer (a peer on a release before it, which has no batch route, keeps its
   leaders this way through a rollout). `Engine::handle_rpc_batch` takes one. Cadence:
@@ -247,13 +267,13 @@ propose lock; an append takes no leadership round); 64 `Group::write`s in flight
 these too commit no faster than one sync each); and one RocksDB write synced and unsynced on the same disk, the
 unit a commit's latency is made of.
 
-Bench: `cargo bench -p calimero-log --bench heartbeats` (`benches/heartbeats.rs`,
-B6): 1, 100 and 1,000 idle groups (`HEARTBEAT_GROUPS`) on 3 engines, all led by
+Bench: `cargo bench -p calimero-log --bench heartbeats` (`benches/heartbeats.rs`):
+1, 100 and 1,000 idle groups (`HEARTBEAT_GROUPS`) on 3 engines, all led by
 node 1, on `Config::default()`; it prints the messages node 1 sends one follower per
 second and per heartbeat interval, the heartbeats each carries, and the process CPU per
 Raft message. Batched, a peer gets about one message per 200 ms tick (1.6 at 1,000
-groups, ~610 heartbeats each); before (#5340), one per shared group per 300 ms (663 per
+groups, ~610 heartbeats each); before batching, one per shared group per 300 ms (663 per
 200 ms at 1,000 groups).
 Routing a message is a hash lookup here (`Engine::handle_rpc`) and in the node
-(`SystemMachine::app_of_group`, #5163), so the CPU per message stays flat with the
+(`SystemMachine::app_of_group`), so the CPU per message stays flat with the
 groups.

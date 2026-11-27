@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.consent_page_result_response_200 import ConsentPageResultResponse200
+from ...models.consent_result import ConsentResult
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ConsentPageResultResponse200, Error]]:
+) -> Optional[Union[ConsentResult, Error]]:
     if response.status_code == 200:
-        response_200 = ConsentPageResultResponse200.from_dict(response.json())
+        response_200 = ConsentResult.from_dict(response.json())
 
         return response_200
 
@@ -67,7 +67,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ConsentPageResultResponse200, Error]]:
+) -> Response[Union[ConsentResult, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -80,7 +80,7 @@ def sync_detailed(
     request: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[ConsentPageResultResponse200, Error]]:
+) -> Response[Union[ConsentResult, Error]]:
     """What became of a consent request
 
      `decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the
@@ -99,7 +99,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ConsentPageResultResponse200, Error]]
+        Response[Union[ConsentResult, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -117,7 +117,7 @@ def sync(
     request: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[ConsentPageResultResponse200, Error]]:
+) -> Optional[Union[ConsentResult, Error]]:
     """What became of a consent request
 
      `decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the
@@ -136,7 +136,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ConsentPageResultResponse200, Error]
+        Union[ConsentResult, Error]
     """
 
     return sync_detailed(
@@ -149,7 +149,7 @@ async def asyncio_detailed(
     request: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[ConsentPageResultResponse200, Error]]:
+) -> Response[Union[ConsentResult, Error]]:
     """What became of a consent request
 
      `decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the
@@ -168,7 +168,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ConsentPageResultResponse200, Error]]
+        Response[Union[ConsentResult, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -184,7 +184,7 @@ async def asyncio(
     request: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[ConsentPageResultResponse200, Error]]:
+) -> Optional[Union[ConsentResult, Error]]:
     """What became of a consent request
 
      `decidedAt` (Unix seconds) is `null` while it is pending. `outcome`, once approved, is what the
@@ -203,7 +203,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ConsentPageResultResponse200, Error]
+        Union[ConsentResult, Error]
     """
 
     return (

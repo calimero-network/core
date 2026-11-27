@@ -119,6 +119,27 @@ a refresh token presented again after it was exchanged revokes its session.
 So every active session writes to the system log once an hour, not once per
 session token.
 
+A browser binds its session to a **holder key**: a P-256 key it makes with
+WebCrypto as non-extractable, so no script can read its private half. The
+sign-in names the key's public point (`holderKey` on
+`/auth/passkey/login/begin`, or on a sign-up's first finish); the challenge
+states it, so the passkey signs the binding with the session, and every
+exchange carries it to the next token unchanged (`UseRefresh` with another
+holder, or none, is refused at apply). Each use of such a refresh token must
+carry the key's ECDSA signature over `"calimero.refresh-holder.v1\0" ‖
+b64url(SHA-256(token)) ‖ "\0" ‖ at ‖ "\0"`, `at` within 120 seconds of the
+node's clock (`holderProof`); without one it is refused `401
+HOLDER_PROOF_REQUIRED`, before anything is spent or logged. So a refresh token
+copied off the device refreshes nothing, and such a token lives 7 days rather
+than 30. A proof replayed within its 120 seconds by someone who copied it with
+the token mints at most a session token, which the next exchange does not
+extend. The same holds for a bound token presented again after it was
+exchanged: it ends its session only with the key's proof for it (`RefreshReused`
+carries the proof, judged again at apply), so a copy of an old token taken off
+the device cannot sign its owner out either. Binding a session to a holder key is the `sessionHolders` feature
+(1.0.0-rc.39): below that cluster version a sign-in naming one is refused `409
+FEATURE_NOT_ACTIVE`, and the clients sign in unbound.
+
 A node verifies a token issued elsewhere without asking the issuer: it checks
 the signature against the issuer's signing key as it attested it at the
 address the cluster registered for that node, checks the expiry, and that the
@@ -218,7 +239,7 @@ On an `unknown` key, list the account's keys (`GET /auth/apikeys`) and revoke th
 Two retries of different approvals through two different nodes at the account's last free place can still both run their calls; the one the log refuses answers its `applied` calls.
 The account's activity (`GET /auth/activity`) lists the key's approval and one entry per call (`method`, `subject`: the app).
 The hosted consent page does not show `__create_api_key`: a client shows the `412`'s `then` itself.
-A node logs a key with follow-ups only from cluster version 1.0.0-rc.36 (`Feature::KeyFollowUps`).
+A node logs a key with follow-ups only from cluster version 1.0.0-rc.38 (`Feature::KeyFollowUps`; rc.37 was cut without it).
 A node before that release ignores `then` and makes a plain key, so a client checks that the `412` lists `then` and that the answer's `then` is as long as the one it sent.
 
 ## Upgrade keys
@@ -231,7 +252,8 @@ organization (`CreateApiKey { owner_approves }`, judged where it applies). Its r
 app, the package (by default the one the app runs) and that package's pinned
 signer, and the public half of an Ed25519 key derived from the key itself
 (`proof::api_key_public`: seed `SHA-256("calimero.api-key.v1\0" || key)`); the
-passkey consent covers all four.
+passkey consent covers all four. A package with no release its maker may use is
+answered `404 no such package`, as one the cluster lacks, before the passkey.
 
 - **What it does**: `POST /apps/{app}/upgrade { version }` for its app, with no
   step-up, to a release of its package installed under the signer it names (a
@@ -338,7 +360,7 @@ a developer's domain, so each registered origin carries its own `rpId`: the
 origin's host by default, or a parent domain of it that the manager names
 (`https://app.example.com` with `example.com`). The cluster's rp-id, or a
 parent of it, is refused, so the cluster's own passkeys never answer on a
-developer's site. A person signing in there makes a passkey for that site;
+developer's site. So is a public suffix (`co.uk`, `github.io`), as a browser refuses it. A person signing in there makes a passkey for that site;
 the account it opens is an ordinary cluster account whose sessions from that
 origin are always bound to the package. WebAuthn's Related Origin Requests
 (one rp-id, a `/.well-known/webauthn` list of origins) was not chosen:
@@ -371,7 +393,9 @@ state. An uninstalled package takes its origins with it.
 (lowercase, no path, no default port); `http://` only for a `localhost` name
 and only on a `--dev` node. One package per origin (first come; the cluster's
 own origins and served frontends are refused). 8 origins per package, 4096
-per cluster. CORS on the node's API admits registered origins. The node logs,
+per cluster. CORS on the node's API admits registered origins.
+Each node answers a preflight from its own applied state, so one sent to a lagging node can fail for a moment right after the origin is registered.
+The node logs,
 at `info`, each registration and removal (package, origin, rp-id) and each
 session opened on a registered origin (package and origin); who made the
 change is in the system log's command and at `debug` only, never in the
@@ -390,16 +414,51 @@ first). Only `https://host` with no port (`http://name.localhost:port` on a
 under the apps domain or the cluster's rp-id, not a node's API host; 4 per
 package and 64 per cluster; adding one needs every node on this release
 (`409 CLUSTER_NOT_UPGRADED`). The operator lists them, by the package's label,
-at `GET /ops/served-origins`, from which Calimero Cloud orders each one's TLS
-certificate for the cluster's attested nodes and routes the name. A custom
+at `GET /ops/served-origins`. A custom
 domain's sessions are only as safe as its DNS: whoever controls the name can
-serve their own page there and use its passkeys for that package. Design:
-`docs/specs/custom-domains.md`.
+serve their own page there and use its passkeys for that package
+([custom domains](/protocol/applications/#custom-domains)).
 
-Not yet: proof that the manager controls the origin (a squatter on another
-developer's origin denies them its use on this cluster, but never sees a
-token: the sessions go to the pages on that origin), and origins scoped to a
-deployment.
+Registering an origin proves nothing about controlling it: a manager who
+registers another developer's origin denies them its use on this cluster, but
+never sees a token, since the sessions go to the pages on that origin. Origins
+belong to a package, never to a deployment.
+
+**An instance's origins.** A package's origins are its manager's, so the
+customer who runs an instance of someone else's package (a Confidential KV
+store, say) registers a site of their own for that instance instead:
+whoever manages the instance (its owner or an admin of its organization)
+registers it with their passkey.
+
+| Action | Route | Consent |
+| --- | --- | --- |
+| List | `GET /apps/{app}/origins` | none |
+| Register | `POST /apps/{app}/origins { origin, rpId? }` | `{app} / __add_origin / { origin, rpId }` |
+| Remove | `DELETE /apps/{app}/origins { origin }` | `{app} / __remove_origin / { origin }` |
+
+The commands are `AddAppOrigin` and `RemoveAppOrigin` (cluster version
+1.0.0-rc.39, `409 FEATURE_NOT_ACTIVE` below it), judged where they apply. The
+registration is a package origin in every other way (its own rp-id, the
+ceremonies, CORS, a session bound to the instance's package and naming the
+origin, removal ending it), and one more rule: such a session reaches that
+instance alone. Any other instance answers `404` though the account reaches
+it, as does a new instance, and a team change is refused, as is a read of the
+organization's or the account's past the instance (`403`: the organization,
+its teams, invites, usage, update policy and upgrade runs, the account's usage
+and aliases, and taking back a delegation), and `/auth/me` names only the account's id and name and the
+instance's organization, with no passkeys and no recovery state. What the account may
+do in the instance is the instance's own access: a person who signs up there
+has a new account, which reaches the instance only once its managers let it in
+(a guest of the organization with a grant on the instance) and the app's own
+grants then decide. An instance's origin is never served, 4 per instance, 64 per
+organization's instances and 4096 per cluster (apart from packages' own 4096, so instances never fill the
+packages' room), and deleting the instance, moving it to another organization or handing it
+to a new owner takes them with it. The same
+first-come rule holds, one package or instance per origin, with one exception:
+the package's manager takes back an origin an instance of its own package
+holds (`POST /packages/{package}/origins`), which ends the instance's
+registration and the sessions opened under it. An instance of another package
+keeps it.
 
 ## Account recovery
 
@@ -487,7 +546,12 @@ never a recovery under way.
 **API keys end with it.** Whoever took the lost passkey may also have made API
 keys with it, and a key works without a passkey, so a finish revokes every API
 key of the account as it ends every session. The machines the person runs need
-new keys once the recovery finishes.
+new keys once the recovery finishes. A finish an earlier release logged
+(without `revoke_api_keys`) replays as that release applied it, keeping the
+account's API keys, so a replica that replays it after a restart reaches the
+state the others reached; from the cluster's `RequireCurrentRules` mark on,
+every finish revokes them. An account recovered that way revokes its keys
+itself once signed in (`DELETE /auth/apikeys/{key}`).
 
 | Who | Can they recover the account? | What limits it |
 | --- | --- | --- |
@@ -523,3 +587,102 @@ only a development cluster whose relying party accepts it can use it. Against
 a real cluster, people use their own authenticators in a browser and give
 programs API keys.
 
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src` unless another crate is named.
+The design and its reasons are above; a module's own detail is in its `//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Passkeys are per cluster
+
+Code: `api/passkeys.rs`.
+
+- A registration's `user.name` and `displayName` are `passkey_user_name`: person · `config.cluster` · `cluster_tag`, plus the app's name for a sign-up begun on a package origin.
+- `cluster_tag` is the first 2 bytes of the cluster identity key, public in `GET /sign-up` as `passkeyTag`.
+- Every user handle is random, since a shared one makes a password manager replace the earlier passkey.
+- An unknown credential is `401 PASSKEY_UNKNOWN_HERE` (`unknown_here`, from `check_assertion_for`).
+- A session names the passkey it was opened with (`SessionClaims::passkey`, `passkeyId` in `/auth/me`).
+
+### Passkey times and sessions
+
+- `Account::passkey_times` (`types::PasskeyTimes { addedAt, lastSignInAt }`) and `RefreshRecord::opened_at` are set at apply from the times entries carry.
+- Sources: `CreateAccount::at`, `AddPasskey::at`, a sign-in's `CreateRefresh` record and a recovery finish's record; `UseRefresh` keeps the old `opened_at`.
+- These fields are outside what a passkey signs (`account_args` and `sign_in_args` are unchanged), so an older replica checks the same consent.
+- `GET /auth/sessions` (`api::account_sessions`, at most `MAX_SESSIONS_LISTED`) gives `lastActiveAt` as `expires_at - REFRESH_TTL`, up to about 1 h 15 min behind.
+- `DELETE /auth/sessions/{session}` is `RevokeSession`; both routes are `holder`, as `/auth/logout-all` is.
+
+### Key follow-ups
+
+Code: `api::auth::follow_ups`, `types::KeyFollowUp`.
+
+1. `POST /auth/apikeys { then }` takes up to `MAX_KEY_FOLLOW_UPS` calls; `gate` and the ABI judge each before the passkey (`takes_follow_up`: a `Call`, never an action).
+2. `key:$key` becomes `key:<keyId>` in exact string values only (`for_key`).
+3. The consent (`CreateApiKey { then }`, `Feature::KeyFollowUps`) carries `types::SignedFollowUp`: arguments only as a hash salted per follow-up (`KeyFollowUp::signed`), because the system log reaches unapproved nodes.
+4. Both requests check `SystemState::api_key_room`; the retry takes `Node::api_key_turn`, catches up on the system log and runs `make_key` in a spawned task.
+5. The follow-ups run first through `calls::call_consented` under `follow_up_consent`, with a `FOLLOW_UP_KEY_PREFIX` idempotency key `/intents` refuses from clients.
+   A 5xx is retried up to `MAX_FOLLOW_UP_TRIES`; a failure answers `422 FOLLOW_UP_FAILED` with `applied` and `unknown` indexes and makes no key.
+6. `approval_of` adds an activity entry per follow-up.
+
+### Activity
+
+- `SystemState::activity` keeps the last `types::ACTIVITY_KEPT` `ActivityEntry { at, passkey, kind }` per account, beside `accounts` so `account_args` is unchanged.
+- `signIn` entries come from a session's opening record through `system::sign_in_of`.
+- `approval` entries come from one hook in `SystemMachine::run`: `system::approval_of` finds the consent `authorize` verified before the command applies.
+- The time is `proof::Consent::at`; a time of 0 records nothing, so a replayed old log adds nothing.
+- `GET /auth/activity` is `api::activity_list`, `holder` only.
+
+### Account recovery
+
+Code: `system/recovery.rs`, `api/recovery.rs`; the same `RECOVERY_DELAY_SECS` as [organization recovery](/protocol/organizations/#recovery).
+
+- The code is made by `calimero_identity::new_recovery_code` and read with `normalize_recovery_code` (at most `MAX_RECOVERY_CODE_CHARS`).
+- The log keeps only its Ed25519 key (`proof::recovery_key`) in `SystemState::recovery_keys`.
+- `SetAccountRecoveryKey` uses `consent_minted`; `RemoveAccountRecoveryKey` is `DELETE /auth/recovery`.
+- `StartAccountRecovery` carries `proof::sign_recover`, checked in `authorize` and spent, and records `SystemState::account_recoveries[a]` (`types::PendingAccountRecovery`).
+- `FinishAccountRecovery` (`Pending::RecoverFinish`) is verified at apply under the pending credential, then calls `SystemState::revoke_account_sessions`.
+  With `revoke_api_keys` (which the API sets) it also revokes the account's API keys; an entry without the flag replays keeping them.
+  The new session is an `api::NewSession`, as `CreateRefresh`; `409 RECOVERY_NOT_READY` before `readyAt` on `app_clock`.
+
+### Members' security
+
+- `api::org_members` is `holder` and needs `SystemState::is_org_admin`; rows are filtered by `Org::sees_member`.
+- Passkeys are counted up to `PASSKEYS_COUNTED`; `lastActiveDay` is `api::last_active`, over `PasskeyTimes::last_sign_in_at` and `api::session_use`.
+- `deployment_orgs` adds `memberCount` and `activeMembers30d` (`ACTIVE_WINDOW_SECS`).
+
+### Account proofs
+
+Code: `api/account_proof.rs`, `Node::account_proof`.
+
+- `POST /auth/account-proof { nonce, audience }` (a `holder` session) answers a `calimero_client::attest::AccountProof`.
+- It is the receipt key's signature over `"calimero.account-proof.v1\0" || JCS({ cluster, node, account, nonce, audience, issuedAt, expiresAt })`.
+- Limits: `ACCOUNT_PROOF_TTL` (5 min), `ACCOUNT_PROOF_NONCE`, `MAX_ACCOUNT_PROOF_AUDIENCE`, plain text only.
+- `GET /ops/nodes/{id}/receipt-key` answers the key `Node::session_issuer` holds for a node, so the operator checks a proof from any node.
+
+### Aliases
+
+`Account::aliases` (`PUT/GET/DELETE /auth/aliases/{alias}`, `GET /auth/aliases`); an alias names only an app its account reaches.
+
+### Registered origins
+
+Code: `origins.rs`, `api/origins.rs`.
+
+- A manager is `SystemState::manages_package`; commands are `AddPackageOrigin` and `RemovePackageOrigin`, checked in `authorize`.
+- `origins::covers_cluster` refuses an rp-id that is, or is a parent of, the cluster's.
+- `api::app_origin` is the one lookup (served, then registered) for ceremonies (`claimed_app`, `rp_with`), CORS (`lib.rs`) and the consent page's `returnTo`.
+- Begin routes take `origin` (`403 ORIGIN_NOT_REGISTERED`).
+- The origin rides in `SessionClaims::origin` and `RefreshRecord::origin`, kept by `Pending::SignUp` and stated nowhere in the sign-in challenge.
+- `principal` and `refresh` refuse such sessions once the origin is removed, and `UseRefresh` refuses an exchange that changes it.
+- `UninstallPackage` of the last release forgets them.
+- An instance's origin is a `PackageOrigin` with `app`; `AddAppOrigin` and `RemoveAppOrigin` are judged by `SystemState::manages_app`, `remove_app`, `TransferApp` and `MoveApp` forget them (`forget_app_origins`), and `Principal::origin_admits` keeps its sessions to that instance (`within`, `within_team`, `beyond_instance`, instance creation, app lists, streams).
+- Limits `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS` and, for instances, `MAX_ORIGINS_PER_APP`, `MAX_APP_ORIGINS_PER_ORG` and `MAX_APP_ORIGINS` (`SystemState::origins_full`, `SystemState::org_origins_full`); `http` only for `localhost` names on a `--dev` node (`allow_package_uploads`).
+
+#### Served origins
+
+The design is [custom domains](/protocol/applications/#custom-domains).
+
+- `PackageOrigin::served` and `AddPackageOrigin::served` are left out when false; `origins::add_args` builds the consent for both the API and `authorize`.
+- `app_host::layer` serves the site when `served_origin_of` names a served origin (`Node::served_site`, after `app_host_site`); `app_origin_package` stays apps-domain only.
+- `served_fits` refuses a port, a node without `--apps-domain` (`NOT_SERVING`), a name under the apps domain or the cluster's rp-id, a node's API host, and a held origin with the other `served`.
+- Limits `MAX_SERVED_ORIGINS_PER_PACKAGE` and `MAX_SERVED_ORIGINS` (the certificate metadata budget).
+- `require_upgraded_nodes` runs before the consent, so no older node drops the flag.
+- `GET /ops/served-origins` lists `{ origin, host, label, addedAt }` without package names, for mdma's certificates and routes.
+- merod terminates no TLS: Traefik in the TD does, with certificates mdma delivers.

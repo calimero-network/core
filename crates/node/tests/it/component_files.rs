@@ -214,13 +214,7 @@ impl Fixture {
 
     /// Waits until `holds` is true, or fails after a few seconds.
     async fn until(&self, what: &str, holds: impl Fn() -> bool) {
-        for _ in 0..200 {
-            if holds() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("{what}");
+        crate::harness::poll::until(crate::harness::poll::EVENTUALLY, what, holds).await;
     }
 
     /// Runs the segment sweep on every node now.
@@ -241,17 +235,20 @@ impl Fixture {
     }
 
     async fn wait_gone(&self, id: &str) {
-        for _ in 0..100 {
-            self.sweep_past_grace();
-            if self.holders_of_any(id).is_empty() {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!(
-            "the bytes of {id} are still on {:?}",
-            self.holders_of_any(id)
-        );
+        crate::harness::poll::eventually(
+            crate::harness::poll::EVENTUALLY,
+            &format!("the bytes of {id} are gone from every node"),
+            || {
+                self.sweep_past_grace();
+                let holders = self.holders_of_any(id);
+                std::future::ready(if holders.is_empty() {
+                    Ok(())
+                } else {
+                    Err(holders)
+                })
+            },
+        )
+        .await;
     }
 }
 
@@ -1471,6 +1468,21 @@ impl Fixture {
         sent.map_err(Box::new)
     }
 
+    /// Uploads `stream(len, seed)` as a plain blob through node `via`.
+    async fn blob_upload(
+        &self,
+        via: usize,
+        len: usize,
+        seed: u64,
+    ) -> Result<Value, Box<calimero_client::Error>> {
+        self.clients[via]
+            .apps()
+            .blob_upload(&self.app, stream(len, seed), None)
+            .await
+            .map(wire)
+            .map_err(Box::new)
+    }
+
     /// Who the app's files are charged to: alice's personal organization, where
     /// the app went as it named none, asked of the first node that answers (a
     /// test may stop one, or delete the app).
@@ -1521,13 +1533,19 @@ impl Fixture {
 
     /// Waits for the quota's count of alice's file bytes to reach `bytes`.
     async fn until_charged(&self, bytes: u64) {
-        for _ in 0..200 {
-            if self.charged().await == bytes {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("charged {} instead of {bytes}", self.charged().await);
+        crate::harness::poll::eventually(
+            crate::harness::poll::EVENTUALLY,
+            &format!("charged {bytes}"),
+            || async {
+                let charged = self.charged().await;
+                if charged == bytes {
+                    Ok(())
+                } else {
+                    Err(charged)
+                }
+            },
+        )
+        .await;
     }
 }
 
@@ -2052,9 +2070,7 @@ async fn the_info_and_the_list_of_an_upload_are_read_from_the_leader() {
     let file = owner.upload_bytes(&f.app, stream(4_000, 9)).await.unwrap();
     let (plain, file) = (plain["id"].as_str().unwrap(), file["id"].as_str().unwrap());
     f.c.restart(follower, |_| {}).await;
-    while f.node(follower).hosted(&f.app).is_none() {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    hosted_after_restart(&f, follower).await;
 
     let app = f.node(follower).sys(|s| s.apps[&f.app].clone());
     let (plain, file) = (hex_id(plain), hex_id(file));
@@ -2076,9 +2092,12 @@ async fn the_info_and_the_list_of_an_upload_are_read_from_the_leader() {
 
 /// Waits until node `i` hosts the app, then answers its group.
 async fn hosted_after_restart(f: &Fixture, i: usize) {
-    while f.node(i).hosted(&f.app).is_none() {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    crate::harness::poll::until(
+        crate::harness::poll::EVENTUALLY,
+        &format!("node {i} hosts the app after its restart"),
+        || f.node(i).hosted(&f.app).is_some(),
+    )
+    .await;
 }
 
 fn slow_raft(cfg: &mut calimero_node::Config) {
@@ -2157,6 +2176,18 @@ async fn a_node_that_hosts_no_replica_reads_the_upload_from_the_leader() {
     }
     let leader = f.leader();
     assert_ne!(leader, first, "the first replica still leads");
+    // The upload is charged in the system log: keep its leader running too.
+    for _ in 0..30 {
+        if !f.node(first).system.status().is_leader {
+            break;
+        }
+        let _r = f.node(second).system.raft().trigger().elect().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert!(
+        !f.node(first).system.status().is_leader,
+        "the first replica still leads the system group"
+    );
     f.c.stop(first).await;
     let up = f.clients[leader]
         .apps()
@@ -2306,16 +2337,15 @@ impl Fixture {
     }
 
     async fn until_leader_is_not(&self, old: usize) -> usize {
-        for _ in 0..200 {
-            if let Some(i) = self.c.app_leader(&self.app).filter(|i| *i != old) {
-                return i;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("no new leader");
+        crate::harness::poll::found(crate::harness::poll::EVENTUALLY, "a new leader", || {
+            self.c.app_leader(&self.app).filter(|i| *i != old)
+        })
+        .await
     }
 }
 
+/// An upload in three parts commits one file mark in one entry, and charges nothing before
+/// `complete`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_three_part_upload_commits_one_mark_at_one_index() {
     let f = start_with(Cluster::start_with(3, more_time).await).await;
@@ -2528,18 +2558,19 @@ async fn a_complete_retried_after_a_leader_change_replays_its_answer() {
     let _new = f.until_leader_is_not(leader).await;
     assert_eq!(f.complete(via, &upload).await.unwrap(), done);
     let payer = f.payer().await;
-    let mut charged = 0;
-    for _ in 0..100 {
-        charged = used(
+    let want = plain.len() as u64;
+    crate::harness::poll::eventually(crate::harness::poll::EVENTUALLY, "charged once", || async {
+        let charged = used(
             &f.clients[via].auth().usage().await.map(wire).unwrap(),
             &payer,
         );
-        if charged == plain.len() as u64 {
-            break;
+        if charged == want {
+            Ok(())
+        } else {
+            Err(charged)
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    assert_eq!(charged, plain.len() as u64, "charged once");
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3075,4 +3106,46 @@ async fn exports_are_rate_limited() {
     let (n, refusal) = refused.expect("a loop of exports is stopped");
     assert_eq!(refusal, (429, "TOO_MANY_EXPORTS".to_owned()));
     assert!((20..=45).contains(&n), "stopped after {n}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_uploaded_blob_is_charged_to_the_payer_and_its_delete_gives_it_back() {
+    let f = start().await;
+    let up = f.blob_upload(1, 6_000, 31).await.unwrap();
+    f.until_charged(6_000).await;
+    // The same bytes again: the app holds one blob, charged once.
+    let _again = f.blob_upload(2, 6_000, 31).await.unwrap();
+    let _more = f.blob_upload(0, 2_000, 32).await.unwrap();
+    f.until_charged(8_000).await;
+
+    let id = up["id"].as_str().unwrap();
+    let _logged = f.clients[0].apps().blob_delete(&f.app, id).await.unwrap();
+    f.until_charged(2_000).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_blob_upload_past_the_quota_is_refused_and_stores_nothing() {
+    let f = start().await;
+    f.set_file_quota(10_000).await;
+    let before = f.blob_counts();
+    let e = f.blob_upload(1, 20_000, 33).await.unwrap_err();
+    assert_eq!(status(*e), (429, "QUOTA_EXCEEDED".to_owned()));
+    assert_eq!(f.blob_counts(), before, "a refused upload stored bytes");
+    f.until_charged(0).await;
+
+    let _ok = f.blob_upload(0, 6_000, 34).await.unwrap();
+    let e = f.blob_upload(2, 6_000, 35).await.unwrap_err();
+    assert_eq!(status(*e), (429, "QUOTA_EXCEEDED".to_owned()));
+    f.until_charged(6_000).await;
+    let listed = f.clients[0]
+        .apps()
+        .blob_list(&f.app)
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(
+        listed["blobs"].as_array().map(Vec::len),
+        Some(1),
+        "{listed}"
+    );
 }

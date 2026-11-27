@@ -4,7 +4,7 @@
 // `Transport.request(method, path, options)` reaches one node route over the
 // attested, sealed channel with the credential held now; the runtime handles
 // attestation, sealing, the session and its refresh, `421 WRONG_NODE` moves,
-// D70 retries, the `412 CONFIRM_REQUIRED` passkey step-up, error mapping and
+// `503` retries, the `412 CONFIRM_REQUIRED` passkey step-up, error mapping and
 // server-sent events. Its pieces live here too: the node's attestation
 // (`attestation.ts`), the node directory (`directory.ts`), passkeys
 // (`passkey.ts`) and the typed refusals (`errors.ts`). This is the bottom layer:
@@ -43,6 +43,16 @@ export type { AttestationDoc, NodePolicy, NodeReleasePolicy, NodeVerification } 
 // The node directory a cluster's node list is read from.
 export { CLOUD_ENVIRONMENTS, DEFAULT_DIRECTORY, DirectoryError, cloudEnvironment } from './directory.js';
 export type { CloudEnvironment, CloudEnvironmentInfo, DirectoryFailure } from './directory.js';
+
+// The device key a session is bound to, so a copied refresh token refreshes nothing.
+export {
+  browserSessionHolder,
+  forgetSessionHolder,
+  generateHolderKeyPair,
+  holderFromKeyPair,
+  holderMessage,
+} from './holder.js';
+export type { HolderKeyStoreOptions, HolderProof, SessionHolder } from './holder.js';
 
 // Passkeys (WebAuthn) for the step-up and the ceremonies.
 export { browserPasskey, b64url, fromB64url, passkeyConfirm } from './passkey.js';

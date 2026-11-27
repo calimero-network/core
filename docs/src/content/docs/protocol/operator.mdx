@@ -45,7 +45,8 @@ app's upgrade, replica move or restore), `org:<id>` (an organization's run) or
 `__set_quotas` (`{ quotas }`, every limit after the change),
 `__set_org_quotas` (`{ payer, quotas }`), `__set_pools`, `__set_price_table`,
 `__set_replicas` (`{ replicas }`, the target set sorted; one signature covers
-both writes of the move), `__restore_app` (`{ backup, sha256 }`),
+both writes of the move), `__restore_app` (`{ backup, sha256 }`, with `bundle` and
+`computeBundle` for a pinned instance),
 `__set_backup_key` (`{ publicKey }`) and `__recover_holder`
 (`{ holder, slice, apps }`); `args` is the exact JSON text the
 node states; `nonce` is base64url, used once. A decision sent without a proof

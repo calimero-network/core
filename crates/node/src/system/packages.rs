@@ -1,7 +1,9 @@
 //! System commands for bundles, package releases, publishers and package origins.
 //!
 //! [`authorize`] judges the proof each carries and [`apply`] applies it;
-//! `system.rs` sends a command here by its [`super::Area`].
+//! `system.rs` sends a command here by its [`super::Area`]. Each arm of either
+//! is one call to a function of its own, in the order of the arms, and each
+//! refusal of this area's own rules is a named [`Rejection`] below.
 
 #[allow(
     clippy::wildcard_imports,
@@ -9,9 +11,86 @@
 )]
 use super::*;
 
+/// What `BindPublisher` answers: the key's binding generation now.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PublisherBound {
+    pub generation: u64,
+}
+
+/// What `UninstallPackage` answers (`#Uninstalled`): the versions it removed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Uninstalled {
+    pub removed: Vec<String>,
+}
+
+// This area's refusals. Each is `400 REJECTED`, the kind the bare message it
+// names was answered with; the message is what a client reads.
+
+/// A release whose pipelines pin a module release that is gone.
+const MODULE_GONE: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "a module the pipelines use is no longer installed",
+);
+/// A release of a package signed by another key than the one pinned first.
+const OTHER_PUBLISHER_KEY: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "the package is published under another key",
+);
+/// A release whose version is installed with other bytes.
+const OTHER_CONTENTS: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "that version is installed with other contents",
+);
+/// A release that gives upgrades back to the publisher after a lower one gave
+/// them to owners.
+const UPGRADES_OUT_OF_ORDER: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "a release may not give its package's upgrades back to the publisher once a lower one gave them to owners",
+);
+/// A release pinning its instances (`lineage: pinned`) whose version is not semver: no
+/// instance of it could ever move forward.
+const PINNED_NOT_SEMVER: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "a release that pins its instances (lineage: pinned) names a semver version",
+);
+/// An uninstall by someone other than whoever installed the package.
+const ONLY_INSTALLER_UNINSTALLS: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "only whoever installed the package (an account, or the operator) may uninstall it",
+);
+/// An uninstall of a version the package does not have.
+const NO_SUCH_VERSION: Rejection = Rejection::new(RejectionKind::Rejected, "no such version");
+/// An uninstall of a release a deployment offers.
+const OFFERED_RELEASE: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "a deployment offers that release; it is uninstalled once no deployment offers it",
+);
+/// An uninstall of a release an app still runs.
+const RELEASE_RUNS: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "an app still runs that release; delete or upgrade it first",
+);
+/// A binding whose signer id or cluster name passes [`MAX_BINDING_FIELD_BYTES`].
+const BINDING_FIELD_TOO_LONG: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "a signer id or cluster name is at most 128 bytes",
+);
+/// A binding signed for another cluster.
+const OTHER_CLUSTER: Rejection =
+    Rejection::new(RejectionKind::Rejected, "the binding names another cluster");
+/// A binding by someone without `APPROVE_RELEASES` in the organization.
+const NEEDS_APPROVE_RELEASES: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "binding a publisher key needs APPROVE_RELEASES in the organization",
+);
+/// A binding whose proof is not the key's signature over it.
+const BAD_BINDING_PROOF: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "the proof is not that key's signature over this binding",
+);
+
 /// Judge the proof a command of this area carries ([`super::authorize`]).
 pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<String>, Rejection> {
-    let s = proofs.s;
     match cmd {
         SystemCmd::BindPublisher {
             signer_id,
@@ -22,11 +101,16 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
         } => {
             // Over this key's binding as it stands when the command applies:
             // a consent for an earlier generation binds nothing again.
-            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            let generation = s.binding_generation(signer_id);
-            proofs.states(&st, &format!("org:{org}"), "__bind_publisher", &|a| {
-                a["signerId"] == json!(signer_id) && a["generation"] == json!(generation)
-            })?;
+            let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let generation = proofs.s.binding_generation(signer_id);
+            proofs.states(
+                &statement,
+                &format!("org:{org}"),
+                "__bind_publisher",
+                &|args| {
+                    args["signerId"] == json!(signer_id) && args["generation"] == json!(generation)
+                },
+            )?;
             Ok(Some(used))
         }
         SystemCmd::AddPackageOrigin {
@@ -37,314 +121,493 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             actor,
             consent,
             ..
-        } => {
-            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            proofs.states(&st, &format!("package:{package}"), "__add_origin", &|a| {
-                *a == crate::origins::add_args(origin, rp_id, *served)
-            })?;
-            Ok(Some(used))
-        }
+        } => package_consent(
+            proofs,
+            actor,
+            consent,
+            package,
+            "__add_origin",
+            &crate::origins::add_args(origin, rp_id, *served),
+        ),
         SystemCmd::RemovePackageOrigin {
             package,
             origin,
             actor,
             consent,
+        } => package_consent(
+            proofs,
+            actor,
+            consent,
+            package,
+            "__remove_origin",
+            &json!({ "origin": origin }),
+        ),
+        SystemCmd::AddAppOrigin {
+            app_id,
+            origin,
+            rp_id,
+            actor,
+            consent,
+            ..
         } => {
-            let (st, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
-            proofs.states(
-                &st,
-                &format!("package:{package}"),
-                "__remove_origin",
-                &|a| *a == json!({ "origin": origin }),
-            )?;
+            let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = crate::origins::add_args(origin, rp_id, false);
+            proofs.states(&statement, app_id, "__add_origin", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemoveAppOrigin {
+            app_id,
+            origin,
+            actor,
+            consent,
+        } => {
+            let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = json!({ "origin": origin });
+            proofs.states(&statement, app_id, "__remove_origin", &|a| *a == args)?;
             Ok(Some(used))
         }
         _ => Ok(None),
     }
 }
 
+/// `actor`'s passkey consent, not used before, stating `method` on the
+/// package (`package:<package>`) with exactly the arguments `stated`.
+fn package_consent(
+    proofs: &Proofs<'_>,
+    actor: &str,
+    consent: &Value,
+    package: &str,
+    method: &str,
+    stated: &Value,
+) -> Result<Option<String>, Rejection> {
+    let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+    proofs.states(&statement, &format!("package:{package}"), method, &|args| {
+        args == stated
+    })?;
+    Ok(Some(used))
+}
+
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
-#[allow(clippy::too_many_lines, reason = "one arm per command")]
 pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
     let here = m.cluster.as_str();
-    let s = &mut m.state;
+    let state = &mut m.state;
     match cmd {
         SystemCmd::PutBundle {
             hash,
             size,
             actor,
             at,
-        } => {
-            if !s.accounts.contains_key(&actor) {
-                return Err("unknown account".into());
-            }
-            if !s.may_deploy(&actor, at) {
-                return Err(NOT_A_DEPLOYER);
-            }
-            if !s.bundles.contains_key(&hash) {
-                let used: u64 = s
-                    .bundles
-                    .values()
-                    .filter(|b| b.uploaded_by == actor)
-                    .map(|b| b.size)
-                    .sum();
-                if used + size > s.quotas.max_bundle_bytes_per_account {
-                    return Err(Rejection::quota("bundle storage"));
-                }
-            }
-            let _prev = s.bundles.entry(hash.clone()).or_insert(BundleRecord {
-                hash: hash.clone(),
-                size,
-                uploaded_by: actor,
-                package: None,
-            });
-            Ok(json!({ "hash": hash }))
-        }
+        } => put_bundle(state, hash, size, actor, at),
         SystemCmd::InstallPackage {
             package,
             signer_id,
             release,
-        } => {
-            let actor = release.installed_by.clone();
-            let by_operator = actor == OPERATOR;
-            if !by_operator && !s.accounts.contains_key(&actor) {
-                return Err("unknown account".into());
-            }
-            // Installing a release again is an install too: it makes the
-            // release the installer's to use.
-            if !s.may_deploy(&actor, release.installed_at) {
-                return Err(NOT_A_DEPLOYER);
-            }
-            if !s.modules_installed(&release) {
-                return Err("a module the pipelines use is no longer installed".into());
-            }
-            if let Some(p) = s.packages.get(&package) {
-                if p.signer_id != signer_id {
-                    return Err("the package is published under another key".into());
-                }
-                if let Some(v) = p.versions.get(&release.version) {
-                    // Other bytes under its version are a different,
-                    // conflicting release. The same release again changes
-                    // nothing but who installed it (it is theirs too), and
-                    // what the record had not kept yet.
-                    if v.mpk != release.mpk {
-                        return Err("that version is installed with other contents".into());
-                    }
-                    let new_installer = !v.installed_by_any(&actor);
-                    // A release recorded before its `uses` were kept gets them from the
-                    // same `.mpk` installed again (`Feature::DeploymentUsedSecrets`).
-                    let fill_uses = v.uses.is_empty() && !release.uses.is_empty();
-                    // And its instance mode (`Feature::OrdinaryOrgs`).
-                    let fill_mode = v.instance_org.is_none() && release.instance_org.is_some();
-                    // And whether it takes guests (`Feature::Guests`).
-                    let fill_guests = v.guests.is_none() && release.guests.is_some();
-                    if let Some(v) = s
-                        .packages
-                        .get_mut(&package)
-                        .and_then(|p| p.versions.get_mut(&release.version))
-                    {
-                        if new_installer {
-                            let _new = v.installers.insert(actor);
-                        }
-                        if fill_uses {
-                            v.uses = release.uses;
-                        }
-                        if fill_mode {
-                            v.instance_org = release.instance_org;
-                        }
-                        if fill_guests {
-                            v.guests = release.guests;
-                        }
-                    }
-                    return Ok(json!({ "package": package, "version": release.version }));
-                }
-            }
-            if s.attributes_by_release && s.ships_in_other_package(&package, &signer_id, &release) {
-                return Err(SHIPS_IN_OTHER_PACKAGE.into());
-            }
-            if s.packages
-                .get(&package)
-                .is_some_and(|p| !p.upgrades_in_order(&release.version, release.upgrades))
-            {
-                return Err(
-                        "a release may not give its package's upgrades back to the publisher once a lower one gave them to owners".into(),
-                    );
-            }
-            let used: u64 = s
-                .bundles
-                .values()
-                .filter(|b| b.uploaded_by == actor)
-                .map(|b| b.size)
-                .sum();
-            let added = if release.part_sizes.is_empty() {
-                release.mpk_size
-            } else {
-                release
-                    .parts(&package)
-                    .filter(|(hash, _)| !s.bundles.contains_key(*hash))
-                    .map(|(hash, _)| release.part_size(hash))
-                    .sum()
-            };
-            // The operator's installs count against no account's quota.
-            if !by_operator && used + added > s.quotas.max_bundle_bytes_per_account {
-                return Err(Rejection::quota("bundle storage"));
-            }
-            for (hash, at) in release.parts(&package) {
-                let b = s.bundles.entry(hash.to_owned()).or_insert(BundleRecord {
-                    hash: hash.to_owned(),
-                    size: release.part_size(hash),
-                    uploaded_by: actor.clone(),
-                    package: None,
-                });
-                // A raw upload of the same WASM gains the release it ships in.
-                if b.package.is_none() {
-                    b.package = Some(at);
-                }
-            }
-            let version = release.version.clone();
-            let _prev = s
-                .packages
-                .entry(package.clone())
-                .or_insert_with(|| PackageRecord {
-                    name: package.clone(),
-                    signer_id,
-                    owner: actor,
-                    versions: BTreeMap::new(),
-                })
-                .versions
-                .insert(version.clone(), release);
-            Ok(json!({ "package": package, "version": version }))
-        }
+        } => install_package(state, package, signer_id, release),
         SystemCmd::UninstallPackage {
             package,
             version,
             actor,
-        } => {
-            let p = s.packages.get(&package).ok_or("no such package")?;
-            if p.owner != actor {
-                return Err("only whoever installed the package (an account, or the operator) may uninstall it".into());
-            }
-            let gone: Vec<String> = match &version {
-                Some(v) if !p.versions.contains_key(v) => return Err("no such version".into()),
-                Some(v) => vec![v.clone()],
-                None => p.versions.keys().cloned().collect(),
-            };
-            // An offered release is the deployments' to keep: whoever
-            // installed it first does not take it from them.
-            if gone.iter().any(|v| s.offered(&package, v)) {
-                return Err("a deployment offers that release; it is uninstalled once no deployment offers it".into());
-            }
-            if gone.iter().any(|v| s.module_pinned(&package, v)) {
-                return Err(MODULE_IN_USE);
-            }
-            let hashes: BTreeSet<String> = gone
-                .iter()
-                .filter_map(|v| p.versions.get(v))
-                .flat_map(|v| v.parts(&package).map(|(h, _)| h.to_owned()))
-                .collect();
-            // Two releases may ship the same WASM: a hash another release
-            // still provides stays, recorded under that release.
-            let provider = |s: &SystemState, h: &str| -> Option<PackageRef> {
-                s.packages.iter().find_map(|(name, p)| {
-                    p.versions.iter().find_map(|(v, r)| {
-                        let gone_here = *name == package && gone.contains(v);
-                        (!gone_here)
-                            .then(|| r.parts(name).find(|(x, _)| *x == h))
-                            .flatten()
-                            .map(|(_, at)| at)
-                    })
-                })
-            };
-            let mut keep = BTreeMap::new();
-            for h in &hashes {
-                if let Some(r) = provider(s, h) {
-                    let _prev = keep.insert(h.clone(), r);
-                }
-            }
-            let in_use = |h: &String| hashes.contains(h) && !keep.contains_key(h);
-            if s.apps
-                .values()
-                .any(|a| in_use(&a.bundle) || a.compute_bundle.as_ref().is_some_and(in_use))
-            {
-                return Err("an app still runs that release; delete or upgrade it first".into());
-            }
-            for h in &hashes {
-                match keep.remove(h) {
-                    Some(r) => {
-                        if let Some(b) = s.bundles.get_mut(h) {
-                            b.package = Some(r);
-                        }
-                    }
-                    None => {
-                        let _prev = s.bundles.remove(h);
-                    }
-                }
-            }
-            let p = s.packages.get_mut(&package).ok_or("no such package")?;
-            for v in &gone {
-                let _prev = p.versions.remove(v);
-            }
-            if p.versions.is_empty() {
-                let _prev = s.packages.remove(&package);
-                s.forget_origins(&package);
-            }
-            Ok(json!({ "removed": gone }))
-        }
-        SystemCmd::BindPublisher {
-            signer_id,
-            org,
-            cluster,
-            proof,
-            actor,
-            consent: _,
-        } => {
-            if signer_id.len() > MAX_BINDING_FIELD_BYTES || cluster.len() > MAX_BINDING_FIELD_BYTES
-            {
-                return Err("a signer id or cluster name is at most 128 bytes".into());
-            }
-            // The signature is checked over this cluster's own name: one
-            // the key made for another cluster binds nothing here.
-            if cluster != here {
-                return Err("the binding names another cluster".into());
-            }
-            if !s.holds_approve_releases(&org, &actor) {
-                return Err(
-                    "binding a publisher key needs APPROVE_RELEASES in the organization".into(),
-                );
-            }
-            let generation = s.binding_generation(&signer_id);
-            let message = publisher_binding_message(here, &org, &signer_id, generation);
-            if !proof.proves(&signer_id, &message) {
-                return Err("the proof is not that key's signature over this binding".into());
-            }
-            let _was = s.unbound_publishers.remove(&signer_id);
-            let _prev = s.publishers.insert(
-                signer_id,
-                PublisherBinding {
-                    org,
-                    generation: generation + 1,
-                },
-            );
-            Ok(json!({ "generation": generation + 1 }))
-        }
+        } => uninstall_package(state, &package, version.as_deref(), &actor),
+        cmd @ SystemCmd::BindPublisher { .. } => bind_publisher(state, here, cmd),
         SystemCmd::AddPackageOrigin {
             package,
             origin,
             rp_id,
             served,
+            registration,
             actor,
             at,
-            consent: _,
-        } => s.add_package_origin(package, origin, &rp_id, served, actor, at),
+            ..
+        } => state.add_package_origin(package, origin, &rp_id, served, registration, actor, at),
         SystemCmd::RemovePackageOrigin {
             package,
             origin,
             actor,
-            consent: _,
-        } => s.remove_package_origin(&package, &origin, &actor),
+            ..
+        } => state.remove_package_origin(&package, &origin, &actor),
+        SystemCmd::AddAppOrigin {
+            app_id,
+            origin,
+            rp_id,
+            registration,
+            actor,
+            at,
+            ..
+        } => state.add_app_origin(app_id, origin, &rp_id, registration, actor, at),
+        SystemCmd::RemoveAppOrigin {
+            app_id,
+            origin,
+            actor,
+            ..
+        } => state.remove_app_origin(&app_id, &origin, &actor),
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached packages::apply"),
     }
+}
+
+/// Record an uploaded bundle: a deployer's, within its account's bundle bytes
+/// (a bundle already recorded counts nothing again).
+fn put_bundle(
+    state: &mut SystemState,
+    hash: String,
+    size: u64,
+    actor: AccountId,
+    at: u64,
+) -> Result<Value, Rejection> {
+    if !state.accounts.contains_key(&actor) {
+        return Err(UNKNOWN_ACCOUNT);
+    }
+    if !state.may_deploy(&actor, at) {
+        return Err(NOT_A_DEPLOYER);
+    }
+    if !state.bundles.contains_key(&hash)
+        && bundle_bytes_of(state, &actor) + size > state.quotas.max_bundle_bytes_per_account
+    {
+        return Err(Rejection::quota("bundle storage"));
+    }
+    let _prev = state.bundles.entry(hash.clone()).or_insert(BundleRecord {
+        hash: hash.clone(),
+        size,
+        uploaded_by: actor,
+        package: None,
+    });
+    Ok(json!({ "hash": hash }))
+}
+
+/// The bundle bytes an account uploaded.
+fn bundle_bytes_of(state: &SystemState, account: &str) -> u64 {
+    state
+        .bundles
+        .values()
+        .filter(|bundle| bundle.uploaded_by == account)
+        .map(|bundle| bundle.size)
+        .sum()
+}
+
+/// Install a package release: a known account or the operator, a deployer,
+/// every pinned module still there, the package's pinned key. A release
+/// installed again changes only who installed it and what the record lacked.
+fn install_package(
+    state: &mut SystemState,
+    package: String,
+    signer_id: String,
+    release: PackageVersion,
+) -> Result<Value, Rejection> {
+    let actor = release.installed_by.clone();
+    let by_operator = actor == OPERATOR;
+    if !by_operator && !state.accounts.contains_key(&actor) {
+        return Err(UNKNOWN_ACCOUNT);
+    }
+    // Installing a release again is an install too: it makes the release the
+    // installer's to use.
+    if !state.may_deploy(&actor, release.installed_at) {
+        return Err(NOT_A_DEPLOYER);
+    }
+    if !state.modules_installed(&release) {
+        return Err(MODULE_GONE);
+    }
+    if release.orgs.iter().any(|org| !state.member_of(org, &actor)) {
+        return Err(NOT_AN_ORG_MEMBER.into());
+    }
+    // A pinned module never reaches more than may run it, judged on the release as this
+    // install leaves it; entries logged below private releases apply as they did.
+    if state.cluster_brings(cluster_version::Feature::PrivateReleases)
+        && !pins_reach_no_further(state, &package, &signer_id, &release, &actor)
+    {
+        return Err(MODULE_GONE);
+    }
+    if let Some(record) = state.packages.get(&package) {
+        if record.signer_id != signer_id {
+            return Err(OTHER_PUBLISHER_KEY);
+        }
+        if record.versions.contains_key(&release.version) {
+            return reinstall(state, package, actor, release);
+        }
+    }
+    if state.attributes_by_release && state.ships_in_other_package(&package, &signer_id, &release) {
+        return Err(SHIPS_IN_OTHER_PACKAGE.into());
+    }
+    if state
+        .packages
+        .get(&package)
+        .is_some_and(|record| !record.upgrades_in_order(&release.version, release.upgrades))
+    {
+        return Err(UPGRADES_OUT_OF_ORDER);
+    }
+    if !release.lineage.is_free() && semver::Version::parse(&release.version).is_err() {
+        return Err(PINNED_NOT_SEMVER);
+    }
+    // The operator's installs count against no account's quota.
+    if !by_operator
+        && bundle_bytes_of(state, &actor) + new_part_bytes(state, &package, &release)
+            > state.quotas.max_bundle_bytes_per_account
+    {
+        return Err(Rejection::quota("bundle storage"));
+    }
+    for (hash, at) in release.parts(&package) {
+        let bundle = state
+            .bundles
+            .entry(hash.to_owned())
+            .or_insert(BundleRecord {
+                hash: hash.to_owned(),
+                size: release.part_size(hash),
+                uploaded_by: actor.clone(),
+                package: None,
+            });
+        // A raw upload of the same WASM gains the release it ships in.
+        if bundle.package.is_none() {
+            bundle.package = Some(at);
+        }
+    }
+    let version = release.version.clone();
+    let _prev = state
+        .packages
+        .entry(package.clone())
+        .or_insert_with(|| PackageRecord {
+            name: package.clone(),
+            signer_id,
+            owner: actor,
+            versions: BTreeMap::new(),
+        })
+        .versions
+        .insert(version.clone(), release);
+    Ok(json!({ "package": package, "version": version }))
+}
+
+/// The bundle bytes a new release adds: each part not stored yet at its own
+/// size (a release from before part sizes counts its whole `.mpk`).
+fn new_part_bytes(state: &SystemState, package: &str, release: &PackageVersion) -> u64 {
+    if release.part_sizes.is_empty() {
+        return release.mpk_size;
+    }
+    release
+        .parts(package)
+        .filter(|(hash, _)| !state.bundles.contains_key(*hash))
+        .map(|(hash, _)| release.part_size(hash))
+        .sum()
+}
+
+/// A release installed again: other bytes under its version are a different,
+/// conflicting release. The same release again changes nothing but who
+/// installed it (it is theirs too), and what the record had not kept yet:
+/// its `uses` (`Feature::DeploymentUsedSecrets`), its instance mode
+/// (`Feature::OrdinaryOrgs`) and whether it takes guests (`Feature::Guests`).
+fn reinstall(
+    state: &mut SystemState,
+    package: String,
+    actor: AccountId,
+    release: PackageVersion,
+) -> Result<Value, Rejection> {
+    let Some(recorded) = state
+        .packages
+        .get_mut(&package)
+        .and_then(|record| record.versions.get_mut(&release.version))
+    else {
+        // SAFETY: `install_package` sends only a release whose version the
+        // package records here.
+        unreachable!("reinstall of a release the package does not record")
+    };
+    if recorded.mpk != release.mpk {
+        return Err(OTHER_CONTENTS);
+    }
+    if !recorded.installed_by_any(&actor) {
+        let _new = recorded.installers.insert(actor);
+    }
+    if recorded.uses.is_empty() && !release.uses.is_empty() {
+        recorded.uses = release.uses;
+    }
+    if recorded.instance_org.is_none() && release.instance_org.is_some() {
+        recorded.instance_org = release.instance_org;
+    }
+    if recorded.guests.is_none() && release.guests.is_some() {
+        recorded.guests = release.guests;
+    }
+    // The registry serving it to anyone makes it public; nothing makes it private again,
+    // and a private install leaves a record from before as it is.
+    if release.visibility == Some(Visibility::Public) {
+        recorded.visibility = release.visibility;
+    }
+    recorded.orgs.extend(release.orgs);
+    Ok(json!({ "package": package, "version": release.version }))
+}
+
+/// Whether the modules the release's pipelines pin may run wherever the release may, judged
+/// on the release as this install leaves it: the one recorded under its version (made
+/// public by a public install, its organizations joined by this one's), else this one.
+fn pins_reach_no_further(
+    state: &SystemState,
+    package: &str,
+    signer_id: &str,
+    release: &PackageVersion,
+    actor: &str,
+) -> bool {
+    let kept = state
+        .packages
+        .get(package)
+        .and_then(|record| record.versions.get(&release.version));
+    let (pins, visibility, orgs) = match kept {
+        Some(recorded) => (
+            recorded,
+            if release.visibility == Some(Visibility::Public) {
+                release.visibility
+            } else {
+                recorded.visibility
+            },
+            recorded.orgs.union(&release.orgs).cloned().collect(),
+        ),
+        None => (release, release.visibility, release.orgs.clone()),
+    };
+    let private_for = (visibility == Some(Visibility::Private)).then_some(&orgs);
+    state.may_pin_all(pins, actor, signer_id, private_for)
+}
+
+/// Uninstall a package's version, or every version: whoever installed it,
+/// never a release a deployment offers, a pipeline pins or an app runs. A
+/// part another release still ships stays, recorded under that release.
+fn uninstall_package(
+    state: &mut SystemState,
+    package: &str,
+    version: Option<&str>,
+    actor: &str,
+) -> Result<Value, Rejection> {
+    let record = state.packages.get(package).ok_or(NO_SUCH_PACKAGE)?;
+    // A release the actor may not use answers as a missing one; entries logged below the
+    // version that brings private releases replay as they applied.
+    let gated = state.cluster_brings(cluster_version::Feature::PrivateReleases);
+    let usable = |release: &PackageVersion| !gated || state.sees_release(release, actor);
+    if !record.versions.values().any(usable) {
+        return Err(NO_SUCH_PACKAGE);
+    }
+    if record.owner != actor {
+        return Err(ONLY_INSTALLER_UNINSTALLS);
+    }
+    let gone: Vec<String> = match version {
+        Some(version) if !record.versions.get(version).is_some_and(usable) => {
+            return Err(NO_SUCH_VERSION)
+        }
+        Some(version) => vec![version.to_owned()],
+        None => record
+            .versions
+            .iter()
+            .filter(|(_, release)| usable(release))
+            .map(|(version, _)| version.clone())
+            .collect(),
+    };
+    // An offered release is the deployments' to keep: whoever installed it
+    // first does not take it from them.
+    if gone.iter().any(|version| state.offered(package, version)) {
+        return Err(OFFERED_RELEASE);
+    }
+    if gone
+        .iter()
+        .any(|version| state.module_pinned(package, version))
+    {
+        return Err(MODULE_IN_USE);
+    }
+    let hashes: BTreeSet<String> = gone
+        .iter()
+        .filter_map(|version| record.versions.get(version))
+        .flat_map(|release| release.parts(package).map(|(hash, _)| hash.to_owned()))
+        .collect();
+    let mut keep = BTreeMap::new();
+    for hash in &hashes {
+        if let Some(provider) = other_provider(state, package, &gone, hash) {
+            let _prev = keep.insert(hash.clone(), provider);
+        }
+    }
+    let in_use = |hash: &String| hashes.contains(hash) && !keep.contains_key(hash);
+    if state
+        .apps
+        .values()
+        .any(|app| in_use(&app.bundle) || app.compute_bundle.as_ref().is_some_and(in_use))
+    {
+        return Err(RELEASE_RUNS);
+    }
+    for hash in &hashes {
+        match keep.remove(hash) {
+            Some(provider) => {
+                if let Some(bundle) = state.bundles.get_mut(hash) {
+                    bundle.package = Some(provider);
+                }
+            }
+            None => {
+                let _prev = state.bundles.remove(hash);
+            }
+        }
+    }
+    let record = state.packages.get_mut(package).ok_or(NO_SUCH_PACKAGE)?;
+    for version in &gone {
+        let _prev = record.versions.remove(version);
+    }
+    if record.versions.is_empty() {
+        let _prev = state.packages.remove(package);
+        state.forget_origins(package);
+    }
+    Ok(json!(Uninstalled { removed: gone }))
+}
+
+/// A release outside the ones being removed that ships `hash`: two releases
+/// may ship the same WASM.
+fn other_provider(
+    state: &SystemState,
+    package: &str,
+    gone: &[String],
+    hash: &str,
+) -> Option<PackageRef> {
+    state.packages.iter().find_map(|(name, record)| {
+        record.versions.iter().find_map(|(version, release)| {
+            let gone_here = *name == package && gone.contains(version);
+            (!gone_here)
+                .then(|| release.parts(name).find(|(part, _)| *part == hash))
+                .flatten()
+                .map(|(_, at)| at)
+        })
+    })
+}
+
+/// Bind a publisher key to an organization: fields within bounds, signed for
+/// this cluster (`here`, never the command's own claim), by an
+/// `APPROVE_RELEASES` holder, the key's signature over this generation.
+fn bind_publisher(state: &mut SystemState, here: &str, cmd: SystemCmd) -> Result<Value, Rejection> {
+    let SystemCmd::BindPublisher {
+        signer_id,
+        org,
+        cluster,
+        proof,
+        actor,
+        ..
+    } = cmd
+    else {
+        // SAFETY: `apply` sends only a `BindPublisher` here.
+        unreachable!("bind_publisher applies a BindPublisher")
+    };
+    if signer_id.len() > MAX_BINDING_FIELD_BYTES || cluster.len() > MAX_BINDING_FIELD_BYTES {
+        return Err(BINDING_FIELD_TOO_LONG);
+    }
+    // The signature is checked over this cluster's own name: one the key made
+    // for another cluster binds nothing here.
+    if cluster != here {
+        return Err(OTHER_CLUSTER);
+    }
+    if !state.holds_approve_releases(&org, &actor) {
+        return Err(NEEDS_APPROVE_RELEASES);
+    }
+    let generation = state.binding_generation(&signer_id);
+    let message = publisher_binding_message(here, &org, &signer_id, generation);
+    if !proof.proves(&signer_id, &message) {
+        return Err(BAD_BINDING_PROOF);
+    }
+    let _was = state.unbound_publishers.remove(&signer_id);
+    let _prev = state.publishers.insert(
+        signer_id,
+        PublisherBinding {
+            org,
+            generation: generation + 1,
+        },
+    );
+    Ok(json!(PublisherBound {
+        generation: generation + 1
+    }))
 }

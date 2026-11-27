@@ -47,7 +47,7 @@ class PublicFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun health(): Health200Response =
+    suspend fun health(): Health =
         api(null, null, emptySet()).publicApi.health()
 
     /**
@@ -63,7 +63,7 @@ class PublicFacade internal constructor(
      */
     suspend fun publisherBinding(
         signer: kotlin.String,
-    ): PublisherBinding200Response =
+    ): PublisherBinding =
         api(null, null, emptySet()).publicApi.publisherBinding(signer = signer)
 
     /**
@@ -77,13 +77,13 @@ class PublicFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun releasesPublic(): ReleasesPublic200Response =
+    suspend fun releasesPublic(): ClusterReleases =
         api(null, null, emptySet()).publicApi.releasesPublic()
 
     /**
      * Bring an organization's or account's apps back from its recovery files
      *
-     * Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+     * Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
      *
      * **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
      *
@@ -99,6 +99,6 @@ class PublicFacade internal constructor(
         apps: kotlin.collections.List<RestoreRecoverHolderRequestAppsInner>? = null,
         code: kotlin.collections.List<RestoreRecoverHolderRequestCodeInner>? = null,
         operator: DeviceSigner? = null,
-    ): RestoreRecoverHolder200Response =
+    ): HolderRecovered =
         api(null, operator, emptySet()).publicApi.restoreRecoverHolder(restoreRecoverHolderRequest = RestoreRecoverHolderRequest(holder = holder, slice = slice, apps = apps, code = code))
 }

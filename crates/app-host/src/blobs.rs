@@ -1,4 +1,4 @@
-//! Blobs (R8): what the host core asks the node about an app's blobs, and how a stored
+//! Blobs: what the host core asks the node about an app's blobs, and how a stored
 //! value names one.
 //!
 //! A blob's bytes never cross the WIT boundary: clients upload and download them through
@@ -14,7 +14,7 @@ use crate::types::BlobInfo;
 
 /// The CBOR tag of a `BlobRef` in a stored value: tag 51,739 (`0xCA1B`, unassigned in the
 /// IANA registry), content a byte string of 32 bytes (the blob's SHA-256). Part of the
-/// encoding contract both SDKs share (D10).
+/// encoding contract both SDKs share.
 pub const BLOB_REF_TAG: u64 = 0xCA1B;
 
 /// The longest grant a run may hand out, in seconds (one day).

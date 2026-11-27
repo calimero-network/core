@@ -1,5 +1,5 @@
 //! `meroctl pipeline`: start, read and cancel the pipeline runs of an app instance. A pipeline
-//! is registered by the release the instance runs (`meroctl app pipelines`); its inputs are the
+//! is registered by the release the instance runs (`meroctl package pipelines`); its inputs are the
 //! instance's sealed files (`meroctl file upload`).
 
 use std::collections::BTreeMap;

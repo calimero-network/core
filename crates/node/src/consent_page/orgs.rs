@@ -1,6 +1,6 @@
 //! The consent page's organization kinds beyond creating, inviting and
 //! joining (`createOrg`, `createInvite`, `acceptInvite`, in the parent): what
-//! an app's frontend, refused every organization route since #4934, asks the
+//! an app's frontend, refused every organization route, asks the
 //! person to approve for a "server" (an organization) it manages.
 //!
 //! - Membership: `leaveOrg`, `removeMember`, `setMemberRole`,
@@ -709,8 +709,13 @@ fn set_teams(
     }
     let (o, _role) = org_for(s, &org, actor)?;
     o.role(&account).ok_or_else(not_a_member)?;
-    crate::system::judge_team_rows(&o, &account, &teams, actor)
-        .map_err(|e| refusal(e, "BAD_TEAMS"))?;
+    let held = s.cluster_brings(crate::system::cluster_version::Feature::HeldTeamGrants);
+    crate::system::judge_team_rows(&o, &account, &teams, actor, held).map_err(|e| {
+        match e.kind() {
+            crate::system::RejectionKind::Rejected => refusal(e.message(), "BAD_TEAMS"),
+            _ => crate::node::rejected(e),
+        }
+    })?;
     let name = o.name.clone();
     let who = person(s, &o, actor, &account);
     let ids: Vec<String> = teams.iter().map(|r| r.team.clone()).collect();
@@ -754,7 +759,7 @@ fn set_teams(
 
 /// A refusal the log would answer, before it is asked: a batch's shape is
 /// `400 code`, anything else `403`.
-fn refusal(e: &'static str, code: &str) -> ApiError {
+fn refusal(e: &str, code: &str) -> ApiError {
     match e {
         "name at least one team" | "too many teams in one step" | "a team is named twice" => {
             ApiError::bad_request(code, e)

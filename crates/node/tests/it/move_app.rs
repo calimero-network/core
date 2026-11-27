@@ -30,6 +30,13 @@ const BLOCKS: &str = "com.test.blocks";
 
 /// A signed single-service `.mpk` of `package@1.0.0`, its WASM tagged so each
 /// package ships its own.
+/// Installs `mpk` as the operator: the cluster's catalog, which every account here uses.
+async fn catalog(c: &Cluster, mpk: Vec<u8>) {
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ok = ops.ops().package_upload(mpk).await.unwrap();
+}
+
 fn release(package: &str) -> Vec<u8> {
     use sha2::Digest;
     let artifact = |path: &str, bytes: &[u8]| calimero_bundle::BundleArtifact {
@@ -67,6 +74,7 @@ fn release(package: &str) -> Vec<u8> {
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -213,7 +221,7 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let src = new_org(&alice, "Source").await;
     join(&alice, &mut a, &src, &bob, "member").await;
@@ -264,7 +272,13 @@ async fn an_admin_moves_an_app_with_its_people_and_its_data() {
     let record = alice.apps().get(&app).await.map(wire).unwrap();
     assert_eq!(record["org"], json!(dst), "{record}");
     assert_eq!(record["grants"][0]["kind"], "team", "{record}");
-    let members = alice.orgs().get(&dst).await.map(wire).unwrap()["members"].clone();
+    let members = alice
+        .orgs()
+        .get(&dst, None, None, None)
+        .await
+        .map(wire)
+        .unwrap()["members"]
+        .clone();
     assert_eq!(members[&bob_id], "member", "{members}");
     assert_eq!(
         members[&carol_id], "member",
@@ -304,7 +318,7 @@ async fn a_dm_moved_into_a_closed_app_team_keeps_its_people() {
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let (dave, _d) = signed_up(&c, 0, "dave").await;
-    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
+    catalog(&c, release(CHAT)).await;
     let src = new_org(&alice, "Source").await;
     for p in [&bob, &carol, &dave] {
         join(&alice, &mut a, &src, p, "member").await;
@@ -349,7 +363,13 @@ async fn a_dm_moved_into_a_closed_app_team_keeps_its_people() {
             .unwrap();
         assert!(reaches(p, &dst).await.contains(&dm));
     }
-    let members = alice.orgs().get(&dst).await.map(wire).unwrap()["members"].clone();
+    let members = alice
+        .orgs()
+        .get(&dst, None, None, None)
+        .await
+        .map(wire)
+        .unwrap()["members"]
+        .clone();
     assert!(members.get(&dave_id).is_none(), "{members}");
     assert!(reaches(&dave, &dst).await.is_empty());
 }
@@ -367,7 +387,7 @@ async fn wrong_movers_and_quotas_are_refused_and_an_app_of_its_own_org_moves_in(
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (carol, mut cpk) = signed_up(&c, 2, "carol").await;
     let (dave, mut d) = signed_up(&c, 0, "dave").await;
-    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
+    catalog(&c, release(CHAT)).await;
     let src = new_org(&alice, "Source").await;
     let dst = new_org(&alice, "Target").await;
     join(&alice, &mut a, &src, &bob, "admin").await;
@@ -403,12 +423,13 @@ async fn wrong_movers_and_quotas_are_refused_and_an_app_of_its_own_org_moves_in(
         .remove_member(&src, &bob_id, Some(&mut a))
         .await
         .unwrap();
+    // Out of the source, the app is not theirs to see: as if missing.
     refused(
         &bob.apps()
             .app_move(&app, &dst, Some(false), None)
             .await
             .unwrap_err(),
-        "only the app's owner",
+        "404 NOT_FOUND: no such app",
     );
     // Carol administers both, then leaves the source.
     let _left = carol
@@ -423,7 +444,7 @@ async fn wrong_movers_and_quotas_are_refused_and_an_app_of_its_own_org_moves_in(
             .app_move(&app, &dst, Some(false), None)
             .await
             .unwrap_err(),
-        "only the app's owner",
+        "404 NOT_FOUND: no such app",
     );
     // Dave, a member who manages nothing.
     refused(

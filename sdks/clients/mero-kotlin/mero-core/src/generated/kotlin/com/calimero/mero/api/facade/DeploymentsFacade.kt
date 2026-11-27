@@ -34,8 +34,8 @@ class DeploymentsFacade internal constructor(
         deployer: com.calimero.mero.Deployer,
         until: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
-    ): DeployerGrant200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deployerGrant(deployerGrantRequest = DeployerGrantRequest(deployer = deployer, until = until))
+    ): DeployerGranted =
+        api(passkey, null, emptySet()).signUpAndDeployments.deployerGrant(deployerBody = DeployerBody(deployer = deployer, until = until))
 
     /**
      * The deployers
@@ -48,7 +48,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun deployerList(): DeployerList200Response =
+    suspend fun deployerList(): DeployerList =
         api(null, null, emptySet()).signUpAndDeployments.deployerList()
 
     /**
@@ -65,13 +65,13 @@ class DeploymentsFacade internal constructor(
     suspend fun deployerRevoke(
         key: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeployerRevoke200Response =
+    ): DeployerRevoked =
         api(passkey, null, emptySet()).signUpAndDeployments.deployerRevoke(key = key)
 
     /**
      * Create a deployment
      *
-     * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain).
+     * A named set of releases an owner (an account or organization) offers for others to instantiate. Answers its id, the record as made (no apps yet) and its frontend host (`null` on a node with no apps domain). An organization owns a deployment only holding a recovery key (`POST /orgs/{org}/recovery`), so a lost passkey never locks it: `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.38.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -85,8 +85,8 @@ class DeploymentsFacade internal constructor(
         name: kotlin.String,
         owner: com.calimero.mero.Deployer,
         passkey: PasskeyProvider? = null,
-    ): DeploymentCreate200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deploymentCreate(deploymentCreateRequest = DeploymentCreateRequest(name = name, owner = owner))
+    ): DeploymentCreated =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentCreate(deploymentBody = DeploymentBody(name = name, owner = owner))
 
     /**
      * Delete a deployment
@@ -102,7 +102,7 @@ class DeploymentsFacade internal constructor(
     suspend fun delete(
         id: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentDelete200Response =
+    ): DeploymentDeleted =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentDelete(id = id)
 
     /**
@@ -118,13 +118,13 @@ class DeploymentsFacade internal constructor(
      */
     suspend fun get(
         id: kotlin.String,
-    ): DeploymentGet200Response =
+    ): PublicDeployment =
         api(null, null, emptySet()).signUpAndDeployments.deploymentGet(id = id)
 
     /**
      * Deployments
      *
-     * The deployments the caller manages.
+     * The deployments the caller manages, and in `offered` those offered to an owner it acts for, waiting for its acceptance (`POST /deployments/{id}/transfer/accept`).
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -132,7 +132,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun list(): DeploymentList200Response =
+    suspend fun list(): DeploymentList =
         api(null, null, emptySet()).signUpAndDeployments.deploymentList()
 
     /**
@@ -152,8 +152,8 @@ class DeploymentsFacade internal constructor(
         `package`: kotlin.String,
         version: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentOffer200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deploymentOffer(id = id, deploymentOfferRequest = DeploymentOfferRequest(app = app, `package` = `package`, version = version))
+    ): AppOffered =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentOffer(id = id, offerBody = OfferBody(app = app, `package` = `package`, version = version))
 
     /**
      * The organizations a deployment serves
@@ -168,7 +168,7 @@ class DeploymentsFacade internal constructor(
      */
     suspend fun orgs(
         id: kotlin.String,
-    ): DeploymentOrgs200Response =
+    ): DeploymentOrgs =
         api(null, null, emptySet()).signUpAndDeployments.deploymentOrgs(id = id)
 
     /**
@@ -188,7 +188,7 @@ class DeploymentsFacade internal constructor(
         id: kotlin.String,
         name: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentSecretClear200Response =
+    ): DeploymentSecretCleared =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretClear(id = id, name = name)
 
     /**
@@ -209,8 +209,8 @@ class DeploymentsFacade internal constructor(
         name: kotlin.String,
         value: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentSecretSet200Response =
-        api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretSet(id = id, name = name, deploymentSecretSetRequest = DeploymentSecretSetRequest(value = value))
+    ): DeploymentSecretSet =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentSecretSet(id = id, name = name, deploymentSecretBody = DeploymentSecretBody(value = value))
 
     /**
      * A deployment's secrets
@@ -225,8 +225,67 @@ class DeploymentsFacade internal constructor(
      */
     suspend fun secrets(
         id: kotlin.String,
-    ): DeploymentSecrets200Response =
+    ): DeploymentSecrets =
         api(null, null, emptySet()).signUpAndDeployments.deploymentSecrets(id = id)
+
+    /**
+     * Accept a deployment offered to an owner
+     *
+     * A manager of `to` (the account itself, or `MANAGE_APPLICATION` org-wide in the organization) accepts the offer to `to`, with a step-up over `deployment:{id} / __accept_deployment / { to, offeredAt }` (the offer it accepts): `to` becomes the owner, and the deployment's offers and customers' instances stay with it. The previous owner's secret values are dropped (`secretsDropped` names them): the new owner sets its own. Until a person approves an update of a customer's instance on a sheet that names the new owner, none applies on its own. Refused before the step-up: `404 NO_TRANSFER` when it is not offered to `to`, `409 TRANSFER_STALE` once whoever offered it may no longer hand it over, `409 TRANSFER_LAPSED` 7 days after the offer, `403 DEPLOY_NOT_GRANTED` where deployments are granted and `to` holds no live deployer grant of its own, `409 RECOVERY_KEY_REQUIRED` for an organization without a recovery key, `429` past the receiver's 16 deployments. Each customer's next update sheet names the new owner.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /deployments/{id}/transfer/accept` (`deployment_transfer_accept`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun transferAccept(
+        id: kotlin.String,
+        to: com.calimero.mero.Deployer,
+        passkey: PasskeyProvider? = null,
+    ): DeploymentAccepted =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentTransferAccept(id = id, deploymentTransferAcceptRequest = DeploymentTransferAcceptRequest(to = to))
+
+    /**
+     * Cancel the offer of a deployment
+     *
+     * A manager of its owner, or of the owner it is offered to, drops the offer, with a step-up over `deployment:{id} / __cancel_deployment_transfer / {}`. `404 NO_TRANSFER` when none waits.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /deployments/{id}/transfer` (`deployment_transfer_cancel`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun transferCancel(
+        id: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): DeploymentTransferCancelled =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentTransferCancel(id = id)
+
+    /**
+     * Offer a deployment to another owner
+     *
+     * The deployment's owner account, or an owner or admin of its organization (managing it, `MANAGE_APPLICATION`, is not enough: `403`), offers it to `to`, another account or organization, with a step-up over `deployment:{id} / __offer_deployment / { to }`. It changes hands only when a manager of `to` accepts within 7 days. One offer waits at a time: `409 TRANSFER_PENDING` until it is cancelled or lapses. `400 SAME_OWNER` for its own owner, `404` for an unknown receiver. `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.38.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /deployments/{id}/transfer` (`deployment_transfer_offer`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun transferOffer(
+        id: kotlin.String,
+        to: com.calimero.mero.Deployer,
+        passkey: PasskeyProvider? = null,
+    ): DeploymentOffered =
+        api(passkey, null, emptySet()).signUpAndDeployments.deploymentTransferOffer(id = id, deploymentTransferOfferRequest = DeploymentTransferOfferRequest(to = to))
 
     /**
      * Withdraw an offer
@@ -243,7 +302,7 @@ class DeploymentsFacade internal constructor(
         id: kotlin.String,
         app: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): DeploymentOffer200Response =
+    ): AppWithdrawn =
         api(passkey, null, emptySet()).signUpAndDeployments.deploymentWithdraw(id = id, app = app)
 
     /**
@@ -261,7 +320,7 @@ class DeploymentsFacade internal constructor(
         uses: kotlin.Long? = null,
         ttlSecs: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
-    ): SignUpInviteCreate200Response =
+    ): SignUpInviteMade =
         api(passkey, null, emptySet()).signUpAndDeployments.signUpInviteCreate(signUpInviteCreateRequest = SignUpInviteCreateRequest(uses = uses, ttlSecs = ttlSecs))
 
     /**
@@ -273,7 +332,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun signUpInviteList(): SignUpInviteList200Response =
+    suspend fun signUpInviteList(): SignUpInviteList =
         api(null, null, emptySet()).signUpAndDeployments.signUpInviteList()
 
     /**
@@ -304,7 +363,7 @@ class DeploymentsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun signUpPublic(): SignUpPublic200Response =
+    suspend fun signUpPublic(): SignUpPublic =
         api(null, null, emptySet()).signUpAndDeployments.signUpPublic()
 
     /**

@@ -8,7 +8,7 @@ use calimero_client::Client;
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::{RunRecord, RunState};
 use calimero_node::Node;
-use common::{mpk_with, signed_up, typed, wire, Cluster, PUBLISHER};
+use common::{home_org, mpk_with, signed_up, typed, wire, Cluster, PUBLISHER};
 use serde_json::json;
 use sha2::Digest;
 
@@ -46,13 +46,10 @@ async fn install(owner: &Client, version: &str, app: &[u8], compute: &[u8]) {
     let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
     let _installed = owner
         .packages()
-        .upload(mpk_with(
-            "com.test.compute",
-            version,
-            app,
-            Some(compute),
-            &key,
-        ))
+        .upload(
+            mpk_with("com.test.compute", version, app, Some(compute), &key),
+            Some(&home_org(owner).await),
+        )
         .await
         .unwrap();
 }
@@ -141,18 +138,17 @@ async fn a_call_starts_a_queued_run_and_an_identical_call_answers_the_same_one()
 
     // A follower has applied the same record.
     let follower = (0..3).find(|i| Some(*i) != c.app_leader(&app)).unwrap();
-    let mut seen = None;
-    for _ in 0..50 {
-        let node: &Node = &c.nodes[follower].as_ref().unwrap().node;
-        seen = node
-            .hosted(&app)
-            .and_then(|g| g.read_local(|m, _| m.run_record(&run)));
-        if seen.is_some() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    assert_eq!(seen.as_ref(), Some(&record), "the follower's record");
+    let node: &Node = &c.nodes[follower].as_ref().unwrap().node;
+    let seen = crate::harness::poll::found(
+        crate::harness::poll::EVENTUALLY,
+        "the follower applied the run",
+        || {
+            node.hosted(&app)
+                .and_then(|g| g.read_local(|m, _| m.run_record(&run)))
+        },
+    )
+    .await;
+    assert_eq!(seen, record, "the follower's record");
 
     // Other inputs are another run, and a file that is not the app's is refused.
     let other = alice

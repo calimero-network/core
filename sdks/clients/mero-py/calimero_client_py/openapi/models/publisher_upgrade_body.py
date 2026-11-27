@@ -19,7 +19,8 @@ T = TypeVar("T", bound="PublisherUpgradeBody")
 
 @_attrs_define
 class PublisherUpgradeBody:
-    """
+    """The request body of `POST /orgs/{org}/packages/{package}/upgrade`.
+
     Attributes:
         version (str):
         migrate (Union[Unset, str]):

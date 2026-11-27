@@ -2,12 +2,16 @@ name: Docs CI
 
 # Build the Starlight docs site and validate internal links on every PR that
 # touches it, so the docs can't silently break. Content-only; no deploy.
+# The upgrade coverage matrix on contribute/testing is written from the deep cases when
+# the site builds (upgrade_deep.py --write-matrix), so a change to them builds it too.
 on:
   pull_request:
-    paths: ['docs/**']
+    paths: ['docs/**', 'crates/node/tests/fault/upgrade_deep.py', 'crates/node/tests/fault/upgrade_cases/**',
+            'scripts/tests/upgrade-matrix-test.py']
   push:
     branches: [master]
-    paths: ['docs/**']
+    paths: ['docs/**', 'crates/node/tests/fault/upgrade_deep.py', 'crates/node/tests/fault/upgrade_cases/**',
+            'scripts/tests/upgrade-matrix-test.py']
 
 permissions:
   contents: read
@@ -32,5 +36,9 @@ jobs:
           check-latest: true
           cache: npm
           cache-dependency-path: docs/package-lock.json
+      # The matrix is generated from the cases; no copy or shared list is edited by hand.
+      - name: Test the upgrade coverage matrix
+        working-directory: .
+        run: python3 scripts/tests/upgrade-matrix-test.py
       - run: npm ci
-      - run: npm run check   # astro build + internal link check
+      - run: npm run check   # writes the upgrade matrix, astro build + internal link check

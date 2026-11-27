@@ -39,6 +39,17 @@ export type {
   Transport,
 } from './runtime/transport.js';
 
+// The device key a session is bound to (`browserSessionHolder`), so a refresh
+// token copied off the device refreshes nothing.
+export {
+  browserSessionHolder,
+  forgetSessionHolder,
+  generateHolderKeyPair,
+  holderFromKeyPair,
+  holderMessage,
+} from './runtime/holder.js';
+export type { HolderKeyStoreOptions, HolderProof, SessionHolder } from './runtime/holder.js';
+
 // `Calimero.fromEnv().kv()`: the Confidential KV's client, generated from its ABI
 // (`KvClient`; its argument, answer and error types under `Kv`).
 export { Calimero } from './products/calimero.js';

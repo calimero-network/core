@@ -91,6 +91,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -318,22 +319,34 @@ fn scenario(root: &Path, url: &str) {
         "{activity}"
     );
 
-    // app: v1's applications are signed packages.
-    let installed = alice.run(&["app", "install", "--path", path(&kv_1_0)]);
+    // package: v1's applications are signed packages, installed on the cluster.
+    let installed = alice.run(&["package", "install", "--path", path(&kv_1_0)]);
     assert_eq!(installed["package"], "com.test.kv");
     assert!(alice
-        .run(&["app", "list"])
+        .run(&["package", "list"])
         .to_string()
         .contains("com.test.kv"));
+    // `app install`, from before `package`, still installs.
     let _ = alice.run(&["app", "install", "--path", path(&kv_1_1)]);
-    let versions = alice.run(&["app", "versions", "com.test.kv"]);
+    let versions = alice.run(&["package", "versions", "com.test.kv"]);
     assert_eq!(versions["versions"].as_array().unwrap().len(), 2);
+    // Each release says its kind: an upload is private, here to its installer alone.
+    for listed in [
+        &versions["versions"][0],
+        &alice.run(&["package", "list"])["packages"][0]["versions"][0],
+    ] {
+        assert_eq!(listed["visibility"], "private", "{listed}");
+        assert_eq!(listed["orgs"], json!([]), "{listed}");
+    }
     assert_eq!(
-        alice.run(&["app", "get-latest-version", "com.test.kv"])["latest"],
+        alice.run(&["package", "get-latest-version", "com.test.kv"])["latest"],
         "1.1.0"
     );
     // A release without pipelines registers none; the newest version is the default.
-    assert_eq!(alice.run(&["app", "pipelines", "com.test.kv"]), json!({}));
+    assert_eq!(
+        alice.run(&["package", "pipelines", "com.test.kv"]),
+        json!({})
+    );
 
     // Web origins: the first installer manages them, with a passkey per change.
     let site = "https://kv.example.com";
@@ -366,15 +379,15 @@ fn scenario(root: &Path, url: &str) {
         "--dev-passkey",
         pk,
     ]);
-    let listed = alice.run(&["app", "origins", "list", "com.test.kv"]);
+    let listed = alice.run(&["package", "origins", "list", "com.test.kv"]);
     assert_eq!(listed["origins"][0]["origin"], site, "{listed}");
     assert_eq!(listed["origins"][0]["rpId"], "example.com", "{listed}");
     let asked = alice
-        .try_run(&["app", "origins", "remove", "com.test.kv", site])
+        .try_run(&["package", "origins", "remove", "com.test.kv", site])
         .unwrap_err();
     assert!(asked.contains("CONFIRM_REQUIRED"), "{asked}");
     let _ = alice.run(&[
-        "app",
+        "package",
         "origins",
         "remove",
         "com.test.kv",
@@ -383,11 +396,11 @@ fn scenario(root: &Path, url: &str) {
         pk,
     ]);
     assert_eq!(
-        alice.run(&["app", "origins", "list", "com.test.kv"])["origins"],
+        alice.run(&["package", "origins", "list", "com.test.kv"])["origins"],
         json!([])
     );
 
-    // context: an instance of an application, named by an alias.
+    // instance: a running copy of a package, named by an alias.
     let created = alice.run(&[
         "instance",
         "create",
@@ -624,6 +637,15 @@ fn scenario(root: &Path, url: &str) {
         pk,
     ]);
     let key = s(&key["key"]);
+    // A copy of the passkey file from before that approval signs with a counter
+    // the cluster has seen: meroctl says so, not `UNKNOWN_CHALLENGE`.
+    let old = root.join("old-passkey.json");
+    let _ = std::fs::copy(pk, &old).unwrap();
+    let _ = alice.run(&["account", "api-key", "create", "--dev-passkey", pk]);
+    let refused = alice
+        .try_run(&["account", "api-key", "create", "--dev-passkey", path(&old)])
+        .unwrap_err();
+    assert!(refused.contains("403 SIGN_COUNT_REPLAYED"), "{refused}");
     let service = Meroctl {
         home: root.join("service"),
     };
@@ -647,7 +669,7 @@ fn scenario(root: &Path, url: &str) {
         "kv-1.2.0.mpk",
         &mpk("com.test.kv", "1.2.0", &variant(&kv, "v12"), &publisher),
     );
-    let _ = alice.run(&["app", "install", "--path", path(&kv_1_2)]);
+    let _ = alice.run(&["package", "install", "--path", path(&kv_1_2)]);
     let ci_key = alice.run(&[
         "account",
         "api-key",
@@ -672,7 +694,7 @@ fn scenario(root: &Path, url: &str) {
     assert!(alice
         .run(&["instance", "get", "notes"])
         .to_string()
-        .contains(&s(&alice.run(&["app", "versions", "com.test.kv"])
+        .contains(&s(&alice.run(&["package", "versions", "com.test.kv"])
             ["versions"]
             .as_array()
             .unwrap()
@@ -1004,6 +1026,7 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
     // A WASM of each release's own: one that ships in another signer's package
     // is refused, and the node names an instance's release by its WASM.
     let wasm = app.join("app.wasm");
+    let org = s(&alice.run(&["org", "list"])["orgs"][0]["orgId"]);
     let release = |version: &str| {
         std::fs::write(&wasm, variant(kv, &format!("dep-{version}"))).unwrap();
         alice.try_run(&[
@@ -1014,6 +1037,8 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
             path(&wasm),
             "--version",
             version,
+            "--install-org",
+            &org,
         ])
     };
     let shipped = release("1.0.0").unwrap();
@@ -1184,18 +1209,63 @@ fn deployments(root: &Path, url: &str, alice: &Meroctl, pk: &str, kv: &[u8]) {
         bobs_org.as_str()
     );
 
-    // Taken down: withdrawn once no instance runs it, then deleted.
-    let _ = bob.run(&["instance", "delete", &customer_app]);
+    // Handed to bob's account: offered, cancelled, offered again and accepted.
+    let bob_id = s(&bob.run(&["whoami"])["accountId"]);
+    let to_bob = format!("account:{bob_id}");
+    let offer_to_bob = [
+        "deployment",
+        "transfer",
+        "acme-apps",
+        "--to",
+        &to_bob,
+        "--dev-passkey",
+        pk,
+    ];
+    let _ = alice.run(&offer_to_bob);
     let _ = alice.run(&[
+        "deployment",
+        "cancel-transfer",
+        "acme-apps",
+        "--dev-passkey",
+        pk,
+    ]);
+    let _ = alice.run(&offer_to_bob);
+    let offered = bob.run(&["deployment", "list"]);
+    assert_eq!(offered["offered"][0]["id"], id.as_str(), "{offered}");
+    let accept = [
+        "deployment",
+        "accept",
+        &id,
+        "--to",
+        "account",
+        "--dev-passkey",
+        path(&bob_pk),
+    ];
+    // The offered release is alice's organization's: bob installs it before taking over.
+    let unusable = bob.try_run(&accept).unwrap_err();
+    assert!(unusable.contains("OFFERS_NOT_USABLE"), "{unusable}");
+    let _ = bob.run(&[
+        "package",
+        "install",
+        "--path",
+        path(&app.join("dist/com.test.dep-1.1.0.mpk")),
+    ]);
+    let _ = bob.run(&accept);
+    assert_eq!(alice.run(&["deployment", "list"])["deployments"], json!([]));
+
+    // Taken down by its new owner: withdrawn once no instance runs it, then deleted.
+    let _ = bob.run(&["instance", "delete", &customer_app]);
+    let bob_pk = path(&bob_pk);
+    let _ = bob.run(&[
         "deployment",
         "withdraw",
         "acme-apps",
         "notes",
         "--dev-passkey",
-        pk,
+        bob_pk,
     ]);
-    let _ = alice.run(&["deployment", "delete", "acme-apps", "--dev-passkey", pk]);
-    assert_eq!(alice.run(&["deployment", "list"])["deployments"], json!([]));
+    let _ = bob.run(&["deployment", "delete", "acme-apps", "--dev-passkey", bob_pk]);
+    assert_eq!(bob.run(&["deployment", "list"])["deployments"], json!([]));
 }
 
 /// `meroctl proxy`: a node's API as plain HTTP on loopback, every request

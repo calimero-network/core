@@ -20,7 +20,7 @@ use serde_json::json;
 
 use crate::harness;
 
-use harness::{kv_wasm, ops_signed, signed_up, typed, wire, Cluster, ORIGIN};
+use harness::{home_org, kv_wasm, ops_signed, signed_up, typed, wire, Cluster, ORIGIN};
 use reqwest::Method;
 
 const NOTES: &str = "com.test.notes";
@@ -31,7 +31,15 @@ const SITE_RP: &str = "notes.example.com";
 
 /// A signed single-service `.mpk` of `package@version`, its WASM tagged so
 /// each package ships its own.
-fn release(package: &str, version: &str) -> Vec<u8> {
+/// The operator installs `mpk` too, which puts the release in the cluster's catalog that
+/// every account uses: a stranger's session on its frontend creates from it.
+pub(crate) async fn into_catalog(c: &Cluster, mpk: Vec<u8>) {
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ok = ops.ops().package_upload(mpk).await.unwrap();
+}
+
+pub(crate) fn release(package: &str, version: &str) -> Vec<u8> {
     release_with(package, version, &[])
 }
 
@@ -77,6 +85,7 @@ fn release_with(package: &str, version: &str, frontend: &[(&str, &[u8])]) -> Vec
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -105,11 +114,24 @@ fn release_with(package: &str, version: &str, frontend: &[(&str, &[u8])]) -> Vec
     tar.into_inner().unwrap().finish().unwrap()
 }
 
-fn status(e: &calimero_client::Error) -> u16 {
+pub(crate) fn status(e: &calimero_client::Error) -> u16 {
     e.to_string()[..3].parse().unwrap()
 }
 
 /// Whether the node lets a browser page on `origin` call it (a CORS preflight).
+/// Waits until `url`'s node answers `origin`'s CORS preflight as `allowed`: the node reads its
+/// own applied state, which may lag the write that changed it.
+pub(crate) async fn assert_cors(url: &str, origin: &str, allowed: bool) {
+    harness::poll::eventually(harness::poll::EVENTUALLY, "the CORS answer", || async {
+        if cors_allows(url, origin).await == allowed {
+            Ok(())
+        } else {
+            Err(!allowed)
+        }
+    })
+    .await;
+}
+
 async fn cors_allows(url: &str, origin: &str) -> bool {
     let r = reqwest::Client::new()
         .request(reqwest::Method::OPTIONS, format!("{url}auth/me"))
@@ -123,19 +145,23 @@ async fn cors_allows(url: &str, origin: &str) -> bool {
         .is_some_and(|v| v == origin)
 }
 
+/// A session opened on a package's registered origin is bound to that package: it reaches no other
+/// package's apps.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_registered_origin_signs_people_in_to_its_package_only() {
     let c = Cluster::start(3).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let _ok = alice
         .packages()
-        .upload(release(NOTES, "1.0.0"))
+        .upload(release(NOTES, "1.0.0"), Some(&home_org(&alice).await))
         .await
         .unwrap();
+    into_catalog(&c, release(NOTES, "1.0.0")).await;
     let _ok = bob
         .packages()
-        .upload(release(OTHER, "1.0.0"))
+        .upload(release(OTHER, "1.0.0"), Some(&home_org(&bob).await))
         .await
         .unwrap();
 
@@ -166,11 +192,12 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
             carol_pk.create(&begin["options"]),
             None,
             None,
+            None,
         )
         .await
         .unwrap_err();
     assert_eq!(status(&e), 400, "an unregistered origin: {e}");
-    assert!(!cors_allows(&c.urls[0], SITE).await);
+    assert_cors(&c.urls[0], SITE, false).await;
     // The cluster's own origin, and a node's, begin as before, under the
     // cluster's rp-id.
     for origin in [
@@ -179,7 +206,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     ] {
         let begin = carol
             .auth()
-            .login_begin(Some(&origin))
+            .login_begin(Some(&origin), None)
             .await
             .map(wire)
             .unwrap();
@@ -193,7 +220,11 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .origins_add(NOTES, SITE, None, None, Some(&mut bob_pk))
         .await
         .unwrap_err();
-    assert_eq!(status(&e), 404, "bob does not see the package: {e}");
+    assert_eq!(
+        status(&e),
+        403,
+        "bob sees the catalog's package, manages none: {e}"
+    );
     let statement = calimero_node::proof::Statement::new(
         &format!("package:{NOTES}"),
         "__add_origin",
@@ -292,7 +323,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
     assert_eq!(list["origins"][0]["origin"], SITE, "{list}");
     assert_eq!(list["origins"].as_array().unwrap().len(), 1);
     let e = bob.packages().origins_list(NOTES).await.unwrap_err();
-    assert_eq!(status(&e), 404, "{e}");
+    assert_eq!(status(&e), 403, "{e}");
     // Bob's package cannot take alice's origin.
     let e = bob
         .packages()
@@ -300,16 +331,13 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("ORIGIN_TAKEN"), "{e}");
-    assert!(
-        cors_allows(&c.urls[2], SITE).await,
-        "the site may call every node"
-    );
+    assert_cors(&c.urls[2], SITE, true).await;
 
     // Carol signs up on the site: a passkey for its rp-id, and a session
     // bound to NOTES that names the site.
     let begin = carol
         .auth()
-        .login_begin(Some(SITE))
+        .login_begin(Some(SITE), None)
         .await
         .map(wire)
         .unwrap();
@@ -441,7 +469,7 @@ async fn a_registered_origin_signs_people_in_to_its_package_only() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("ORIGIN_NOT_REGISTERED"), "{e}");
-    assert!(!cors_allows(&c.urls[0], SITE).await);
+    assert_cors(&c.urls[0], SITE, false).await;
     assert!(alice
         .packages()
         .origins_list(NOTES)
@@ -484,7 +512,7 @@ async fn a_registered_origin_signs_up_only_whom_the_cluster_takes() {
         .unwrap();
     let _ok = alice
         .packages()
-        .upload(release(NOTES, "1.0.0"))
+        .upload(release(NOTES, "1.0.0"), Some(&home_org(&alice).await))
         .await
         .unwrap();
     let _ok = alice
@@ -531,23 +559,26 @@ async fn a_registered_origin_signs_up_only_whom_the_cluster_takes() {
 async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     let c = Cluster::start_with(3, |cfg| cfg.apps_domain = Some("apps.localhost".into())).await;
     let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("alice org", None, None).await.unwrap();
     let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
     let html: &[u8] = b"<!doctype html><html><body>notes</body></html>";
+    let notes = release_with(
+        NOTES,
+        "1.0.0",
+        &[
+            ("frontend/index.html", html),
+            ("frontend/assets/app.js", b"console.log(1)"),
+        ],
+    );
     let _ok = alice
         .packages()
-        .upload(release_with(
-            NOTES,
-            "1.0.0",
-            &[
-                ("frontend/index.html", html),
-                ("frontend/assets/app.js", b"console.log(1)"),
-            ],
-        ))
+        .upload(notes.clone(), Some(&home_org(&alice).await))
         .await
         .unwrap();
+    into_catalog(&c, notes).await;
     let _ok = bob
         .packages()
-        .upload(release(OTHER, "1.0.0"))
+        .upload(release(OTHER, "1.0.0"), Some(&home_org(&bob).await))
         .await
         .unwrap();
 
@@ -601,7 +632,7 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         .origins_add(NOTES, &origin, None, Some(true), Some(&mut bob_pk))
         .await
         .unwrap_err();
-    assert_eq!(status(&e), 404, "bob does not manage the package: {e}");
+    assert_eq!(status(&e), 403, "bob does not manage the package: {e}");
 
     // A plain registration is never served.
     let plain = format!("http://plain.localhost:{port}");
@@ -683,10 +714,7 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
         .await
         .expect("the site's well-known file");
     assert_eq!(known["package"], NOTES, "{known}");
-    assert!(
-        cors_allows(&c.urls[2], &origin).await,
-        "every node admits it"
-    );
+    assert_cors(&c.urls[2], &origin, true).await;
 
     // The operator sees it, by the package's label, never its name.
     let ops = c.client(1);
@@ -708,7 +736,7 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     let carol = c.client(2);
     let begin = carol
         .auth()
-        .login_begin(Some(&origin))
+        .login_begin(Some(&origin), None)
         .await
         .map(wire)
         .unwrap();
@@ -757,9 +785,73 @@ async fn a_served_origin_serves_its_packages_frontend_and_binds_its_sessions() {
     assert_ne!(get("/").await.unwrap().status(), 302);
     let e = carol.auth().me().await.unwrap_err();
     assert_eq!(status(&e), 401, "{e}");
-    assert!(!cors_allows(&c.urls[0], &origin).await);
+    assert_cors(&c.urls[0], &origin, false).await;
     assert!(ops.ops().served().await.map(wire).unwrap()["origins"]
         .as_array()
         .unwrap()
         .is_empty());
+}
+
+/// A package's first installer manages its origins only while a release of it is theirs to
+/// use: Bob uploaded Acme's private package for Acme and manages its origins; removed from
+/// Acme, he lists and adds them as for a package that is not installed, before his passkey.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_first_installer_manages_origins_only_while_it_may_use_a_release() {
+    let c = Cluster::start(3).await;
+    let (alice, mut alice_pk) = signed_up(&c, 0, "alice").await;
+    let (bob, mut bob_pk) = signed_up(&c, 1, "bob").await;
+    let acme = alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap()["orgId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob_id = bob.auth().me().await.map(wire).unwrap()["accountId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _ = alice
+        .orgs()
+        .set_member(
+            &acme,
+            &bob_id,
+            calimero_client::types::OrgRole::Member,
+            Some(&mut alice_pk),
+        )
+        .await
+        .unwrap();
+    let _ok = bob
+        .packages()
+        .upload(release(NOTES, "1.0.0"), Some(&acme))
+        .await
+        .unwrap();
+    let _listed = bob.packages().origins_list(NOTES).await.unwrap();
+    let _ = alice
+        .orgs()
+        .remove_member(&acme, &bob_id, Some(&mut alice_pk))
+        .await
+        .unwrap();
+
+    let missing = "com.test.nowhere";
+    let listed = bob.packages().origins_list(NOTES).await.unwrap_err();
+    let absent = bob.packages().origins_list(missing).await.unwrap_err();
+    assert_eq!(
+        (status(&listed), listed.code()),
+        (404, absent.code()),
+        "{listed}"
+    );
+    let p = bob.packages();
+    let added = p
+        .origins_add(NOTES, SITE, None, None, Some(&mut bob_pk))
+        .await
+        .unwrap_err();
+    let absent = bob
+        .packages()
+        .origins_add(missing, SITE, None, None, Some(&mut bob_pk))
+        .await
+        .unwrap_err();
+    assert_eq!(added.to_string(), absent.to_string());
 }

@@ -1,6 +1,5 @@
-//! The consent page's install and update pages (C10 of the "Apps, private services and
-//! owner-approved updates" design): what an update is in plain words, the install sheet,
-//! a change of update policy, and the node's updates page.
+//! The consent page's install and update pages: what an update is in plain words, the
+//! install sheet, a change of update policy, and the node's updates page.
 //!
 //! - **Words** ([`reason_words`], [`update_summary`], [`policy_words`]): the classifier's
 //!   verdict (`calimero_bundle::update`) and an update policy as a person reads them. The
@@ -40,7 +39,7 @@ use super::{hosts, phrase, release_facts, Action, UpgradeSubject};
 use crate::api::Principal;
 use crate::error::ApiError;
 use crate::node::Node;
-use crate::system::PackageRef;
+use crate::system::{PackageRef, PackageVersion, Visibility};
 use crate::types::{now_secs, AppRecord, AutoApply, UpgradePolicy};
 
 /// The most apps the updates page reads across the person's organizations: each one with
@@ -110,6 +109,10 @@ pub fn reason_words(r: &Reason) -> String {
             None => format!("{}Newly {after}.", of(member)),
             Some(before) => format!("{}Now {after}; it {before}.", of(member)),
         },
+        Reason::PinsLineage { member, package } => format!(
+            "{}Pins it to {package} and its publisher: from then on it moves only to their newer releases, and never back.",
+            of(member)
+        ),
         Reason::Unclassified {
             member,
             package,
@@ -413,11 +416,11 @@ pub(super) async fn install_request(
     node: &Node,
     p: &Principal,
     account: &str,
-    subject: InstallSubject,
+    mut subject: InstallSubject,
 ) -> Result<(Action, Value), ApiError> {
     let package = subject.package;
     let frontend = p.bound_app() == Some(package.as_str());
-    if p.bound_app().is_some() && !frontend {
+    if p.bound_app().is_some() && (!frontend || !node.sys(|s| p.origin_admits(s, None))) {
         return Err(ApiError::forbidden(
             "a session opened on an app's frontend creates instances of that app only",
         ));
@@ -437,11 +440,8 @@ pub(super) async fn install_request(
         None => {
             let version = node
                 .sys(|s| {
-                    let p = s.packages.get(&package)?;
-                    p.versions
-                        .values()
+                    s.releases_used(&package, account, frontend)
                         .filter(|v| subject.version.as_ref().is_none_or(|w| &v.version == w))
-                        .filter(|v| frontend || s.sees_release(v, account))
                         .max_by(|a, b| crate::system::compare_versions(&a.version, &b.version))
                         .map(|v| v.version.clone())
                 })
@@ -473,6 +473,28 @@ pub(super) async fn install_request(
         })
         .ok_or_else(|| ApiError::not_found("no such release"))?;
     let facts = release_facts(node, &package, &target).await?;
+    let named = subject.org.is_some() || subject.new_org.is_some();
+    let (filled, choose_org) = org_choices(node, account, named, &release, &target).await?;
+    if filled.is_some() {
+        subject.org = filled;
+    }
+    let private_to = node.sys(|s| {
+        (target.visibility_shown() == Some(crate::system::Visibility::Private)).then(|| {
+            let mut names: Vec<String> = s
+                .release_orgs_of(&target, account)
+                .map(|o| o.name.clone())
+                .collect();
+            names.sort();
+            format!(
+                "Private to {}",
+                if names.is_empty() {
+                    "you".to_owned()
+                } else {
+                    phrase(&names)
+                }
+            )
+        })
+    });
     let app_name = facts
         .manifest
         .metadata
@@ -483,7 +505,9 @@ pub(super) async fn install_request(
         .metadata
         .as_ref()
         .and_then(|m| m.author.clone());
-    let unit = crate::egress::release_unit(node, &release).await?;
+    let unit =
+        crate::egress::release_unit(node, &release, (account, subject.deployment.as_deref()))
+            .await?;
     let mut creates = vec![json!({
         "name": app_name, "what": "the app", "package": package, "version": release.version,
     })];
@@ -558,29 +582,36 @@ pub(super) async fn install_request(
              it that way, remove no method and move none of the apps it created."
         ));
     }
-    let payer = subject.deployment.as_ref().and_then(|d| {
-        node.sys(|s| {
-            let d = s.deployments.get(d)?;
-            Some(match &d.owner {
-                crate::system::Deployer::Account(a) => s.accounts.get(a).map(|a| a.name.clone()),
-                crate::system::Deployer::Org(o) => s.orgs.get(o).map(|o| o.name.clone()),
+    let shown = subject
+        .deployment
+        .as_ref()
+        .and_then(|d| node.sys(|s| s.deployment_shown(d)));
+    let payer = shown
+        .as_ref()
+        .and_then(|d| d["owner"]["name"].as_str().map(str::to_owned));
+    let created = |org: Option<&str>| {
+        format!(
+            "{} is created for you{}: {app_name} {}{}.",
+            subject.name,
+            org.map_or_else(String::new, |o| format!(" in {o}")),
+            release.version,
+            if members {
+                " and the apps it creates with it"
+            } else {
+                ""
+            }
+        )
+    };
+    // Each choice carries its own first point, which the page shows once it is chosen.
+    let choose_org = choose_org.map(|orgs| {
+        orgs.into_iter()
+            .map(|mut o| {
+                o["point"] = json!(created(o["name"].as_str()));
+                o
             })
-        })
-        .flatten()
+            .collect::<Vec<_>>()
     });
-    let mut points = vec![json!(format!(
-        "{} is created for you{}: {app_name} {}{}.",
-        subject.name,
-        org_name
-            .as_ref()
-            .map_or_else(String::new, |o| format!(" in {o}")),
-        release.version,
-        if members {
-            " and the apps it creates with it"
-        } else {
-            ""
-        }
-    ))];
+    let mut points = vec![json!(created(org_name.as_deref()))];
     points.push(json!(if members {
         format!("{where_words} That includes the apps it creates.")
     } else {
@@ -601,6 +632,8 @@ pub(super) async fn install_request(
         "attention": [],
         "app": { "name": app_name, "package": package },
         "publisher": { "name": author, "signer": facts.signer },
+        "deployment": shown,
+        "offeredBy": shown.as_ref().map(super::offered_by),
         "install": {
             "name": subject.name,
             "package": package,
@@ -616,6 +649,8 @@ pub(super) async fn install_request(
             "updates": update_words,
             "policy": policy_view(&policy, source),
             "payer": payer,
+            "chooseOrg": choose_org,
+            "privateTo": private_to,
         },
         "before": "Until you approve, nothing is created.",
         "after": format!(
@@ -642,6 +677,59 @@ pub(super) async fn install_request(
     ))
 }
 
+/// Where the instance goes when the subject names no organization (`named`) and the release
+/// makes none of its own: of a private release's organizations the person is in, the only one
+/// (filled in) or those to choose from; else (none) all of theirs, to choose when several.
+async fn org_choices(
+    node: &Node,
+    account: &str,
+    named: bool,
+    release: &PackageRef,
+    target: &PackageVersion,
+) -> Result<(Option<String>, Option<Vec<Value>>), ApiError> {
+    use crate::system::cluster_version::Feature;
+    if named
+        || node
+            .require_features(&[Feature::OrdinaryOrgs])
+            .await
+            .is_err()
+        || crate::api::apps::instance_org_of(node, Some(release)).await?
+            == calimero_bundle::InstanceOrg::Standalone
+    {
+        return Ok((None, None));
+    }
+    let (mut orgs, private): (Vec<(String, String)>, bool) = node.sys(|s| {
+        let named = |o: &crate::types::Org| (o.name.clone(), o.org_id.clone());
+        let private: Vec<_> = if target.visibility_shown() == Some(Visibility::Private) {
+            s.release_orgs_of(target, account).map(named).collect()
+        } else {
+            Vec::new()
+        };
+        if private.is_empty() {
+            let all = s
+                .orgs_of(account)
+                .into_iter()
+                .filter_map(|id| s.orgs.get(id));
+            (all.map(named).collect(), false)
+        } else {
+            (private, true)
+        }
+    });
+    orgs.sort();
+    Ok(match orgs.as_slice() {
+        [(_, only)] if private => (Some(only.clone()), None),
+        [_, _, ..] => (
+            None,
+            Some(
+                orgs.into_iter()
+                    .map(|(name, org)| json!({ "orgId": org, "name": name }))
+                    .collect(),
+            ),
+        ),
+        _ => (None, None),
+    })
+}
+
 // ---------------------------------------------------------------- update policy
 
 /// An `updatePolicy` request: `policy` (`null` drops it) for the app `app`, else for the
@@ -655,6 +743,12 @@ pub struct UpdatePolicySubject {
     app: Option<String>,
     #[serde(default)]
     policy: Option<UpgradePolicy>,
+}
+
+impl UpdatePolicySubject {
+    pub(super) const fn names_app(&self) -> bool {
+        self.app.is_some()
+    }
 }
 
 /// The policy change's page, judged as the route judges it before the passkey.
@@ -928,7 +1022,7 @@ pub(super) async fn open(
         OpenBody::UpdatePolicy { subject } => policy_request(node, &p, account, subject).await?,
     };
     let axum::Json(v) = super::hold(node, account.to_owned(), None, action, model, back).await?;
-    Ok(v)
+    Ok(serde_json::json!(v))
 }
 
 #[cfg(test)]
@@ -962,6 +1056,24 @@ mod tests {
             None
         );
         assert_eq!(hold_words(&auto, None, false), None);
+    }
+
+    /// A move into a pinning release says it pins the instance, on the sheet and as the
+    /// one-line summary of a red update.
+    #[test]
+    fn a_pinning_update_says_it_pins_the_instance() {
+        let pins = Classification {
+            class: Class::Red,
+            reasons: vec![Reason::PinsLineage {
+                member: None,
+                package: "com.calimero.kv".into(),
+            }],
+            ..green(&[])
+        };
+        let words = reason_words(&pins.reasons[0]);
+        assert!(words.contains("com.calimero.kv"), "{words}");
+        assert!(words.contains("never back"), "{words}");
+        assert_eq!(update_summary(&pins), words.trim_end_matches('.'));
     }
 
     #[test]

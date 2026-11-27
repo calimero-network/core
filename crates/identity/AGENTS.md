@@ -8,6 +8,13 @@ machines, short session tokens any node verifies, and step-up consent challenges
 - `webauthn.rs`: registration and assertion verification, ES256 and EdDSA via
   `ring`; attestation statements are not checked (passkeys use `none`).
   A sign counter that does not advance is refused unless both are zero.
+  A registration whose credential id is past `MAX_CREDENTIAL_ID_BYTES` (1023,
+  WebAuthn's bound) is refused. Test: `a_credential_id_past_webauthns_bound_is_refused`.
+  A ceremony whose client data says it ran in a cross-origin frame
+  (`crossOrigin: true`, or a `topOrigin` other than its `origin`) is refused
+  there (`check_client_data`); `verify_consent`, `verify_sign_in` and
+  `signed_by` do not read those fields. Test:
+  `refuses_a_ceremony_made_in_a_cross_origin_frame`.
 - Session tokens: `v2.<claims b64url>.<Ed25519 b64url>` (`mint_session`,
   `verify_session`), signed by the issuing node's attested receipt key over
   `"calimero.session.v2\0" || claims`; the claims name the node and its key.

@@ -8,10 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
+from ...models.holder_recovered import HolderRecovered
 from ...models.restore_recover_holder_body import RestoreRecoverHolderBody
-from ...models.restore_recover_holder_response_200 import (
-    RestoreRecoverHolderResponse200,
-)
 from typing import cast
 
 
@@ -36,9 +34,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, RestoreRecoverHolderResponse200]]:
+) -> Optional[Union[Error, HolderRecovered]]:
     if response.status_code == 200:
-        response_200 = RestoreRecoverHolderResponse200.from_dict(response.json())
+        response_200 = HolderRecovered.from_dict(response.json())
 
         return response_200
 
@@ -70,7 +68,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, RestoreRecoverHolderResponse200]]:
+) -> Response[Union[Error, HolderRecovered]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -83,7 +81,7 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: RestoreRecoverHolderBody,
-) -> Response[Union[Error, RestoreRecoverHolderResponse200]]:
+) -> Response[Union[Error, HolderRecovered]]:
     """Bring an organization's or account's apps back from its recovery files
 
      Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each
@@ -93,7 +91,9 @@ def sync_detailed(
     holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps,
     and only for an organization, account, apps and passkeys the cluster does not hold; the receiving
     node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in
-    again with the passkeys they had.
+    again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release
+    where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another
+    publisher.
 
     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it
     again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
@@ -106,7 +106,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RestoreRecoverHolderResponse200]]
+        Response[Union[Error, HolderRecovered]]
     """
 
     kwargs = _get_kwargs(
@@ -124,7 +124,7 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     body: RestoreRecoverHolderBody,
-) -> Optional[Union[Error, RestoreRecoverHolderResponse200]]:
+) -> Optional[Union[Error, HolderRecovered]]:
     """Bring an organization's or account's apps back from its recovery files
 
      Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each
@@ -134,7 +134,9 @@ def sync(
     holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps,
     and only for an organization, account, apps and passkeys the cluster does not hold; the receiving
     node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in
-    again with the passkeys they had.
+    again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release
+    where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another
+    publisher.
 
     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it
     again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
@@ -147,7 +149,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RestoreRecoverHolderResponse200]
+        Union[Error, HolderRecovered]
     """
 
     return sync_detailed(
@@ -160,7 +162,7 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: RestoreRecoverHolderBody,
-) -> Response[Union[Error, RestoreRecoverHolderResponse200]]:
+) -> Response[Union[Error, HolderRecovered]]:
     """Bring an organization's or account's apps back from its recovery files
 
      Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each
@@ -170,7 +172,9 @@ async def asyncio_detailed(
     holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps,
     and only for an organization, account, apps and passkeys the cluster does not hold; the receiving
     node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in
-    again with the passkeys they had.
+    again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release
+    where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another
+    publisher.
 
     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it
     again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
@@ -183,7 +187,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, RestoreRecoverHolderResponse200]]
+        Response[Union[Error, HolderRecovered]]
     """
 
     kwargs = _get_kwargs(
@@ -199,7 +203,7 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     body: RestoreRecoverHolderBody,
-) -> Optional[Union[Error, RestoreRecoverHolderResponse200]]:
+) -> Optional[Union[Error, HolderRecovered]]:
     """Bring an organization's or account's apps back from its recovery files
 
      Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each
@@ -209,7 +213,9 @@ async def asyncio(
     holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps,
     and only for an organization, account, apps and passkeys the cluster does not hold; the receiving
     node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in
-    again with the passkeys they had.
+    again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release
+    where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another
+    publisher.
 
     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it
     again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
@@ -222,7 +228,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, RestoreRecoverHolderResponse200]
+        Union[Error, HolderRecovered]
     """
 
     return (

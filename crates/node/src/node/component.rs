@@ -4,12 +4,13 @@
 //! Everything an app does besides running its code (routing, the API, the system
 //! group, sessions, packages, presence, receipts, upgrades' authority) is the
 //! node's. What is here: preparing components
-//! (single-flight per bundle), the ABI gate, unique ids (D52), app time (D16,
-//! D19), timers (D34), and the calls, views, `init` and code-only upgrades of a
-//! component app.
+//! (single-flight per bundle), the ABI gate, unique ids (the leader's term, its run
+//! counter and the position in the run), app time (this host's clock plus a shared
+//! offset, never decreasing from one entry to the next), timer ticks, and the calls,
+//! views, `init` and code-only upgrades of a component app.
+//! Spec: [Execution](https://calimero-network.github.io/core/protocol/execution/)
 //!
-//! Where Sandi's next phases (pipelining, batching, per-key concurrency) will
-//! touch this path: every builder below takes `base_index` from
+//! Where pipelining, batching or per-key concurrency would touch this path: every builder below takes `base_index` from
 //! `AppState::last_index` (the app's last entry) and every `apply` compares it
 //! with the same field (`AppMachine::apply_component_outcome`); a `base_seq` per
 //! key or per batch replaces both ends at once. `Node::next_id` runs inside the
@@ -25,11 +26,15 @@ pub use self::compute::ComputeLimits;
 pub(super) use self::compute::ComputeLimits;
 pub(super) use self::compute::ComputeState;
 pub use self::compute::JOB_POLL;
+#[cfg(test)]
+pub(crate) use self::compute::{RunFileView, RunList, RunView};
 pub(crate) use self::compute::{PIPELINE_VIEW, RUN_VIEW};
 #[cfg(feature = "testing")]
 pub(super) use self::files::Probes;
 pub(crate) use self::files::{valid_uploader, Uploaded};
 pub(super) use self::files::{MAX_OPEN_FILE_BYTES, MAX_PENDING_FILE_BYTES, MAX_PUSH_BYTES};
+#[cfg(test)]
+pub(crate) use self::uploads::{PartTaken, UploadStatus, UploadView};
 pub(crate) use self::uploads::{UploadOp, Uploads};
 #[cfg(test)]
 pub(crate) use self::{files::files_unavailable, uploads::refusal as upload_refusal};
@@ -51,7 +56,9 @@ use self::files::{blobs_of, stored_of_blobs, Blob, NodeFiles, PendingBytes, Stor
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
-use crate::component::xcall::{backoff_ms, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS};
+use crate::component::xcall::{
+    backoff_ms, share_budget, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS,
+};
 use crate::component::{
     utc_day, Applied, CallEntry, ComponentCmd, DayUsage, Outcome, SysDirectory, TickEntry,
     UsageBook,
@@ -61,9 +68,10 @@ use crate::metrics::CallPhase;
 use crate::types::{now_ms, AppRecord, Caller, Executor};
 use crate::usage::{Kind as RunKind, Meter};
 
-/// App time (D16, D19): this host's clock plus a shared offset. It stamps a
+/// App time: this host's clock plus a shared offset. It stamps a
 /// component's entries and timer slots, nothing else; sessions, tokens and
 /// challenges use `types::now_ms`/`now_secs`, and Raft timers use `Instant`.
+/// See [Time and randomness](https://calimero-network.github.io/core/protocol/execution/#time-and-randomness).
 #[derive(Clone, Debug, Default)]
 pub struct Clock {
     offset_ms: Arc<AtomicI64>,
@@ -99,19 +107,21 @@ pub const BAD_BUNDLE: &str = "BAD_BUNDLE";
 /// The code of an upgrade refused because an active compute run still needs a result method the target lacks.
 pub const RUN_NEEDS_RESULT_METHOD: &str = "RunNeedsResultMethod";
 
-/// The largest call or `init` arguments a component runs (Ruling 30): well under
+/// The largest call or `init` arguments a component runs: well under
 /// `MAX_ENTRY_BYTES`, so the entry that logs a refused run always fits.
 pub const MAX_ARGS_BYTES: usize = 512 * 1024;
 
-/// How often an app group's leader looks for due timer ticks (D34).
+/// How often an app group's leader looks for due timer ticks
+/// ([Timers](https://calimero-network.github.io/core/protocol/execution/#timers)).
 pub const TIMER_POLL: Duration = Duration::from_millis(100);
 
 /// How often a node asks every peer, at once, what the apps it replicates used today,
-/// for the fuel cap (D76, D78). The cap reads that answer and never asks a peer
-/// during a call, so it is approximate by at most this long: a developer can run past
-/// its cap for one interval. 5 s keeps that overshoot a small part of a daily cap
-/// and costs each node one small request per peer per interval, however many apps
-/// there are. The refresh runs only while a cap is set.
+/// for the cap on a developer's daily fuel (`max_fuel_per_developer_per_day`). The cap
+/// reads that answer and never asks a peer during a call, so it is approximate by at
+/// most this long: a developer can run past its cap for one interval. 5 s keeps that
+/// overshoot a small part of a daily cap and costs each node one small request per
+/// peer per interval, however many apps there are. The refresh runs only while a cap
+/// is set.
 pub const USAGE_REFRESH: Duration = Duration::from_secs(5);
 
 /// What each peer's replicas said its apps used on `day` ([`Node::refresh_usage`]).
@@ -148,7 +158,8 @@ pub fn args_too_large() -> ApiError {
     )
 }
 
-/// `503 TIMEOUT`: the run hit its deadline; not logged, the key not spent (D23, D36).
+/// `503 TIMEOUT`: the run hit its deadline; not logged, the key not spent
+/// ([One run](https://calimero-network.github.io/core/protocol/execution/#one-run)).
 #[must_use]
 pub fn timeout_error() -> ApiError {
     ApiError::new(
@@ -183,6 +194,29 @@ pub fn args_bytes(args: &Value) -> Vec<u8> {
     }
 }
 
+/// The length of [`args_bytes`] without building it: a view or call over
+/// [`MAX_ARGS_BYTES`] is refused without copying its arguments again.
+#[must_use]
+pub fn args_len(args: &Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    if args.is_null() {
+        return 0;
+    }
+    let mut n = Count(0);
+    // Writing a `Value` to a writer that never fails cannot fail.
+    let _ = serde_json::to_writer(&mut n, args);
+    n.0
+}
+
 /// Why a run on this replica did not happen: the log's answer, or a refusal the
 /// replica made before running (its own checks, against its own state). Both
 /// executors' local calls answer with it.
@@ -206,8 +240,9 @@ impl From<WriteError> for LocalError {
     }
 }
 
-/// The key the compiled-component cache authenticates its artifacts with (S8): HMAC of
-/// K_r over a fixed label, so it changes with the storage key and nothing else.
+/// The key the compiled-component cache authenticates its artifacts with, so the node
+/// loads only a precompiled artifact it wrote itself: HMAC of K_r over a fixed label,
+/// so it changes with the storage key and nothing else.
 #[must_use]
 pub fn component_cache_key(storage_key: &[u8; 32]) -> [u8; 32] {
     crate::backup::tag(storage_key, "calimero.components.v1")
@@ -215,7 +250,7 @@ pub fn component_cache_key(storage_key: &[u8; 32]) -> [u8; 32] {
 
 /// The latest slot of a timer with interval `every`, installed at `install_ms`,
 /// that is due at `now_ms`: `install_ms + k · every` for the largest `k ≥ 1` not
-/// after `now_ms` (D34). Missed slots collapse into this one.
+/// after `now_ms`. Missed slots collapse into this one.
 #[must_use]
 pub fn due_slot(install_ms: u64, every: Duration, now_ms: u64) -> Option<u64> {
     let every = u64::try_from(every.as_millis()).ok().filter(|e| *e > 0)?;
@@ -238,8 +273,9 @@ fn abi_check(
     let Some(m) = prepared.abi.methods.get(method) else {
         return Err(app_refusal("UnknownMethod"));
     };
-    // A call of an action starts it (D17); an action never runs as a view, nor is it
-    // started by an action, an xcall or the system.
+    // A call of an action starts it (logged as started, run later by the leader's action
+    // runner); an action never runs as a view, nor is it started by an action, an xcall
+    // or the system.
     let starts_action = m.kind == MethodKind::Action
         && !view
         && !from_action
@@ -268,7 +304,7 @@ fn abi_check(
             "a visitor through a public link calls only the app's public methods",
         )),
         Caller::System if !m.allow_system => Err(app_refusal("Forbidden")),
-        // A delivered xcall reaches only a method that allows its source (D13).
+        // A delivered xcall reaches only a method that allows its source.
         Caller::App { app } if !m.allows_app(app) => Err(app_refusal("Forbidden")),
         _ if m.confirm && !view && !consented => Err(app_refusal("ConfirmRequired")),
         _ => Ok(()),
@@ -289,7 +325,8 @@ pub fn final_too_large() -> ApiError {
 }
 
 /// The entry as bytes, and whether it was replaced: one over `MAX_ENTRY_BYTES` becomes the same
-/// call trapped `HostDenied` (D50); a final loses only its result method's outcome.
+/// call trapped `HostDenied`; a final loses only its result method's outcome. See
+/// [Limits](https://calimero-network.github.io/core/protocol/limits/#execution-limits).
 fn entry_bytes(cmd: &mut ComponentCmd) -> (Vec<u8>, bool) {
     let bytes = crate::component::entry_json(cmd);
     if bytes.len() <= calimero_log::MAX_ENTRY_BYTES {
@@ -426,7 +463,7 @@ struct Ran {
 }
 
 impl Node {
-    /// App time: what a component's entry stamps and timer slots read (D16, D19, D34).
+    /// App time: what a component's entry stamps and timer slots read.
     #[must_use]
     pub fn app_clock(&self) -> Clock {
         self.clock.clone()
@@ -761,7 +798,7 @@ impl Node {
     /// The prepared component of `bundle`, preparing it on first use. A component
     /// the engine refuses is `422 BAD_BUNDLE`; a bundle not reachable yet is `503`.
     ///
-    /// Single-flight per bundle (Ruling 44): concurrent first uses wait for one
+    /// Single-flight per bundle: concurrent first uses wait for one
     /// prepare and then read its result, instead of each compiling the component.
     pub async fn prepared_for(&self, bundle: &str) -> Result<Prepared, ApiError> {
         if let Some(p) = self.cached_prepared(bundle) {
@@ -851,7 +888,7 @@ impl Node {
     }
 
     /// Deletes the compiled artifacts in `<data_dir>/components` no app uses any more (see
-    /// [`Self::live_bundles`] and what this node keeps prepared), and those of another
+    /// `Self::live_bundles` and what this node keeps prepared), and those of another
     /// wasmtime or engine config, each once unmodified for
     /// [`calimero_app_engine_wasmtime::CACHE_SWEEP_GRACE`], so a release just installed keeps
     /// its artifact until an app is made from it. Blocking file work: run off the async
@@ -875,7 +912,8 @@ impl Node {
         self.config.budget.unwrap_or_else(Budget::call)
     }
 
-    /// The key download grants of every app are MACed with (R8).
+    /// The key download grants of every app are MACed with
+    /// ([grants](https://calimero-network.github.io/core/protocol/blobs/#reading-grants-and-listing)).
     #[must_use]
     pub fn blob_grant_key(&self) -> [u8; 32] {
         grant_key(self.cluster_key())
@@ -894,9 +932,10 @@ impl Node {
         self.run_with(prepared, app_id, state, applied, invocation, extras, None)
     }
 
-    /// [`Self::run_component`], with the app's search index for a view (spec section 7).
+    /// [`Self::run_component`], with the app's search index for a view.
     /// `extras` says what else the run reaches: other apps synchronously through
-    /// [`NodeXcall`] (with the run's own key), and the app's outbound gate (D76).
+    /// [`NodeXcall`] (with the run's own key), and the app's outbound gate (outbound
+    /// HTTP to URLs its manifest declares, its owner approved and the operator allows).
     #[allow(clippy::too_many_arguments)]
     fn run_with(
         &self,
@@ -926,7 +965,9 @@ impl Node {
         // Whom this run serves, for the apps it calls (each call runs as them only with
         // their grant, `Node::caller_for`): its own caller when that is a person.
         let forward = forwarded(&invocation.caller);
+        let incoming_budget = extras.xcall_budget;
         let via = extras.via.clone();
+        let searches = extras.searches.clone().unwrap_or_default();
         let xcalls = extras.key.and_then(|key| {
             let node = self.this.lock().ok()?.upgrade()?;
             let handle = tokio::runtime::Handle::try_current().ok()?;
@@ -937,6 +978,7 @@ impl Node {
                 handle,
                 read_only: extras.read_only,
                 person: forward.clone(),
+                searches: searches.clone(),
                 deadline,
             }) as Arc<dyn calimero_app_host::XcallHost>)
         });
@@ -957,14 +999,14 @@ impl Node {
         let (kind, method) = (invocation.kind, invocation.method.clone());
         match HostCore::new(app_id, state, applied, invocation, directory)
             .and_then(|host| host.with_via(via))
+            .map(|host| host.with_search_budget(searches))
         {
             Ok(host) => {
                 let host = host
                     .with_deadline(deadline)
                     .with_blobs(blobs)
                     .with_files(files.clone())
-                    .with_logs(self.config.app_logs)
-                    .with_host_fuel(self.charges_host_fuel());
+                    .with_logs(self.config.app_logs);
                 let host = match extras.runs {
                     Some(runs) => host
                         .with_compute(prepared.abi.clone(), runs)
@@ -1007,6 +1049,11 @@ impl Node {
                     for x in &mut outcome.xcalls {
                         x.on_behalf_of.clone_from(&forward);
                     }
+                }
+                // Likewise its budget, once every replica dead-letters a spent one alike
+                // (`Feature::XcallBudget` logged).
+                if self.shares_xcall_budget() {
+                    share_budget(incoming_budget, &mut outcome.xcalls);
                 }
                 Ran {
                     outcome,
@@ -1148,9 +1195,9 @@ impl Node {
         }
     }
 
-    /// The next `(id_term, id_seq)` for a run this node leads in `term` (D52,
-    /// Ruling 29). `term` comes from the leadership check that admitted the
-    /// proposal (`calimero_log::Group::propose_led`, no round of its own);
+    /// The next `(id_term, id_seq)` for a run this node leads in `term`, the first two
+    /// parts of the run's unique ids. `term` comes from the leadership check that
+    /// admitted the proposal (`calimero_log::Group::propose_led`, no round of its own);
     /// `logged` is the highest pair the app's applied state carries, which, after
     /// `propose_led`'s once-per-term catch-up, includes every entry this node
     /// appended in `term`. The counter continues from the larger of this node's
@@ -1185,7 +1232,7 @@ impl Node {
         (term, entry.1)
     }
 
-    /// The timestamp of a component's next entry (D16): never before the last one applied.
+    /// The timestamp of a component's next entry: never before the last one applied.
     fn stamp(&self, m: &AppMachine) -> u64 {
         (m.state.component.head.last_ts_ms + 1).max(self.clock.now_ms())
     }
@@ -1276,7 +1323,7 @@ impl Node {
                         };
                         let outcome = ran.outcome;
                         if outcome.is_retryable() {
-                            // Not logged (D23): reconcile runs init again.
+                            // A retryable run is not logged: reconcile runs init again.
                             timed_out = true;
                             return Staged::Done(Proposal::Reply(Vec::new()));
                         }
@@ -1385,7 +1432,7 @@ impl Node {
         Ok(to_host_applied(a))
     }
 
-    /// One round of timer ticks (D34), every [`TIMER_POLL`]: for each component
+    /// One round of timer ticks, every [`TIMER_POLL`]: for each component
     /// app group this node leads, a task proposes the due ticks, unless the
     /// previous round for that app is still running.
     pub fn tick_timers(self: &Arc<Self>) {
@@ -1470,7 +1517,7 @@ impl Node {
     }
 
     /// Run `timer` for `slot` on this node, the app group's leader, and log it.
-    /// A tick that times out is not logged (D23): the next poll proposes the
+    /// A tick that times out is not logged: the next poll proposes the
     /// same slot again, unless a later one is due by then.
     async fn tick(
         &self,
@@ -1528,6 +1575,8 @@ impl Node {
                                 read_only: false,
                                 via: None,
                                 secrets,
+                                searches: None,
+                                xcall_budget: None,
                             },
                         );
                         let outcome = ran.outcome;
@@ -1649,10 +1698,11 @@ impl Node {
             Some(app) => crate::api::read_only_in(self, app, req.caller.account(), sys_index).await,
             None => false,
         };
-        // A developer over its daily fuel (D76, D78) is refused before a client's call,
-        // a delivered xcall or a synchronous xcall runs; a retry of a call that
-        // committed still replays, below. An action's own calls are not refused: the
-        // action was started by a call that was checked, as an event handler's run is.
+        // A developer over its daily fuel cap (`max_fuel_per_developer_per_day`) is
+        // refused before a client's call, a delivered xcall or a synchronous xcall runs;
+        // a retry of a call that committed still replays, below. An action's own calls
+        // are not refused: the action was started by a call that was checked, as an event
+        // handler's run is.
         let over_quota = match &app {
             Some(app) if req.action.is_none() => self.fuel_quota_refusal(app),
             _ => None,
@@ -1706,7 +1756,7 @@ impl Node {
                             .get(&req.method)
                             .is_some_and(|m| m.kind == MethodKind::Action);
                         let ran = if starts_action {
-                            // Started, not run here: logged as started, run by the runner (D17).
+                            // Started, not run here: logged as started, run by the action runner.
                             let id = format!("a.{id_term}.{id_seq}.0");
                             Ran {
                                 outcome: Outcome {
@@ -1761,6 +1811,8 @@ impl Node {
                                     compute_component,
                                     via: req.via.clone(),
                                     secrets,
+                                    searches: None,
+                                    xcall_budget: req.xcall.as_ref().and_then(|x| x.budget),
                                 },
                             );
                             ran_for = Some(started.elapsed());
@@ -1768,7 +1820,7 @@ impl Node {
                         };
                         let outcome = ran.outcome;
                         // A retryable run (wall clock or node unavailable) is not logged and does not spend the
-                        // key (D23).
+                        // key.
                         if outcome.is_retryable() {
                             let a = Applied::unlogged(applied, outcome);
                             return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
@@ -1779,7 +1831,7 @@ impl Node {
                         moved_runs = moves_runs(&outcome);
                         // A view reached through a call (an API node that read an older ABI)
                         // still may not write for a read-only member. Events and files are
-                        // logged side effects too (Ruling 41): an emit-only run is refused like
+                        // logged side effects too: an emit-only run is refused like
                         // one that writes keys.
                         if read_only && writes(&outcome) {
                             return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
@@ -1824,7 +1876,7 @@ impl Node {
                 ran_for = None;
                 proposed_at = None;
                 // A retry of a call that committed is its recorded answer, whatever
-                // the bundle runs now (D70): the replay comes before the ABI check.
+                // the bundle runs now: the replay comes before the ABI check.
                 if let Some(key) = &req.idempotency_key {
                     if let Some(prev) = m.component_replay(&req.caller, key) {
                         return Staged::Done(Proposal::Reply(crate::app::applied_bytes(
@@ -1832,7 +1884,8 @@ impl Node {
                         )));
                     }
                 }
-                // A message applied here already answers as delivered (D25).
+                // A message applied here already answers as delivered (the target keeps the
+                // highest message it applied from each source).
                 if let Some(from) = &req.xcall {
                     if m.state.component.head.xcall.seen(from) {
                         let seen = Applied::unlogged(
@@ -1862,7 +1915,7 @@ impl Node {
                         &again,
                     )));
                 }
-                // The ABI checks again, against the bundle this replica runs (Ruling 40).
+                // The ABI checks again, against the bundle this replica runs.
                 if let Err(e) = abi_check(
                     &prepared,
                     &req.method,
@@ -1934,9 +1987,9 @@ impl Node {
         Ok(a)
     }
 
-    /// `app`'s usage book (Q20), from a replica: this node's if it is one of the app's
-    /// replicas, else one that is. An app recorded before components (SDK 0.12, no
-    /// longer run) has none.
+    /// `app`'s usage book (what it used per UTC day), from a replica: this node's if it
+    /// is one of the app's replicas, else one that is. An app recorded before components
+    /// (SDK 0.12, no longer run) has none.
     pub async fn app_usage(&self, app: &AppRecord) -> Result<UsageBook, ApiError> {
         if app.executor != Executor::Component {
             return Ok(UsageBook::default());
@@ -2031,11 +2084,12 @@ impl Node {
     }
 
     /// What `developer`'s component apps used today (UTC, on app time), for the API:
-    /// each app's book read from a replica, all apps at once (Q20, D78). The developer
-    /// is `usage::developer`'s (#4839), the identity usage is billed to: the owner of
+    /// each app's book read from a replica, all apps at once. The developer
+    /// is `usage::developer`'s, the identity usage is billed to: the owner of
     /// the deployment an app was created from (an organization's id, or
     /// `account:{id}`), else the app's organization or `account:{owner}`
     /// (`usage::account_payer`). An app no replica answers for counts as nothing.
+    /// See [Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas).
     pub async fn developer_usage_today(&self, developer: &str) -> DayUsage {
         let today = utc_day(self.clock.now_ms());
         let apps = self.developer_apps(developer);
@@ -2085,12 +2139,13 @@ impl Node {
             .fold(0, u64::saturating_add)
     }
 
-    /// The refusal of a new call to `app` when its developer (D78: the identity usage
+    /// The refusal of a new call to `app` when its developer (the identity usage
     /// is billed to, `usage::developer`) is at or over `max_fuel_per_developer_per_day`
-    /// (D76; 0: no limit, nothing is read). Reads no peer
+    /// (0: no limit, nothing is read). Reads no peer
     /// ([`Self::developer_fuel_cached`]). Only a client's call or an xcall is refused:
     /// `init`, timer ticks, event handlers and an action's own calls still run, and
     /// they still count toward the developer's day.
+    /// See [Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas).
     pub(super) fn fuel_quota_refusal(&self, app: &AppRecord) -> Option<ApiError> {
         let limit = self.sys(|s| s.quotas.max_fuel_per_developer_per_day);
         if limit == 0 {
@@ -2105,18 +2160,20 @@ impl Node {
         })
     }
 
-    /// The ABI checks the host makes before invoking a component (S5, D13), from
-    /// the bundle's own ABI, default-deny (Ruling 31): a method the ABI does not
+    /// The ABI checks the host makes before invoking a component, from
+    /// the bundle's own ABI, default-deny: a method the ABI does not
     /// name is `UnknownMethod`; `init` and timers are never reached this way
     /// (`WrongKind`); a `confirm` method never runs as a view (`ConfirmNotAView`)
     /// and a call to one needs a consent; only views run as views (`NotAView`);
-    /// anonymous callers reach only `public` methods (`401 UNAUTHENTICATED`) and
-    /// the System caller only `allowSystem` ones (`Forbidden`).
+    /// anonymous callers reach only `public` methods (`401 UNAUTHENTICATED`),
+    /// the System caller only `allowSystem` ones and only an action's own views and
+    /// calls (`from_action`) reach `allowAction` ones (`Forbidden`).
     ///
-    /// The ABI is the one of the bundle the app group runs (Ruling 40,
-    /// [`Self::running_bundle`]), not the directory's record of it, which an
+    /// The ABI is the one of the bundle the app group runs
+    /// ([`Self::running_bundle`]), not the directory's record of it, which an
     /// upgrade writes second. The replica that runs the call or view makes the same
-    /// checks again against exactly the bundle it runs.
+    /// checks again against exactly the bundle it runs. See
+    /// [What the node enforces](https://calimero-network.github.io/core/build/app-abi/#what-the-node-enforces).
     pub async fn abi_gate(
         &self,
         app: &AppRecord,
@@ -2124,9 +2181,10 @@ impl Node {
         caller: &Caller,
         view: bool,
         consented: bool,
+        from_action: bool,
     ) -> Result<(), ApiError> {
         let prepared = self.prepared_for(&self.running_bundle(app)).await?;
-        abi_check(&prepared, method, caller, view, consented, false)
+        abi_check(&prepared, method, caller, view, consented, from_action)
     }
 
     /// The bundle `app` runs: the app group's own record on this replica, else (this
@@ -2144,7 +2202,7 @@ impl Node {
         // The loop below retries forwards that timed out and calls that raced a
         // leader change; a call that did commit must replay, not run again.
         // A call that came with a key may be a retry of one that committed, which
-        // replays whatever the bundle runs now (D70); only the replica that runs it
+        // replays whatever the bundle runs now; only the replica that runs it
         // can tell, after the replay, so the ABI is checked here only for a call
         // that came without one.
         let came_keyed = req.idempotency_key.is_some();
@@ -2168,8 +2226,15 @@ impl Node {
         self.refuse_while_restoring(&app).await?;
         app.require_app_component()?;
         if !came_keyed {
-            self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
-                .await?;
+            self.abi_gate(
+                &app,
+                &req.method,
+                &req.caller,
+                false,
+                req.consent.is_some(),
+                req.action.is_some(),
+            )
+            .await?;
         }
         let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
         for _attempt in 0..30 {
@@ -2224,7 +2289,7 @@ impl Node {
         if args_bytes(&req.args).len() > MAX_ARGS_BYTES {
             return Err(args_too_large());
         }
-        // The ABI is checked by `call_local_component`, after the replay (D70).
+        // The ABI is checked by `call_local_component`, after the replay.
         let g = self
             .app_group(app.group)
             .ok_or_else(|| ApiError::unavailable("app not hosted here"))?;
@@ -2250,14 +2315,15 @@ impl Node {
         }
     }
 
-    /// A component's view on this replica: it holds its version of the state (D46)
-    /// and runs outside the machine's lock; it sees the last applied entry's time
-    /// (D19), and runs the bundle that state belongs to, whose ABI it is checked
-    /// against (Ruling 40).
+    /// A component's view on this replica: it holds its version of the state
+    /// and runs outside the machine's lock; it sees the last applied entry's time,
+    /// and runs the bundle that state belongs to, whose ABI it is checked against.
+    /// See [Time and randomness](https://calimero-network.github.io/core/protocol/execution/#time-and-randomness).
     pub(super) async fn view_local_component(
         &self,
         g: &Group<AppMachine>,
         req: &ViewRequest,
+        searches: Option<&calimero_app_host::SearchBudget>,
     ) -> Result<ViewAnswer, ApiError> {
         if req.method == RUN_VIEW {
             return self.run_view(g, req);
@@ -2288,7 +2354,20 @@ impl Node {
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let prepared = self.prepared_for(&bundle).await?;
-        abi_check(&prepared, &req.method, &req.caller, true, false, false)?;
+        abi_check(
+            &prepared,
+            &req.method,
+            &req.caller,
+            true,
+            false,
+            req.action.is_some(),
+        )?;
+        // `Node::view` refused these already; a view that reached this replica
+        // another way is held to the same limit before it runs.
+        let args = args_bytes(&req.args);
+        if args.len() > MAX_ARGS_BYTES {
+            return Err(args_too_large());
+        }
         // The state, its blobs and the search index as of one applied index; an upgrade
         // applied since the bundle was read runs on its own bundle next time.
         let (bundle_now, state, applied, ts_ms, search) = g.read_local(|m, applied| {
@@ -2315,7 +2394,7 @@ impl Node {
             Invocation {
                 kind: InvocationKind::View,
                 method: req.method.clone(),
-                args: args_bytes(&req.args),
+                args,
                 caller: req.caller.to_host(),
                 entry_ts_ms: ts_ms,
                 id_term: 0,
@@ -2327,6 +2406,7 @@ impl Node {
         );
         let meter = self.meter(&req.app_id, &bundle);
         let via = req.via.clone();
+        let searches = searches.cloned();
         // A view may run up to its deadline: off the async workers.
         let (out, run) = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
@@ -2344,6 +2424,8 @@ impl Node {
                         read_only: false,
                         via,
                         secrets: crate::component::InstanceSecrets::new(),
+                        searches,
+                        xcall_budget: None,
                     },
                     search,
                 )
@@ -2366,7 +2448,7 @@ impl Node {
         })
     }
 
-    /// A component's blob command (R8) on its leader: `__blob { id, size, mime }` (an upload),
+    /// A component's blob command on its leader: `__blob { id, size, mime, metered }` (an upload),
     /// `__blob_forget` or `__blob_revoke` (`{ id }`, the owner's), built by the API after judging who may.
     pub(super) async fn component_blob_cmd(
         &self,
@@ -2382,6 +2464,7 @@ impl Node {
                         size: req.args["size"].as_u64().unwrap_or_default(),
                         mime: req.args["mime"].as_str().unwrap_or_default().to_owned(),
                         ts_ms: self.stamp(m),
+                        metered: req.args["metered"].as_bool().unwrap_or(false),
                     },
                     "__blob_revoke" => ComponentCmd::BlobRevoke { id: id.clone() },
                     _ => ComponentCmd::BlobForget { id: id.clone() },
@@ -2430,7 +2513,8 @@ impl Node {
     }
 
     /// Start the app's pending actions this node is not running yet, as its leader, in the
-    /// node's worker pool (D17): each runs off the async workers and logs its end.
+    /// node's worker pool: each runs off the async workers and logs its end. See
+    /// [Actions](https://calimero-network.github.io/core/protocol/execution/#actions-component-apps).
     fn run_actions(&self, g: &Arc<Group<AppMachine>>, app_id: &str, prepared: &Prepared) {
         let Some(node) = self.this.lock().ok().and_then(|w| w.upgrade()) else {
             return;
@@ -2471,7 +2555,7 @@ impl Node {
         }
     }
 
-    /// One attempt at an action (D12, D22), then its end logged: done; an attempt that
+    /// One attempt at an action, then its end logged: done; an attempt that
     /// timed out (retried later, `MAX_ATTEMPTS` in all); or failed, which also runs the
     /// app's `onActionFailed`.
     async fn run_action(
@@ -2531,7 +2615,7 @@ impl Node {
 
     /// Run `record` once on the engine, off the async workers, as `kind = action` with
     /// the starter's caller, storage off, views and calls through this node and outbound
-    /// HTTP through the gate (S9).
+    /// HTTP through the gate.
     async fn attempt_action(
         self: &Arc<Self>,
         app_id: &str,
@@ -2554,14 +2638,17 @@ impl Node {
             handle: tokio::runtime::Handle::current(),
             deadline,
         });
+        // The views its xcalls reach share one search budget, as a request's do.
+        let searches = calimero_app_host::SearchBudget::default();
         let xcalls = Arc::new(NodeXcall {
             node: Arc::clone(self),
             source: app_id.to_owned(),
             key: format!("action:{}", record.id),
             handle: tokio::runtime::Handle::current(),
             read_only: false,
-            // An action serves no one when it runs (D12): its calls name no person.
+            // An action serves no one when it runs: its calls name no person.
             person: None,
+            searches: searches.clone(),
             deadline,
         });
         let meter = self.meter(app_id, &prepared.hash);
@@ -2594,7 +2681,6 @@ impl Node {
         };
         let (wasm, prepared, app) = (Arc::clone(&self.wasm), prepared.clone(), app_id.to_owned());
         let (keep_logs, method) = (self.config.app_logs, record.method.clone());
-        let host_fuel = self.charges_host_fuel();
         let ran = tokio::task::spawn_blocking(move || {
             crate::usage::measure(|| {
                 match HostCore::new(
@@ -2612,7 +2698,7 @@ impl Node {
                                 .with_http(http)
                                 .with_xcall_host(xcalls)
                                 .with_logs(keep_logs)
-                                .with_host_fuel(host_fuel),
+                                .with_search_budget(searches),
                             budget,
                         );
                         print_app_logs(&app, InvocationKind::Action, &method, &out.logs);
@@ -2634,7 +2720,7 @@ impl Node {
     }
 
     /// The app's `onActionFailed`, if its ABI has a call by that name: told which action
-    /// failed and why, as the action's caller (D22). Best effort, once.
+    /// failed and why, as the action's caller. Best effort, once.
     async fn on_action_failed(
         &self,
         app_id: &str,
@@ -2670,8 +2756,9 @@ impl Node {
     }
 
     /// Deliver the head of `source`'s outbox, in order, at most [`DELIVER_BATCH`] messages
-    /// a round (D25, D29). A message that cannot be delivered yet waits its backoff and
-    /// blocks the ones after it; past [`XCALL_WINDOW_MS`] it is dead-lettered.
+    /// a round. A message that cannot be delivered yet waits its backoff and
+    /// blocks the ones after it; past [`XCALL_WINDOW_MS`] it is dead-lettered. See
+    /// [Retries and dead letters](https://calimero-network.github.io/core/protocol/xcall/#retries-and-dead-letters).
     async fn deliver_xcalls(&self, g: &Group<AppMachine>, source: &str, prepared: &Prepared) {
         for _ in 0..DELIVER_BATCH {
             let Some(msg) = g.read_local(|m, _| {
@@ -2757,6 +2844,7 @@ impl Node {
             xcall: Some(XcallFrom {
                 source: source.to_owned(),
                 seq: msg.seq,
+                budget: msg.budget,
             }),
             via,
             ..CallRequest::new(
@@ -2771,13 +2859,13 @@ impl Node {
             Ok(_) => Ok(None),
             Err(e) if e.status >= 500 => Err(e.message),
             // A refusal (an unknown method, a method that does not allow the source) is
-            // the target's final answer, like an app error (D29).
+            // the target's final answer, like an app error.
             Err(_) => Ok(None),
         }
     }
 
     /// The source's `onXcallFailed`, if its ABI has one the system may call: told which
-    /// message was dead-lettered and why (D29). Best effort, once.
+    /// message was dead-lettered and why. Best effort, once.
     async fn on_xcall_failed(
         &self,
         source: &str,
@@ -2830,7 +2918,7 @@ impl Node {
         })
     }
 
-    /// Collect the bytes of blobs the app forgot (idle past their time, R8), at most
+    /// Collect the bytes of blobs the app forgot (idle past their time), at most
     /// [`COLLECT_BATCH`] a round, and log that they are done. `collect_blob` keeps the bytes
     /// another app still holds.
     async fn collect_component_blobs(&self, g: &Group<AppMachine>, queued: Vec<String>) {
@@ -2860,14 +2948,17 @@ impl Node {
     }
 
     /// Switch a component app to another component, code only, on this node, the
-    /// app group's leader. A named migration is refused: migrations are rebuilds
-    /// (D38), not in this milestone. Who may upgrade was judged by the API.
+    /// app group's leader. A named migration is refused (`MigrationsNotSupported`):
+    /// a migration rebuilds the state, and this node runs code-only upgrades. Who may
+    /// upgrade was judged by the API, on the group running `judged_on`: if it has moved
+    /// since (another upgrade got there first), it is refused (`BundleMoved`).
     pub(super) async fn upgrade_component(
         &self,
         g: &Group<AppMachine>,
         bundle: &str,
         compute_bundle: Option<&str>,
         migrate: Option<&str>,
+        judged_on: Option<&JudgedOn>,
     ) -> Result<crate::app::Applied, WriteError> {
         let refuse = |code: &str, message: &str| crate::app::Applied {
             index: g.applied(),
@@ -2880,7 +2971,7 @@ impl Node {
         if migrate.is_some() {
             return Ok(refuse(
                 "MigrationsNotSupported",
-                "migrations are rebuilds (D38), not in this milestone",
+                "no migrations in this version: an upgrade swaps the code and keeps the state",
             ));
         }
         let target = match self.prepared_for(bundle).await {
@@ -2890,6 +2981,30 @@ impl Node {
         };
         let p = g
             .propose_led(|m, _, _| {
+                // `base_index` holds this to the state read here, so a race retries into it.
+                let runs = m.state.bundle.as_deref();
+                let runs_compute = m.state.component.head.compute_bundle.as_deref();
+                // Already there: nothing runs. A record naming other code catches up (the repair
+                // for the refusal below); a release sharing the code is an upgrade as any other.
+                if runs == Some(bundle) && runs_compute == compute_bundle {
+                    let mut done = crate::component::host_answer(m.state.last_index, true, "");
+                    if judged_on.is_some_and(|j| !j.is(Some(bundle), compute_bundle)) {
+                        done.result = json!({ "caughtUp": true });
+                    }
+                    return Proposal::Reply(crate::app::applied_bytes(done.index, &done));
+                }
+                if judged_on.is_some_and(|j| runs.is_some() && !j.is(runs, runs_compute)) {
+                    let mut refused = crate::component::host_answer(m.state.last_index, false, "");
+                    refused.error = json!({
+                        "code": "BundleMoved",
+                        "fields": {
+                            "message": "the app runs other code than the one this upgrade was judged on: upgrade it to the release that ships `runs` first",
+                            "runs": runs,
+                            "runsCompute": runs_compute,
+                        },
+                    });
+                    return Proposal::Reply(crate::app::applied_bytes(refused.index, &refused));
+                }
                 let is_result = |name: &String| {
                     target
                         .abi
@@ -2924,6 +3039,54 @@ impl Node {
     }
 }
 
+/// The code an upgrade was judged on (`__upgrade`'s `from`): the app's bundle and, where the
+/// proposer stated it, its compute part (`None`: a node that sent the bundle alone).
+pub(crate) struct JudgedOn {
+    bundle: String,
+    compute: Option<Option<String>>,
+}
+
+impl JudgedOn {
+    /// `from` as sent. With `strict` (the cluster brings lineages, so every node sends both), a
+    /// bare bundle or one without its compute part is refused.
+    ///
+    /// # Errors
+    /// The shape `strict` refuses.
+    pub(crate) fn parse(from: &Value, strict: bool) -> Result<Option<Self>, &'static str> {
+        let judged = match from {
+            Value::String(bundle) => Self {
+                bundle: bundle.clone(),
+                compute: None,
+            },
+            Value::Object(o) => {
+                let Some(bundle) = o.get("bundle").and_then(Value::as_str) else {
+                    return Ok(None);
+                };
+                Self {
+                    bundle: bundle.to_owned(),
+                    compute: o
+                        .get("computeBundle")
+                        .map(|c| c.as_str().map(str::to_owned)),
+                }
+            }
+            _ => return Ok(None),
+        };
+        if strict && judged.compute.is_none() {
+            return Err("an upgrade names the compute part it was judged on beside the bundle");
+        }
+        Ok(Some(judged))
+    }
+
+    /// Whether the group running `bundle` and `compute` is still on this code.
+    fn is(&self, bundle: Option<&str>, compute: Option<&str>) -> bool {
+        bundle == Some(self.bundle.as_str())
+            && self
+                .compute
+                .as_ref()
+                .is_none_or(|c| c.as_deref() == compute)
+    }
+}
+
 /// The answer to a read-only member's call that is refused (`403 FORBIDDEN`): not
 /// logged, nothing applied.
 fn read_only_refusal(applied: u64) -> Applied {
@@ -2937,7 +3100,7 @@ fn read_only_refusal(applied: u64) -> Applied {
     )
 }
 
-/// What an action reaches through the node (D12): views and calls of its own app, as
+/// What an action reaches through the node: views and calls of its own app, as
 /// its caller, run on the async runtime while the action's thread waits.
 struct NodeAction {
     node: Arc<Node>,
@@ -2991,6 +3154,7 @@ impl calimero_app_host::ActionHost for NodeAction {
             strong: true,
             min_index: 0,
             via: None,
+            action: Some(self.key.clone()),
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.view(&req).await }) {
@@ -3044,18 +3208,24 @@ impl Node {
     /// Whether a message's outbox row names the person its run served: from the logged
     /// cluster version that brings `Feature::Delegation` on, so every replica applies the
     /// row alike. Judged on the logged version alone (no round to the nodes).
-    /// Whether runs pay fuel for their host calls (C7): once the logged cluster version brings
-    /// [`crate::system::cluster_version::Feature::HostFuel`], so a call answers alike on every
-    /// node of a cluster mid-upgrade.
-    fn charges_host_fuel(&self) -> bool {
-        self.sys(|s| s.cluster_brings(crate::system::cluster_version::Feature::HostFuel))
-    }
-
     fn carries_person(&self) -> bool {
         self.sys(|s| {
             crate::system::cluster_version::check(
                 s.cluster_version.as_deref(),
                 &[crate::system::cluster_version::Feature::Delegation],
+            )
+            .is_ok()
+        })
+    }
+
+    /// Whether a run's xcalls carry their chain's budget (`share_budget`): from the logged
+    /// cluster version that brings `Feature::XcallBudget` on, so every replica dead-letters
+    /// a spent one alike.
+    fn shares_xcall_budget(&self) -> bool {
+        self.sys(|s| {
+            crate::system::cluster_version::check(
+                s.cluster_version.as_deref(),
+                &[crate::system::cluster_version::Feature::XcallBudget],
             )
             .is_ok()
         })
@@ -3106,7 +3276,7 @@ impl Node {
 /// What a logged run takes from the applied state in a staged proposal's read step
 /// (`calimero_log::Group::propose_led_staged`), owned, so the run itself (its guest, its
 /// host calls, its files' push) happens after the state's read lock is released: an entry
-/// that commits meanwhile applies, and the app's state is read, while it runs (C2).
+/// that commits meanwhile applies, and the app's state is read, while it runs.
 /// `base_index` is the app's last entry as read: an entry that applies between the read
 /// step and this run's append makes this run's entry a `conflict`, run again.
 struct LoggedRun {
@@ -3128,7 +3298,7 @@ struct RunExtras {
     /// The run's own key (a call's caller and idempotency key, a tick's slot, a view's
     /// placeholder): with one, the run reaches other apps synchronously ([`NodeXcall`]).
     key: Option<String>,
-    /// The app's outbound gate (D76): calls (but a read-only member's), timers and
+    /// The app's outbound gate: calls (but a read-only member's), timers and
     /// deliveries; never views or `init`.
     outbound: bool,
     /// The app's active runs: with them, a logged run starts and cancels compute runs.
@@ -3144,11 +3314,19 @@ struct RunExtras {
     /// The instance's own secret values (`AppMachine::instance_secrets`), read with the
     /// state the run sees, for the outbound gate.
     secrets: crate::component::InstanceSecrets,
+    /// The searches the request has left when this run serves a synchronous `xcall_view`
+    /// (its caller's), shared with the run and the views its own xcalls reach; `None` is a
+    /// fresh request (`MAX_SEARCHES_PER_RUN`).
+    searches: Option<calimero_app_host::SearchBudget>,
+    /// A delivered message's budget (`XcallFrom::budget`), which the run's xcalls share;
+    /// `None` starts a chain ([`share_budget`]).
+    xcall_budget: Option<u32>,
 }
 
-/// How long a call, timer or delivery waits for one outbound response (D76): within the
+/// How long a call, timer or delivery waits for one outbound response: within the
 /// 2 s call budget (`calimero_app_host::Budget::call`), so a slow host costs the run an
 /// error it handles, not the log a stalled entry; never past the run's own deadline.
+/// See [Outbound HTTP from component calls](https://calimero-network.github.io/core/protocol/execution/#outbound-http-from-component-calls).
 pub const CALL_FETCH_TIMEOUT: Duration = Duration::from_millis(1_500);
 
 /// [`NodeHttp`] for a run: the gate's answer, or a timeout after `timeout` or at the run's
@@ -3204,6 +3382,8 @@ struct NodeXcall {
     /// The person the run serves: a call or view runs as them where they granted the source
     /// that method of the target (`Node::as_person`).
     person: Option<Caller>,
+    /// The searches the request has left: a view this run reaches shares them.
+    searches: calimero_app_host::SearchBudget,
     /// When the run's wall clock ends: no answer is waited for past it.
     deadline: Instant,
 }
@@ -3298,10 +3478,11 @@ impl NodeXcall {
             strong: true,
             min_index: 0,
             via,
+            action: None,
         };
-        let node = Arc::clone(&self.node);
+        let (node, searches) = (Arc::clone(&self.node), self.searches.clone());
         Ok(Box::pin(async move {
-            match node.view(&req).await {
+            match node.view_searching(&req, Some(&searches)).await {
                 Ok(a) if a.timeout => Err(xcall_failure("the view timed out")),
                 Ok(a) => answer_bytes(&a.status, &a.result, &a.error),
                 Err(e) => Err(refusal_text(&e)),
@@ -3384,7 +3565,7 @@ fn parse_args(args: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(args).map_err(|e| format!("arguments are not JSON: {e}"))
 }
 
-/// An action's outbound HTTP through the node's gate (S9, R14): the signed release's
+/// An action's outbound HTTP through the node's gate: the signed release's
 /// declared prefixes, the owner's approval, the operator's hosts, secrets filled in.
 struct NodeHttp(Option<Arc<dyn calimero_outbound::OutboundHost>>);
 
@@ -3454,6 +3635,30 @@ fn print_app_logs(app: &str, kind: InvocationKind, method: &str, logs: &[String]
 }
 
 #[cfg(test)]
+mod judged_on_tests {
+    use serde_json::json;
+
+    use super::JudgedOn;
+
+    /// Below the version that brings lineages an earlier node's bare bundle, or an object
+    /// without its compute part, is read as it was; from it, only the full shape is.
+    #[test]
+    fn from_names_the_compute_part_once_lineages_are_on() {
+        let bare = json!("b1");
+        let partial = json!({ "bundle": "b1" });
+        let full = json!({ "bundle": "b1", "computeBundle": null });
+        for from in [&bare, &partial, &full] {
+            assert!(JudgedOn::parse(from, false).is_ok(), "{from}");
+        }
+        assert!(JudgedOn::parse(&bare, true).is_err());
+        assert!(JudgedOn::parse(&partial, true).is_err());
+        let judged = JudgedOn::parse(&full, true).unwrap().unwrap();
+        assert!(judged.is(Some("b1"), None));
+        assert!(!judged.is(Some("b1"), Some("c1")));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3490,6 +3695,7 @@ mod tests {
                 method: "set".into(),
                 args: Value::Null,
                 on_behalf_of: None,
+                budget: None,
             }],
             ..Outcome::default()
         };

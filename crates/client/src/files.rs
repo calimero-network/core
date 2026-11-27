@@ -12,7 +12,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, AsyncWrite, As
 
 use super::{retry_unavailable, route, Client, Error, Result};
 use crate::transport::Request;
-use crate::types::UploadCompleteResponse;
+use crate::types::FileStored;
 
 /// The largest file sent as one request, and the part size a session is asked for.
 pub const FILE_PART_BYTES: u64 = 16 * 1024 * 1024;
@@ -173,7 +173,7 @@ impl Client {
     }
 
     /// Upload a sealed file of `size` bytes for component app `app`; answers `{ blobId, id, size, sha256, index }`.
-    /// Up to [`FILE_PART_BYTES`] it is one request, else a session of parts, each resent after a `503`.
+    /// Up to `FILE_PART_BYTES` it is one request, else a session of parts, each resent after a `503`.
     ///
     /// # Errors
     /// The node's refusal (`413`, `429` over quota, ...), or a transport failure that outlasted the retries.
@@ -216,12 +216,7 @@ impl Client {
         }
     }
 
-    async fn upload_session<R>(
-        &self,
-        app: &str,
-        file: &mut R,
-        size: u64,
-    ) -> Result<UploadCompleteResponse>
+    async fn upload_session<R>(&self, app: &str, file: &mut R, size: u64) -> Result<FileStored>
     where
         R: AsyncRead + AsyncSeek + Unpin,
     {
@@ -252,7 +247,7 @@ impl Client {
         file: &mut R,
         size: u64,
         part_bytes: u64,
-    ) -> Result<UploadCompleteResponse>
+    ) -> Result<FileStored>
     where
         R: AsyncRead + AsyncSeek + Unpin,
     {
@@ -302,7 +297,7 @@ impl Client {
     }
 
     /// `complete`, sent again while the node is unavailable: a retried one resumes.
-    async fn complete(&self, app: &str, upload: &str) -> Result<UploadCompleteResponse> {
+    async fn complete(&self, app: &str, upload: &str) -> Result<FileStored> {
         let mut failures = 0;
         loop {
             match self.apps().upload_complete(app, upload).await {

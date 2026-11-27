@@ -143,7 +143,7 @@ pub enum NamespaceCmd {
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
     },
-    /// Approve URL prefixes an application's publisher may call out to from
+    /// Approve URL prefixes a package's publisher may call out to from
     /// the organization's instances (the owner's, where the owner holds outbound approvals).
     Outbound {
         #[arg(value_name = "ORG")]
@@ -330,9 +330,38 @@ pub enum MetadataCmd {
     },
 }
 
-/// An organization's record (`GET /orgs/{org}`).
+/// An organization's record (`GET /orgs/{org}`), its teams and members read page by page until
+/// the node names no next page (`nextTeamsAfter`, `nextMembersAfter`).
 pub async fn org(env: &Env, namespace: &str) -> eyre::Result<Org> {
-    Ok(env.client.orgs().get(namespace).await?)
+    let orgs = env.client.orgs();
+    let mut whole = orgs.get(namespace, None, None, None).await?;
+    let (mut teams_after, mut members_after) = (
+        whole.next_teams_after.clone().flatten(),
+        whole.next_members_after.clone().flatten(),
+    );
+    while teams_after.is_some() || members_after.is_some() {
+        // A list already read whole is asked past every id (ids are ASCII), so it answers none.
+        let page = orgs
+            .get(
+                namespace,
+                None,
+                teams_after.as_deref().or(Some("\u{10ffff}")),
+                members_after.as_deref().or(Some("\u{10ffff}")),
+            )
+            .await?;
+        whole.teams.extend(page.teams);
+        whole.members.extend(page.members);
+        whole.capabilities.extend(page.capabilities);
+        whole.member_metadata.extend(page.member_metadata);
+        if let Some(more) = page.all_apps {
+            whole.all_apps.get_or_insert_with(Vec::new).extend(more);
+        }
+        teams_after = page.next_teams_after.flatten();
+        members_after = page.next_members_after.flatten();
+    }
+    whole.next_teams_after = None;
+    whole.next_members_after = None;
+    Ok(whole)
 }
 
 pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
@@ -340,7 +369,7 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
     Ok(match cmd {
         NamespaceCmd::Create { name } => to_json(&orgs.create(&name, None, None).await?)?,
         NamespaceCmd::Get { namespace } => to_json(&org(env, &namespace).await?)?,
-        NamespaceCmd::List => json!({ "namespaces": env.client.auth().me().await?.orgs }),
+        NamespaceCmd::List => json!({ "orgs": env.client.auth().me().await?.orgs }),
         NamespaceCmd::Delete {
             namespace,
             dev_passkey,
@@ -383,7 +412,7 @@ pub async fn run(cmd: NamespaceCmd, env: &Env) -> eyre::Result<Value> {
             to_json(&out?)?
         }
         NamespaceCmd::Groups { namespace } => {
-            json!({ "groups": org(env, &namespace).await?.teams })
+            json!({ "teams": org(env, &namespace).await?.teams })
         }
         NamespaceCmd::CreateGroup {
             namespace,

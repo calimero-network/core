@@ -6,13 +6,17 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import Union
+
 T = TypeVar("T", bound="PackageOrigin")
 
 
 @_attrs_define
 class PackageOrigin:
-    """A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and
-    whether the cluster serves the package's frontend there.
+    """A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), whether
+    the cluster serves the package's frontend there, and the instance its sessions reach alone (`app`, an instance's
+    origin).
 
         Attributes:
             package (str):
@@ -21,6 +25,7 @@ class PackageOrigin:
             added_by (str):
             added_at (str):
             served (bool):
+            app (Union[Unset, str]):
     """
 
     package: str
@@ -29,6 +34,7 @@ class PackageOrigin:
     added_by: str
     added_at: str
     served: bool
+    app: Union[Unset, str] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,6 +50,8 @@ class PackageOrigin:
 
         served = self.served
 
+        app = self.app
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -56,6 +64,8 @@ class PackageOrigin:
                 "served": served,
             }
         )
+        if app is not UNSET:
+            field_dict["app"] = app
 
         return field_dict
 
@@ -74,6 +84,8 @@ class PackageOrigin:
 
         served = d.pop("served")
 
+        app = d.pop("app", UNSET)
+
         package_origin = cls(
             package=package,
             origin=origin,
@@ -81,6 +93,7 @@ class PackageOrigin:
             added_by=added_by,
             added_at=added_at,
             served=served,
+            app=app,
         )
 
         package_origin.additional_properties = d

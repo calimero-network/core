@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::env::Home;
 
+mod connectors;
 pub mod uses;
 
 /// The default component file names, as `mero-app-build` wrote them.
@@ -311,6 +312,10 @@ pub struct ReleaseArgs {
     /// List the package publicly (`app publish --public`).
     #[arg(long, requires = "publish")]
     pub public: bool,
+    /// The cluster organization it is installed for (`package install --org`; default: your
+    /// only one).
+    #[arg(long)]
+    pub install_org: Option<String>,
 }
 
 impl ReleaseArgs {
@@ -704,7 +709,7 @@ fn uses_of(
 /// (and `cargo mero` before it) read: `metadata` (`name`, `description`,
 /// `author`, `icon`, `tags`, `license`, `category`, `guide`), `handlers.slug`
 /// (default: the package), `links` (`frontend`, `github`, `docs`),
-/// `frontendAliases`, `outbound`, `upgrades`, `instanceOrg` (`instance-org`) and `guests`, and `buildInfo` (the
+/// `frontendAliases`, `outbound`, `upgrades`, `instanceOrg` (`instance-org`), `guests` and `lineage`, and `buildInfo` (the
 /// `calimero-sdk` git source and tag). A flag wins over the table.
 fn manifest_extras(
     a: &PackArgs,
@@ -1114,6 +1119,13 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
                 .collect()
         })
         .unwrap_or_default();
+    let mut secrets: Map<String, Value> = match meta.table.get("secrets") {
+        None => Map::new(),
+        Some(s) => serde_json::to_value(s)
+            .and_then(serde_json::from_value)
+            .wrap_err("[package.metadata.calimero.secrets] is a table of NAME = binding")?,
+    };
+    connectors::merge(&meta, &mut outbound, &mut secrets)?;
     for url in &a.outbound {
         if !outbound.contains(url) {
             outbound.push(url.clone());
@@ -1134,10 +1146,9 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
     // it, so whoever deploys it knows what to supply and the app never places it. Checked
     // as a node checks it at install (`BundleManifest::check_secrets`), against the
     // outbound prefixes above.
-    if let Some(secrets) = meta.table.get("secrets") {
+    if !secrets.is_empty() {
         let secrets: std::collections::BTreeMap<String, calimero_bundle::BundleSecret> =
-            serde_json::to_value(secrets)
-                .and_then(serde_json::from_value)
+            serde_json::from_value(Value::Object(secrets))
                 .wrap_err("[package.metadata.calimero.secrets]: each NAME takes host, paths (path prefixes on it, [\"/\"] for all), then header (with an optional format, \"Bearer {}\") or bodyField, and description and required")?;
         let probe = calimero_bundle::BundleManifest {
             outbound: outbound.clone(),
@@ -1150,9 +1161,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         probe
             .check_secrets()
             .map_err(|e| eyre!("[package.metadata.calimero.secrets]: {e}"))?;
-        if !secrets.is_empty() {
-            let _ = manifest.insert("secrets".into(), serde_json::to_value(&secrets)?);
-        }
+        let _ = manifest.insert("secrets".into(), serde_json::to_value(&secrets)?);
     }
     if let Some(uses) = uses_of(&meta, &package)? {
         let _ = manifest.insert("uses".into(), serde_json::to_value(&uses)?);
@@ -1202,6 +1211,9 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
             bail!("guests = {g:?}: allowed or forbidden");
         }
         let _ = manifest.insert("guests".into(), json!(g));
+    }
+    if let Some(l) = lineage_of(&meta.table)? {
+        let _ = manifest.insert("lineage".into(), json!(l));
     }
 
     let key = signing_key(a.key.as_deref())?;
@@ -1366,6 +1378,32 @@ async fn registry_token(
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| eyre!("the Cloud answered no token"))
+}
+
+/// The crate's `lineage` (`[package.metadata.calimero]`): `pinned` or `free`.
+fn lineage_of(t: &toml::Table) -> eyre::Result<Option<&str>> {
+    let Some(l) = t.get("lineage").and_then(toml::Value::as_str) else {
+        return Ok(None);
+    };
+    if l != "pinned" && l != "free" {
+        bail!("lineage = {l:?}: pinned or free");
+    }
+    Ok(Some(l))
+}
+
+#[cfg(test)]
+mod lineage_tests {
+    /// `lineage` is copied as written when it is `pinned` or `free`, and refused otherwise.
+    #[test]
+    fn lineage_is_pinned_or_free() {
+        let table = |s: &str| -> toml::Table { s.parse().unwrap() };
+        assert_eq!(super::lineage_of(&table("")).unwrap(), None);
+        for word in ["pinned", "free"] {
+            let t = table(&format!("lineage = \"{word}\""));
+            assert_eq!(super::lineage_of(&t).unwrap(), Some(word));
+        }
+        assert!(super::lineage_of(&table("lineage = \"locked\"")).is_err());
+    }
 }
 
 #[cfg(test)]

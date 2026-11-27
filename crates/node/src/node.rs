@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::Duration;
 
+use calimero_app_host::SearchBudget;
 use calimero_log::{
     BoxFuture, Engine, Group, GroupId, NodeId, RpcRequest, RpcResponse, Transport, WriteError,
 };
@@ -59,7 +60,20 @@ pub use component::{
     MAX_ARGS_BYTES, NOT_REACHED, TIMER_POLL, USAGE_REFRESH,
 };
 pub(crate) use component::{valid_uploader, UploadOp, Uploaded};
+/// The run view's types, which the API's OpenAPI registry names (`api::openapi`).
+#[cfg(test)]
+pub(crate) use component::{PartTaken, RunFileView, RunList, RunView, UploadStatus, UploadView};
 pub(crate) use component::{PIPELINE_VIEW, RUN_VIEW};
+
+/// `GET /apps/{app}/pipeline-runs/{run}/receipt`: a pipeline run's receipt
+/// (`calimero_client::receipt::PipelineReceipt`) with the signature of the answering node's
+/// receipt key over it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SignedPipelineReceipt {
+    receipt: serde_json::Value,
+    node: u64,
+    signature: String,
+}
 // The refusals the OpenAPI registry's tests build, to hold `details` to its schema.
 #[cfg(test)]
 pub(crate) use component::{files_unavailable, upload_refusal};
@@ -169,6 +183,25 @@ pub struct Config {
     /// How long a lookup of a system object (`Node::sys_until`) waits for a
     /// write committed elsewhere to reach this replica before answering.
     pub read_wait: Duration,
+    /// How long an access check may reuse a recent system read-index round
+    /// instead of running its own (`Node::sys_round`). Zero (the default)
+    /// keeps a round per newly-arrived request, so a removal, revocation or
+    /// demotion is enforced the moment its write commits. A non-zero lease
+    /// trades that for latency: within it a check serves access from the last
+    /// confirmed index, so a system write committed during the lease is only
+    /// enforced once the lease lapses (a fresh round is run) or the write has
+    /// replicated and applied to this node — whichever is sooner. The lease is
+    /// therefore the **maximum a revocation may lag on a node that has not yet
+    /// applied it**; set it only to a bound the governance model accepts. It
+    /// never weakens the leader or an up-to-date replica, which apply the write
+    /// at once, and never skips judging the credential. The same bound applies
+    /// fail-closed to a just-written credential: within the lease a session or
+    /// grant committed on another node may be judged against the pre-write view
+    /// and refused until it replicates here or the lease lapses, so a lease
+    /// longer than a client's own retry spacing can transiently reject a
+    /// credential it just rotated.
+    /// <https://calimero-network.github.io/core/protocol/reads/#access-is-judged-fresh>
+    pub sys_read_lease: Duration,
     /// How long a refresh token serves the refreshes that present it before
     /// one of them exchanges it in the system log
     /// (`api::REFRESH_ROTATE_AFTER` in production). Zero: every refresh
@@ -214,7 +247,7 @@ pub struct Config {
     /// The operator's outbound HTTPS policy (`[outbound]` in `--settings`);
     /// `None`: `http_request` traps in every run.
     pub outbound: Option<Arc<calimero_outbound::OutboundService>>,
-    /// Where app time starts relative to this host's clock, in ms (D19), for
+    /// Where app time starts relative to this host's clock, in ms, for
     /// component apps. `0` in production; tests move a node's app clock with it.
     pub clock_offset_ms: i64,
     /// The limits of every component call and view; `None` is `Budget::call()`.
@@ -313,11 +346,11 @@ pub struct CallRequest {
     /// client's request; peers pass it along on `internal/call`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host: bool,
-    /// A component app's delivered xcall (D25): which message of which source. Set only
+    /// A component app's delivered xcall: which message of which source. Set only
     /// by the source's leader; peers pass it along on `internal/call`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub xcall: Option<crate::component::xcall::XcallFrom>,
-    /// A component app's call made by one of its actions (D12): the action's key. Set only
+    /// A component app's call made by one of its actions: the action's key. Set only
     /// by the node's action runner; reaches `allow(action)` methods.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action: Option<String>,
@@ -401,6 +434,17 @@ impl CallRequest {
     }
 }
 
+/// A view's body for the peer it is forwarded to: with a request's search budget, every
+/// search left goes along as `searchesLeft` (`SearchBudget::take_all`), since the peer cannot
+/// give back what it did not use.
+fn forwarded_view(req: &ViewRequest, searches: Option<&SearchBudget>) -> Value {
+    let mut body = serde_json::to_value(req).unwrap_or_default();
+    if let (Some(searches), Some(map)) = (searches, body.as_object_mut()) {
+        let _prev = map.insert("searchesLeft".to_owned(), searches.take_all().into());
+    }
+    body
+}
+
 /// Request to run a read-only method.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -417,6 +461,10 @@ pub struct ViewRequest {
     /// A synchronous `xcall_view` made as the person, as [`CallRequest::via`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
+    /// A component app's view made by one of its actions, as [`CallRequest::action`]: set only
+    /// by the node's action runner; peers pass it along on `internal/view`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -426,7 +474,7 @@ pub struct ViewAnswer {
     pub status: Status,
     pub result: Value,
     pub error: Value,
-    /// A component's view hit its deadline: answered `503 TIMEOUT` (D36).
+    /// A component's view hit its deadline: answered `503 TIMEOUT`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub timeout: bool,
 }
@@ -534,15 +582,16 @@ pub struct Node {
     pub system: Arc<Group<SystemMachine>>,
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
     /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
-    /// engine for all of them, spec section 5); compiled artifacts cached under
-    /// `<data_dir>/components`, each with a MAC under a key derived from K_c (S8).
+    /// engine for all of them); compiled artifacts cached under
+    /// `<data_dir>/components`, each with a MAC under a key derived from K_c, checked before
+    /// one is loaded.
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepares a release's compute components at install; no run ever goes through it.
     compute_wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
     /// One lock per bundle being prepared, so concurrent first uses wait for one
-    /// prepare instead of each compiling it (Ruling 44).
+    /// prepare instead of each compiling it.
     preparing: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// How many times this node ran the engine's `prepare` (feature `testing`).
     #[cfg(feature = "testing")]
@@ -573,7 +622,7 @@ pub struct Node {
     /// App time of component apps ([`Clock`]).
     clock: Clock,
     /// Per component app group: the term this node last led it in, and its
-    /// execution counter in that term (`id_seq`, D52).
+    /// execution counter in that term (`id_seq`), the `seq` of its unique ids `term.seq.n`.
     id_seqs: Mutex<HashMap<GroupId, (u64, u64)>>,
     /// Component app groups whose timer ticks are being run now (one round per
     /// app at a time).
@@ -581,12 +630,12 @@ pub struct Node {
     /// What each peer's replicas last said its apps used today, for the fuel cap
     /// (`component::USAGE_REFRESH`).
     peer_usage: Mutex<component::PeerUsage>,
-    /// Outbox messages this node failed to deliver as a source's leader (D29): per
+    /// Outbox messages this node failed to deliver as a source's leader: per
     /// (source app, seq), the attempts and the app time of the next one.
     xcall_retry: Mutex<HashMap<(String, u64), (u32, u64)>>,
-    /// Actions this node is running as their app's leader, by (app, action key) (D17).
+    /// Actions this node is running as their app's leader, by (app, action key).
     actions_running: Mutex<HashSet<(String, String)>>,
-    /// When an action that timed out may run again, app time (D22).
+    /// When an action that timed out may run again, app time.
     action_retry: Mutex<HashMap<(String, String), u64>>,
     /// The action worker pool: at most `MAX_ACTION_WORKERS` runs at once.
     action_slots: Arc<tokio::sync::Semaphore>,
@@ -649,8 +698,8 @@ pub struct Node {
     compute: component::ComputeState,
     /// Wakes the compute driver: a call started or cancelled a run.
     pub runs_kick: Arc<tokio::sync::Notify>,
-    /// Event streams this node is serving (`/apps/{app}/events`).
-    pub event_streams: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// Event and presence streams this node is serving, in total, by account and by app.
+    pub event_streams: std::sync::Arc<crate::event_streams::EventStreams>,
     /// Pipeline run event streams open on this node, by app.
     pub pipeline_subscribers: Mutex<HashMap<String, usize>>,
     /// Every app's ephemeral presence, in memory only.
@@ -684,7 +733,7 @@ pub struct Node {
     auto_update_turn: tokio::sync::Mutex<()>,
     /// Serializes starting app groups (reconcile and the RPC factory race otherwise).
     starting: tokio::sync::Mutex<()>,
-    /// Full-text search over the apps hosted here (spec section 7).
+    /// Full-text search over the apps hosted here.
     pub component_search: crate::component::search::ComponentSearch,
     /// This node, for what a run is handed (its blob host).
     this: Mutex<Weak<Node>>,
@@ -703,6 +752,10 @@ pub struct Node {
     pub conflicts: std::sync::atomic::AtomicU64,
     /// Per-app usage of the runs this node made, for `/metrics` ([`crate::usage`]).
     pub usage: Usage,
+    /// The outbound requests this node's runs made, per instance, for the
+    /// instance's owner and managers (`GET /apps/{app}/outbound-log`): in memory
+    /// only, never logged or a metric ([`calimero_outbound::OutboundAudit`]).
+    pub outbound_audit: Arc<calimero_outbound::OutboundAudit>,
 }
 
 /// One read-index round on the system group at a time. A caller may take the
@@ -713,8 +766,9 @@ pub struct Node {
 struct ReadRounds {
     /// Rounds begun so far.
     begun: std::sync::atomic::AtomicU64,
-    /// The last round that finished, and the index it named.
-    finished: Mutex<(u64, Option<u64>)>,
+    /// The last round that finished, the index it named, and when it finished
+    /// (for the read-index lease, `Config::sys_read_lease`).
+    finished: Mutex<(u64, Option<u64>, Option<tokio::time::Instant>)>,
     /// Held for the length of a round.
     turn: tokio::sync::Mutex<()>,
 }
@@ -792,8 +846,8 @@ impl Transport for PeerTransport {
         })
     }
 
-    /// Heartbeats of several groups in one message (`internal/raft-batch`,
-    /// B6). A peer on a release before it has no such route: the batcher then
+    /// Heartbeats of several groups in one message (`internal/raft-batch`).
+    /// A peer on a release before it has no such route: the batcher then
     /// sends each heartbeat on its own (`calimero_log::network::Batcher`).
     /// A group whose data the peer may not hold is answered here, as `send`
     /// refuses it, and never sent.
@@ -845,7 +899,7 @@ impl Transport for PeerTransport {
 
 /// What the node answers a component app's call that reaches its own commands
 /// path: a component's calls are `call_component`'s, its blobs its own host
-/// records (R8).
+/// records.
 pub const COMPONENT_REFUSES: &str =
     "this app is a component: its calls are not the node's own commands";
 
@@ -1090,7 +1144,7 @@ impl Node {
         ));
         // Compiled components live in the node's data directory, which the host can
         // write: each artifact carries a MAC under a key derived from K_c, so only this
-        // cluster's own compilations are ever loaded (S8, Ruling 38).
+        // cluster's own compilations are ever loaded.
         let wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::new(
             config.data_dir.join("components"),
             &component::component_cache_key(&cluster_key),
@@ -1191,6 +1245,7 @@ impl Node {
             replica_strong_views: std::sync::atomic::AtomicU64::new(0),
             conflicts: std::sync::atomic::AtomicU64::new(0),
             usage: Usage::default(),
+            outbound_audit: Arc::default(),
             starting: tokio::sync::Mutex::new(()),
             component_search: crate::component::search::ComponentSearch::new(search_root),
             this: Mutex::new(Weak::new()),
@@ -1235,6 +1290,16 @@ impl Node {
     #[must_use]
     pub const fn cluster_key(&self) -> &[u8; 32] {
         &self.cluster_key
+    }
+
+    /// `attestor` for a peer of this cluster: its quote queues apart from
+    /// anyone's (`attest::Lane::Peer`).
+    fn peer_attestor(&self, attestor: HttpAttestor) -> crate::attest::PeerAttestor {
+        crate::attest::PeerAttestor {
+            attestor,
+            cluster_key: self.cluster_key,
+            cluster: self.config.cluster.clone(),
+        }
     }
 
     /// The secret peers present on internal routes (inside sealed channels).
@@ -1293,10 +1358,10 @@ impl Node {
         if let Ok(mut r) = self.peer_releases.lock() {
             let _prev = r.insert(addr.to_owned(), Arc::clone(&seen_release));
         }
-        let attestor = HttpAttestor {
+        let attestor = self.peer_attestor(HttpAttestor {
             seen_release,
             policy: self.config.peer_policy(),
-        };
+        });
         // Identified (Noise IK, with this node's transport key), so the peer
         // knows which node calls and can judge its release.
         let t = Arc::new(calimero_sealed::client::SealedTransport::identified_as(
@@ -1432,11 +1497,33 @@ impl Node {
 
     /// Commit a system command through the system group's leader; `409
     /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
-    /// version ([`Node::require_features`]).
+    /// version ([`Node::require_features`]), and the refusal `apply` would
+    /// answer for one it judges refused already (`Node::sys_prejudge`).
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         // Nothing is proposed that a node of the cluster cannot apply.
         self.require_features(&cmd.features()).await?;
+        // Authority first: a caller who may not act learns that (or that the subject is
+        // missing), never how full the state is.
+        self.sys_prejudge(cmd).await?;
+        // A write past a bound on the system state is refused before it is logged; apply
+        // judges it again ([Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas)).
+        self.sys(|s| s.check_state_caps(cmd)).map_err(rejected)?;
         self.sys_propose(cmd).await
+    }
+
+    /// Refuse, before it costs a log entry, a command `apply` would refuse
+    /// ([`crate::system::prejudge`]). A refusal on this replica's state is
+    /// judged again once it caught up ([`Node::sys_fresh`]): the write that
+    /// allows the command (this request's own first one, made through
+    /// another node) may not have applied here yet. A replica that cannot
+    /// catch up proposes it, and `apply` judges it.
+    /// Spec: <https://calimero-network.github.io/core/protocol/system-group/#judged-before-it-is-proposed>
+    async fn sys_prejudge(&self, cmd: &SystemCmd) -> Result<(), ApiError> {
+        let judge = || self.sys_machine(|m| crate::system::prejudge(m, cmd));
+        if judge().is_ok() || !self.sys_fresh().await {
+            return Ok(());
+        }
+        judge().map_err(rejected)
     }
 
     /// [`Node::sys_write`] past the gate: only for `SetClusterVersion`, which
@@ -1649,11 +1736,18 @@ impl Node {
         let rounds = &self.sys_reads;
         let arrived = rounds.begun.load(Ordering::SeqCst);
         let _turn = rounds.turn.lock().await;
-        let (round, index) = *rounds
+        let (round, index, at) = *rounds
             .finished
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if round > arrived {
+        // Reuse the last round's index when a round finished after this caller
+        // arrived (callers waiting at the same moment share one round), or when
+        // a confirmed index is still within the read-index lease: a check then
+        // serves access from it rather than running a round of its own. A
+        // failed round (no leader, `None`) is never leased; it is tried again.
+        let lease = self.config.sys_read_lease;
+        let leased = index.is_some() && !lease.is_zero() && at.is_some_and(|t| t.elapsed() < lease);
+        if round > arrived || leased {
             return index;
         }
         let round = rounds.begun.fetch_add(1, Ordering::SeqCst) + 1;
@@ -1661,7 +1755,8 @@ impl Node {
         *rounds
             .finished
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = (round, index);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            (round, index, Some(tokio::time::Instant::now()));
         index
     }
 
@@ -1686,8 +1781,8 @@ impl Node {
 
     /// The registered nodes whose attested release is older than this node's own,
     /// or that could not be attested, with what each named (`None`): until there are
-    /// none, a setting only this release knows is not written, as D71 gates
-    /// `base_seq` on the replicas' releases. An older node would drop the setting
+    /// none, a setting only this release knows is not written, as `base_seq` is
+    /// gated on the replicas' releases. An older node would drop the setting
     /// from what it applies, and its snapshots would bring it back to its default.
     pub async fn nodes_behind_release(&self) -> Vec<(NodeId, Option<String>)> {
         let own = self.own_release();
@@ -1751,7 +1846,7 @@ impl Node {
     /// key lives as long as the process holding it). `None` when the claim
     /// does not hold: no such node, removed, or another key there.
     ///
-    /// The attestation runs in a task of its own ([`detach`]): it takes
+    /// The attestation runs in a task of its own (`detach`): it takes
     /// longer than a Raft RPC may (about a second on TDX), and a caller that
     /// gives up must not abort it, or no RPC from that peer is ever taken.
     pub async fn identify_peer(&self, key: [u8; 32], claimed: NodeId) -> Option<PeerIdentity> {
@@ -1771,6 +1866,7 @@ impl Node {
             self.config.peer_policy(),
             Arc::clone(&self.identifying),
         );
+        let (cluster_key, cluster) = (self.cluster_key, self.config.cluster.clone());
         let node = self.this.lock().ok()?.clone();
         let identifying = detach(&self.identifications, (key, claimed), || {
             async move {
@@ -1779,9 +1875,13 @@ impl Node {
                     return Some(p);
                 }
                 let release = Arc::new(Mutex::new(None));
-                let attestor = HttpAttestor {
-                    seen_release: Arc::clone(&release),
-                    policy,
+                let attestor = crate::attest::PeerAttestor {
+                    attestor: HttpAttestor {
+                        seen_release: Arc::clone(&release),
+                        policy,
+                    },
+                    cluster_key,
+                    cluster,
                 };
                 let attested =
                     calimero_sealed::client::Attest::attest_transport_key(&attestor, &http, &url)
@@ -2098,14 +2198,15 @@ impl Node {
     /// A pipeline run's receipt with this node's receipt key's signature over it
     /// (`calimero_client::receipt::receipt_message`), as the receipt route answers it.
     #[must_use]
-    pub fn sign_pipeline_receipt(&self, receipt: serde_json::Value) -> serde_json::Value {
+    pub fn sign_pipeline_receipt(&self, receipt: serde_json::Value) -> SignedPipelineReceipt {
         use ed25519_dalek::Signer;
         let message = calimero_client::receipt::receipt_message(&receipt);
-        serde_json::json!({
-            "receipt": receipt,
-            "node": self.config.node_id,
-            "signature": hex::encode(self.receipt_key.sign(&message).to_bytes()),
-        })
+        let signature = hex::encode(self.receipt_key.sign(&message).to_bytes());
+        SignedPipelineReceipt {
+            receipt,
+            node: self.config.node_id,
+            signature,
+        }
     }
 
     /// The mero-tee release this node runs, as its attestation names it.
@@ -2155,10 +2256,20 @@ impl Node {
         .unwrap_or_else(|| id.to_owned())
     }
 
+    /// One not found here is looked for on a state that caught up with the
+    /// system leader ([`Node::sys_fresh_index`]), which holds every app made
+    /// before the request: missing there, it is missing, answered at once.
+    /// Only when no leader answers does it wait for one ([`Node::sys_until`]).
     pub async fn app(&self, app_id: &str) -> Result<AppRecord, ApiError> {
-        self.sys_until(|s| s.apps.get(app_id).cloned())
-            .await
-            .ok_or_else(|| ApiError::not_found("no such app"))
+        let find = |s: &SystemState| s.apps.get(app_id).cloned();
+        let found = match self.sys(find) {
+            Some(app) => Some(app),
+            None => match self.sys_fresh_index().await {
+                (Some(_), _) => self.sys(find),
+                (None, _) => self.sys_until(find).await,
+            },
+        };
+        found.ok_or_else(|| ApiError::not_found("no such app"))
     }
 
     async fn start_app_group_if_replica(&self, group: GroupId) -> bool {
@@ -2307,10 +2418,10 @@ impl Node {
     async fn attests_as_replica(&self, id: NodeId, addr: &str) -> bool {
         let attested = async {
             let url: Url = addr.parse()?;
-            let attestor = HttpAttestor {
+            let attestor = self.peer_attestor(HttpAttestor {
                 policy: self.config.peer_policy(),
                 seen_release: Arc::default(),
-            };
+            });
             calimero_sealed::client::Attest::attest_transport_key(&attestor, &self.http, &url)
                 .await
                 .map(|_key| ())
@@ -2699,6 +2810,7 @@ impl Node {
             approval,
             app_id.to_owned(),
             sent,
+            Arc::clone(&self.outbound_audit),
         )?;
         // The egress switch, asked before each request on this node's system state, so one
         // turned off refuses the next request of a run already going, over every approval.
@@ -2715,7 +2827,46 @@ impl Node {
                         .map(crate::system::EgressOff::who)
                 })
             }),
+            Arc::clone(&self.outbound_audit),
+            app_id.to_owned(),
         ))
+    }
+
+    /// `app`'s outbound audit: the entries of every replica that answers and of
+    /// this node, newest first, at most [`calimero_outbound::MAX_AUDIT_ENTRIES`].
+    /// Each node keeps the requests its own runs made, so a leader change splits
+    /// an instance's requests across nodes; `partial` says a replica did not answer.
+    pub async fn outbound_log(&self, app: &AppRecord) -> OutboundLog {
+        let mut entries = self.outbound_audit.entries(&app.app_id);
+        let mut partial = false;
+        let body = json!({ "app": app.app_id });
+        for id in app.replicas.iter().filter(|id| **id != self.config.node_id) {
+            let Some(addr) = self.sys(|s| s.replica_node(id).map(|n| n.addr.clone())) else {
+                partial = true;
+                continue;
+            };
+            let theirs = self
+                .peer_forward(&addr, "internal/outbound-log", &body)
+                .await
+                .ok()
+                .and_then(|v| {
+                    serde_json::from_value::<Vec<calimero_outbound::AuditEntry>>(
+                        v["entries"].clone(),
+                    )
+                    .ok()
+                });
+            match theirs {
+                Some(theirs) => entries.extend(
+                    theirs
+                        .into_iter()
+                        .take(calimero_outbound::MAX_AUDIT_ENTRIES),
+                ),
+                None => partial = true,
+            }
+        }
+        entries.sort_by_key(|e| core::cmp::Reverse(e.at_ms));
+        entries.truncate(calimero_outbound::MAX_AUDIT_ENTRIES);
+        OutboundLog { entries, partial }
     }
 
     /// This node as the `Arc` it lives in, for work that outlives a borrowed request.
@@ -3044,7 +3195,7 @@ impl Node {
 
     /// When `app` last committed a write (Unix milliseconds,
     /// [`crate::app::AppMachine::last_write_ms`]), as a replica applied it:
-    /// [`Self::replica_progress`]'s. `None` before the app's first write, and
+    /// `Self::replica_progress`'s. `None` before the app's first write, and
     /// when no replica answered.
     pub async fn last_write_ms(&self, app: &AppRecord) -> Option<u64> {
         self.replica_progress(app).await?.last_write_ms
@@ -3110,7 +3261,7 @@ impl Node {
         furthest_progress(&answers, app.replicas.len())
     }
 
-    /// A component app's xcalls (D25, D29), `{ pending, deadLetters }`: this node's
+    /// A component app's xcalls, `{ pending, deadLetters }`: this node's
     /// replica's if it hosts the app, else the first replica that answers
     /// `internal/xcalls`, as [`Self::storage_stats`].
     pub async fn app_xcalls(&self, app: &AppRecord) -> Result<Value, ApiError> {
@@ -3573,8 +3724,34 @@ impl Node {
                 conflict: false,
             });
         }
-        self.upgrade_component(g, &bundle, compute_bundle.as_deref(), migrate.as_deref())
-            .await
+        let strict =
+            self.sys(|s| s.cluster_brings(crate::system::cluster_version::Feature::PinnedLineage));
+        let judged_on = match req
+            .args
+            .get("from")
+            .map(|f| component::JudgedOn::parse(f, strict))
+        {
+            None => None,
+            Some(Ok(judged)) => judged,
+            Some(Err(why)) => {
+                return Ok(Applied {
+                    index: g.applied(),
+                    status: Status::AppError,
+                    result: Value::Null,
+                    error: Value::String(why.to_owned()),
+                    events: Vec::new(),
+                    conflict: false,
+                })
+            }
+        };
+        self.upgrade_component(
+            g,
+            &bundle,
+            compute_bundle.as_deref(),
+            migrate.as_deref(),
+            judged_on.as_ref(),
+        )
+        .await
     }
 
     /// Run a call wherever the app's leader is.
@@ -3722,15 +3899,33 @@ impl Node {
         &self,
         g: &Group<AppMachine>,
         req: &ViewRequest,
+        searches: Option<&SearchBudget>,
     ) -> Result<ViewAnswer, ApiError> {
         if g.read_local(|m, _| m.state.executor()) == Some(Kind::Component) {
-            return self.view_local_component(g, req).await;
+            return self.view_local_component(g, req, searches).await;
         }
         Err(ApiError::unsupported_engine())
     }
 
     /// Run a read-only method. Its writes, if any, are discarded.
     pub async fn view(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+        self.view_searching(req, None).await
+    }
+
+    /// [`Node::view`] for a request that has made searches already: `searches` is what it
+    /// has left (a synchronous `xcall_view`'s caller's, or what a peer handed over), shared
+    /// with this view's run; `None` is a fresh request.
+    pub(crate) async fn view_searching(
+        &self,
+        req: &ViewRequest,
+        searches: Option<&SearchBudget>,
+    ) -> Result<ViewAnswer, ApiError> {
+        // Every view (`/views`, `/intents` and `/methods` naming one, a forwarded
+        // one, a synchronous xcall's) comes through here: refuse oversize
+        // arguments before any lookup, forward or run.
+        if component::args_len(&req.args) > MAX_ARGS_BYTES {
+            return Err(component::args_too_large());
+        }
         let app = self.app(&req.app_id).await?;
         self.refuse_while_restoring(&app).await?;
         if app.executor == Kind::Wasmer {
@@ -3746,13 +3941,20 @@ impl Node {
             && req.method != component::PIPELINE_VIEW
             && req.method != SECRETS_VIEW
         {
-            self.abi_gate(&app, &req.method, &req.caller, true, false)
-                .await?;
+            self.abi_gate(
+                &app,
+                &req.method,
+                &req.caller,
+                true,
+                false,
+                req.action.is_some(),
+            )
+            .await?;
         }
         // Like calls, ride out an election (e.g. right after the leader moved off).
         let mut last = None;
         for _attempt in 0..30 {
-            match self.view_once(req).await {
+            match self.view_once(req, searches).await {
                 Err(e) if e.code == "UNAVAILABLE" => last = Some(e),
                 other => return other,
             }
@@ -3761,12 +3963,16 @@ impl Node {
         Err(last.unwrap_or_else(|| ApiError::unavailable("the app has no leader")))
     }
 
-    async fn view_once(&self, req: &ViewRequest) -> Result<ViewAnswer, ApiError> {
+    async fn view_once(
+        &self,
+        req: &ViewRequest,
+        searches: Option<&SearchBudget>,
+    ) -> Result<ViewAnswer, ApiError> {
         let app = self.app(&req.app_id).await?;
         if let Some(g) = self.replica_group(&app) {
             if req.strong {
                 match g.read_strong(|_, applied| applied).await {
-                    Ok(_) => return self.view_local(&g, req).await,
+                    Ok(_) => return self.view_local(&g, req, searches).await,
                     Err(WriteError::NotLeader {
                         leader: Some((id, addr)),
                     }) if id != self.config.node_id && !addr.is_empty() => {
@@ -3783,15 +3989,11 @@ impl Node {
                                 let _prev = self
                                     .replica_strong_views
                                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                return self.view_local(&g, req).await;
+                                return self.view_local(&g, req, searches).await;
                             }
                         }
                         let v = self
-                            .peer_forward(
-                                &addr,
-                                "internal/view",
-                                &serde_json::to_value(req).unwrap_or_default(),
-                            )
+                            .peer_forward(&addr, "internal/view", &forwarded_view(req, searches))
                             .await
                             .map_err(forwarded_view_error)?;
                         return serde_json::from_value(v)
@@ -3807,17 +4009,13 @@ impl Node {
                     "this replica has not caught up to minIndex",
                 ));
             }
-            return self.view_local(&g, req).await;
+            return self.view_local(&g, req, searches).await;
         }
         let addr = self
             .other_replica(&app)
             .ok_or_else(|| ApiError::unavailable("no replica known"))?;
         let v = self
-            .peer_forward(
-                &addr,
-                "internal/view",
-                &serde_json::to_value(req).unwrap_or_default(),
-            )
+            .peer_forward(&addr, "internal/view", &forwarded_view(req, searches))
             .await
             .map_err(forwarded_view_error)?;
         serde_json::from_value(v).map_err(|e| ApiError::internal(&e.to_string()))
@@ -3866,7 +4064,7 @@ impl Node {
     }
 
     /// Write encrypted snapshots of the app groups this node leads, and of
-    /// the system group when it leads it ([`Self::back_up`]).
+    /// the system group when it leads it (`Self::back_up`).
     pub async fn backup(&self) -> eyre::Result<usize> {
         self.back_up(false).await
     }
@@ -4227,4 +4425,14 @@ mod group_progress_tests {
             Some(at(None, Some(5)))
         );
     }
+}
+
+/// What `GET /apps/{app}/outbound-log` answers: the instance's outbound requests,
+/// newest first, merged from this node and each replica (`partial`: one did not answer).
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct OutboundLog {
+    /// At most `MAX_AUDIT_ENTRIES`, newest first.
+    pub entries: Vec<calimero_outbound::AuditEntry>,
+    /// A replica did not answer, so some of its runs' requests may be missing.
+    pub partial: bool,
 }

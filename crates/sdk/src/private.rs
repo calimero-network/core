@@ -27,7 +27,7 @@ pub enum MethodKind {
     View,
     /// `#[app::every(..)]`.
     Timer,
-    /// `#[app::action]`: runs outside the log (D12), started, never called.
+    /// `#[app::action]`: runs outside the log, started, never called.
     Action,
     /// `#[app::compute(..)]`: runs on a job node as an action with a compute run.
     Compute,
@@ -55,7 +55,7 @@ pub enum Kind {
     Call,
     /// A read on any node.
     View,
-    /// An action (D12) or a compute run: outside the log.
+    /// An action or a compute run: outside the log.
     Action,
     /// A timer tick; `args` carry the tick.
     Timer,
@@ -89,7 +89,7 @@ fn bad_args(message: impl Display) -> AppError {
     AppError::with_fields("BadArgs", json!({ "message": message.to_string() }))
 }
 
-/// The generated `handle`: find the method, check the invocation kind and the caller (D13),
+/// The generated `handle`: find the method, check the invocation kind and the caller,
 /// then run it.
 ///
 /// A view may be invoked as a call; a call, timer or init method invoked as a view is
@@ -183,7 +183,7 @@ pub fn payload<T>(
     Ok((name, Value::Object(fields)))
 }
 
-/// A 64-bit integer written as a decimal string (D20).
+/// A 64-bit integer written as a decimal string, exact in JSON above 2^53.
 pub struct Decimal<T>(pub T);
 
 impl<T: Display> Serialize for Decimal<T> {
@@ -192,7 +192,7 @@ impl<T: Display> Serialize for Decimal<T> {
     }
 }
 
-/// Bytes written as base64url without padding (D20).
+/// Bytes written as base64url without padding.
 pub struct Base64Url<T>(pub T);
 
 impl<T: AsRef<[u8]>> Serialize for Base64Url<T> {
@@ -224,29 +224,10 @@ pub mod abi_defaults {
     /// No declared events.
     pub const __CALIMERO_ABI_EVENTS: &str = "{}";
     /// No types from declared errors.
-    pub const __CALIMERO_ABI_ERROR_TYPES: &[Option<&crate::abi::TypeDef>] = &[];
+    pub const __CALIMERO_ABI_ERROR_TYPES: &[&crate::abi::TypeDef] = &[];
     /// No types from declared events.
-    pub const __CALIMERO_ABI_EVENT_TYPES: &[Option<&crate::abi::TypeDef>] = &[];
+    pub const __CALIMERO_ABI_EVENT_TYPES: &[&crate::abi::TypeDef] = &[];
 }
-
-/// A type's entry for the ABI's `types`: `Probe::<T>::DEF` is `Some` when `T` implements
-/// [`AbiType`](crate::abi::AbiType), else (with [`NoShape`] in scope) `None`. The inherent
-/// constant wins whenever its bound holds, so the generated code names any type, described
-/// or not, without a trait bound the app's own types might not meet.
-pub struct Probe<T: ?Sized>(core::marker::PhantomData<T>);
-
-impl<T: ?Sized + crate::abi::AbiType> Probe<T> {
-    /// The type's entry.
-    pub const DEF: Option<&'static crate::abi::TypeDef> = Some(T::DEF);
-}
-
-/// The fallback of [`Probe`]: a type without a shape.
-pub trait NoShape {
-    /// No entry.
-    const DEF: Option<&'static crate::abi::TypeDef> = None;
-}
-
-impl<T: ?Sized> NoShape for Probe<T> {}
 
 pub use crate::abi::{types_json, TypeDef, TypesJson};
 

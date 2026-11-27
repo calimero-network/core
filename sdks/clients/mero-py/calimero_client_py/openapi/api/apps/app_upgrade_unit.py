@@ -58,6 +58,11 @@ def _parse_response(
 
         return response_403
 
+    if response.status_code == 404:
+        response_404 = Error.from_dict(response.json())
+
+        return response_404
+
     if response.status_code == 409:
         response_409 = Error.from_dict(response.json())
 
@@ -103,7 +108,10 @@ def sync_detailed(
     (its lock's, else the newest installed one inside the range), all under one step-up over `{ app,
     package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each
     app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no
-    members; `409 CONFLICT` when the target release creates a member the instance lacks.
+    members; `409 CONFLICT` when the target release creates a member the instance lacks. A version the
+    caller may not use answers as one that is not installed, as `POST /apps` installs one (`404
+    NOT_FOUND`, `400 NO_REGISTRY`), and for an instance from a deployment anything but its offer that
+    still serves `409 OUTSIDE_DEPLOYMENT`, before anything of it is read.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -146,7 +154,10 @@ def sync(
     (its lock's, else the newest installed one inside the range), all under one step-up over `{ app,
     package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each
     app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no
-    members; `409 CONFLICT` when the target release creates a member the instance lacks.
+    members; `409 CONFLICT` when the target release creates a member the instance lacks. A version the
+    caller may not use answers as one that is not installed, as `POST /apps` installs one (`404
+    NOT_FOUND`, `400 NO_REGISTRY`), and for an instance from a deployment anything but its offer that
+    still serves `409 OUTSIDE_DEPLOYMENT`, before anything of it is read.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -184,7 +195,10 @@ async def asyncio_detailed(
     (its lock's, else the newest installed one inside the range), all under one step-up over `{ app,
     package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each
     app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no
-    members; `409 CONFLICT` when the target release creates a member the instance lacks.
+    members; `409 CONFLICT` when the target release creates a member the instance lacks. A version the
+    caller may not use answers as one that is not installed, as `POST /apps` installs one (`404
+    NOT_FOUND`, `400 NO_REGISTRY`), and for an instance from a deployment anything but its offer that
+    still serves `409 OUTSIDE_DEPLOYMENT`, before anything of it is read.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -225,7 +239,10 @@ async def asyncio(
     (its lock's, else the newest installed one inside the range), all under one step-up over `{ app,
     package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each
     app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no
-    members; `409 CONFLICT` when the target release creates a member the instance lacks.
+    members; `409 CONFLICT` when the target release creates a member the instance lacks. A version the
+    caller may not use answers as one that is not installed, as `POST /apps` installs one (`404
+    NOT_FOUND`, `400 NO_REGISTRY`), and for an instance from a deployment anything but its offer that
+    still serves `409 OUTSIDE_DEPLOYMENT`, before anything of it is read.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over

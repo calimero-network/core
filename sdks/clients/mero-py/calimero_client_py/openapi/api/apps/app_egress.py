@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_egress_response_200 import AppEgressResponse200
+from ...models.egress_view import EgressView
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppEgressResponse200, Error]]:
+) -> Optional[Union[EgressView, Error]]:
     if response.status_code == 200:
-        response_200 = AppEgressResponse200.from_dict(response.json())
+        response_200 = EgressView.from_dict(response.json())
 
         return response_200
 
@@ -57,7 +57,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppEgressResponse200, Error]]:
+) -> Response[Union[EgressView, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -70,7 +70,7 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppEgressResponse200, Error]]:
+) -> Response[Union[EgressView, Error]]:
     """Where an app's unit may send data
 
      For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination
@@ -94,7 +94,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppEgressResponse200, Error]]
+        Response[Union[EgressView, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -112,7 +112,7 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppEgressResponse200, Error]]:
+) -> Optional[Union[EgressView, Error]]:
     """Where an app's unit may send data
 
      For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination
@@ -136,7 +136,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppEgressResponse200, Error]
+        Union[EgressView, Error]
     """
 
     return sync_detailed(
@@ -149,7 +149,7 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppEgressResponse200, Error]]:
+) -> Response[Union[EgressView, Error]]:
     """Where an app's unit may send data
 
      For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination
@@ -173,7 +173,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppEgressResponse200, Error]]
+        Response[Union[EgressView, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -189,7 +189,7 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppEgressResponse200, Error]]:
+) -> Optional[Union[EgressView, Error]]:
     """Where an app's unit may send data
 
      For whoever may read the app (`GET /apps/{app}`'s rule). `destinations`: every destination
@@ -213,7 +213,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppEgressResponse200, Error]
+        Union[EgressView, Error]
     """
 
     return (

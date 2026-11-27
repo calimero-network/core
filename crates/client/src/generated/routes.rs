@@ -37,7 +37,7 @@ impl Apps<'_> {
     /// An app's ABI.
     ///
     /// `GET /apps/{app}/abi` (`app_abi`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn abi(self, app: &str) -> Result<AppAbiResponse> {
+    pub async fn abi(self, app: &str) -> Result<AppAbi> {
         let req = Request::new(Method::GET, format!("apps/{}/abi", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -65,7 +65,7 @@ impl Apps<'_> {
         to_org: &str,
         bring_members: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppMoveResponse> {
+    ) -> Result<AppMoved> {
         let mut fields = Map::new();
         route::put(&mut fields, "toOrg", &to_org)?;
         route::put_some(&mut fields, "bringMembers", bring_members)?;
@@ -86,7 +86,7 @@ impl Apps<'_> {
         version: &str,
         unit: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppApproveUpgradeResponse> {
+    ) -> Result<ApprovalLogged> {
         let mut fields = Map::new();
         route::put(&mut fields, "version", &version)?;
         route::put_some(&mut fields, "unit", unit)?;
@@ -102,7 +102,7 @@ impl Apps<'_> {
     /// Every replica's receipt-key attestation.
     ///
     /// `GET /apps/{app}/attestation` (`app_attestation`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn attestation(self, app: &str, nonce: &str) -> Result<AppAttestationResponse> {
+    pub async fn attestation(self, app: &str, nonce: &str) -> Result<AppAttestations> {
         let mut req = Request::new(
             Method::GET,
             format!("apps/{}/attestation", route::segment(app)),
@@ -114,7 +114,7 @@ impl Apps<'_> {
     /// Forget a blob.
     ///
     /// `DELETE /apps/{app}/blobs/{id}` (`blob_delete`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn blob_delete(self, app: &str, id: &str) -> Result<BlobDeleteResponse> {
+    pub async fn blob_delete(self, app: &str, id: &str) -> Result<Logged> {
         let req = Request::new(
             Method::DELETE,
             format!("apps/{}/blobs/{}", route::segment(app), route::segment(id)),
@@ -139,7 +139,7 @@ impl Apps<'_> {
     /// A blob's size.
     ///
     /// `GET /apps/{app}/blobs/{id}/info` (`blob_info`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn blob_info(self, app: &str, id: &str) -> Result<BlobInfoResponse> {
+    pub async fn blob_info(self, app: &str, id: &str) -> Result<BlobView> {
         let req = Request::new(
             Method::GET,
             format!(
@@ -154,7 +154,7 @@ impl Apps<'_> {
     /// List an app's blobs.
     ///
     /// `GET /apps/{app}/blobs` (`blob_list`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn blob_list(self, app: &str) -> Result<BlobListResponse> {
+    pub async fn blob_list(self, app: &str) -> Result<BlobList> {
         let req = Request::new(Method::GET, format!("apps/{}/blobs", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -162,7 +162,7 @@ impl Apps<'_> {
     /// Invalidate a blob's grants.
     ///
     /// `POST /apps/{app}/blobs/{id}/revoke` (`blob_revoke`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn blob_revoke(self, app: &str, id: &str) -> Result<BlobRevokeResponse> {
+    pub async fn blob_revoke(self, app: &str, id: &str) -> Result<Logged> {
         let req = Request::new(
             Method::POST,
             format!(
@@ -182,7 +182,7 @@ impl Apps<'_> {
         app: &str,
         bytes: Vec<u8>,
         sealed: Option<bool>,
-    ) -> Result<BlobUploadResponse> {
+    ) -> Result<BlobStored> {
         let mut req = Request::new(Method::POST, format!("apps/{}/blobs", route::segment(app)))
             .bytes("application/octet-stream", bytes);
         if let Some(v) = sealed {
@@ -197,7 +197,7 @@ impl Apps<'_> {
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI; `passkey` answers it (user verification `required`), without one the refusal is returned.
     ///
-    /// Retried while the node answers `503` or cannot be reached (D70), with its `idempotencyKey` (one is made when none is given).
+    /// Retried while the node answers `503` or cannot be reached, with its `idempotencyKey` (one is made when none is given).
     pub async fn call(
         self,
         app: &str,
@@ -205,7 +205,7 @@ impl Apps<'_> {
         args: Option<Value>,
         idempotency_key: Option<&str>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<IntentsResponse> {
+    ) -> Result<IntentResult> {
         let idempotency_key = Some(idempotency_key.map_or_else(route::new_key, str::to_owned));
         let mut fields = Map::new();
         route::put(&mut fields, "method", &method)?;
@@ -223,7 +223,7 @@ impl Apps<'_> {
     /// Create an app instance.
     ///
     /// `POST /apps` (`app_create`). Who: an installer (an account holder, or an unscoped API key that is not read-only).
-    pub async fn create(self, body: AppCreateRequest) -> Result<AppCreateResponse> {
+    pub async fn create(self, body: AppCreateRequest) -> Result<AppCreated> {
         let body = route::value(&body)?;
         let req = Request::new(Method::POST, "apps").json(body);
         route::json(self.client.transport(), req, None, None, false).await
@@ -239,7 +239,7 @@ impl Apps<'_> {
         app: &str,
         target: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppDelegateResponse> {
+    ) -> Result<DelegationMade> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::PUT,
@@ -256,7 +256,7 @@ impl Apps<'_> {
     /// What you let an app do as you.
     ///
     /// `GET /apps/{app}/delegations` (`app_delegations`). Who: signed in (a session or an API key).
-    pub async fn delegations(self, app: &str) -> Result<AppDelegationsResponse> {
+    pub async fn delegations(self, app: &str) -> Result<Delegations> {
         let req = Request::new(
             Method::GET,
             format!("apps/{}/delegations", route::segment(app)),
@@ -267,7 +267,7 @@ impl Apps<'_> {
     /// Delete an app.
     ///
     /// `DELETE /apps/{app}` (`app_delete`). Who: a passkey session (an API key is refused).
-    pub async fn delete(self, app: &str) -> Result<AppDeleteResponse> {
+    pub async fn delete(self, app: &str) -> Result<AppDeleted> {
         let req = Request::new(Method::DELETE, format!("apps/{}", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -275,7 +275,7 @@ impl Apps<'_> {
     /// Where an app's unit may send data.
     ///
     /// `GET /apps/{app}/egress` (`app_egress`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn egress(self, app: &str) -> Result<AppEgressResponse> {
+    pub async fn egress(self, app: &str) -> Result<EgressView> {
         let req = Request::new(Method::GET, format!("apps/{}/egress", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -283,12 +283,7 @@ impl Apps<'_> {
     /// Export a sealed file's key.
     ///
     /// `POST /apps/{app}/files/{id}/export` (`exports_export`). Who: signed in (a session or an API key).
-    pub async fn exports_export(
-        self,
-        app: &str,
-        id: &str,
-        recipient: &str,
-    ) -> Result<ExportsExportResponse> {
+    pub async fn exports_export(self, app: &str, id: &str, recipient: &str) -> Result<FileExport> {
         let mut fields = Map::new();
         route::put(&mut fields, "recipient", &recipient)?;
         let body = Value::Object(fields);
@@ -323,7 +318,7 @@ impl Apps<'_> {
     /// One sealed file.
     ///
     /// `GET /apps/{app}/files/{id}` (`file_info`). Who: signed in (a session or an API key).
-    pub async fn file_info(self, app: &str, id: &str) -> Result<FileInfoResponse> {
+    pub async fn file_info(self, app: &str, id: &str) -> Result<FileView> {
         let req = Request::new(
             Method::GET,
             format!("apps/{}/files/{}", route::segment(app), route::segment(id)),
@@ -334,7 +329,7 @@ impl Apps<'_> {
     /// List an app's sealed files.
     ///
     /// `GET /apps/{app}/files` (`files_list`). Who: signed in (a session or an API key).
-    pub async fn files_list(self, app: &str) -> Result<FilesListResponse> {
+    pub async fn files_list(self, app: &str) -> Result<FileList> {
         let req = Request::new(Method::GET, format!("apps/{}/files", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -342,7 +337,7 @@ impl Apps<'_> {
     /// Upload a sealed file.
     ///
     /// `POST /apps/{app}/files` (`files_upload`). Who: signed in (a session or an API key).
-    pub async fn files_upload(self, app: &str, bytes: Vec<u8>) -> Result<FilesUploadResponse> {
+    pub async fn files_upload(self, app: &str, bytes: Vec<u8>) -> Result<FileStored> {
         let req = Request::new(Method::POST, format!("apps/{}/files", route::segment(app)))
             .bytes("application/octet-stream", bytes);
         route::json(self.client.transport(), req, None, None, false).await
@@ -368,7 +363,7 @@ impl Apps<'_> {
         uses: Option<u64>,
         scope: Option<Value>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppInviteCreateResponse> {
+    ) -> Result<AppInviteMade> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "ttlSecs", ttl_secs)?;
         route::put_some(&mut fields, "uses", uses)?;
@@ -385,7 +380,7 @@ impl Apps<'_> {
     /// An instance's invites.
     ///
     /// `GET /apps/{app}/invites` (`app_invite_list`). Who: a passkey session (an API key is refused).
-    pub async fn invite_list(self, app: &str) -> Result<AppInviteListResponse> {
+    pub async fn invite_list(self, app: &str) -> Result<AppInviteList> {
         let req = Request::new(Method::GET, format!("apps/{}/invites", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -425,7 +420,7 @@ impl Apps<'_> {
         name: &str,
         body: AppLinkRequest,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppLinkResponse> {
+    ) -> Result<LinkRow> {
         let body = route::value(&body)?;
         let req = Request::new(
             Method::PUT,
@@ -442,7 +437,7 @@ impl Apps<'_> {
     /// List an app's links to the apps its release uses.
     ///
     /// `GET /apps/{app}/links` (`app_links`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn links(self, app: &str) -> Result<AppLinksResponse> {
+    pub async fn links(self, app: &str) -> Result<AppLinkList> {
         let req = Request::new(Method::GET, format!("apps/{}/links", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -450,11 +445,7 @@ impl Apps<'_> {
     /// Apps the caller reaches.
     ///
     /// `GET /apps` (`app_list`). Who: signed in (a session or an API key).
-    pub async fn list(
-        self,
-        package: Option<&str>,
-        bundle: Option<&str>,
-    ) -> Result<AppListResponse> {
+    pub async fn list(self, package: Option<&str>, bundle: Option<&str>) -> Result<AppList> {
         let mut req = Request::new(Method::GET, "apps");
         if let Some(v) = package {
             req = req.query("package", v);
@@ -486,14 +477,14 @@ impl Apps<'_> {
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI; `passkey` answers it (user verification `required`), without one the refusal is returned.
     ///
-    /// Retried while the node answers `503` or cannot be reached (D70), with its `idempotencyKey` (one is made when none is given).
+    /// Retried while the node answers `503` or cannot be reached, with its `idempotencyKey` (one is made when none is given).
     pub async fn method(
         self,
         app: &str,
         method: &str,
         body: AppMethodRequest,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppMethodResponse> {
+    ) -> Result<MethodResult> {
         let mut body = body;
         if body.idempotency_key.is_none() {
             body.idempotency_key = Some(route::new_key());
@@ -514,10 +505,75 @@ impl Apps<'_> {
     /// An app's OpenAPI document.
     ///
     /// `GET /apps/{app}/openapi.json` (`app_openapi`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn openapi(self, app: &str) -> Result<Map<String, Value>> {
+    pub async fn openapi(self, app: &str) -> Result<AppOpenApi> {
         let req = Request::new(
             Method::GET,
             format!("apps/{}/openapi.json", route::segment(app)),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// Register a web origin for an instance.
+    ///
+    /// `POST /apps/{app}/origins` (`app_origin_add`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn origin_add(
+        self,
+        app: &str,
+        origin: &str,
+        rp_id: Option<&str>,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<PackageOrigin> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "origin", &origin)?;
+        route::put_some(&mut fields, "rpId", rp_id)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/origins", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Remove an instance's web origin.
+    ///
+    /// `DELETE /apps/{app}/origins` (`app_origin_remove`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn origin_remove(
+        self,
+        app: &str,
+        origin: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<OriginRemoved> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "origin", &origin)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::DELETE,
+            format!("apps/{}/origins", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// An instance's web origins.
+    ///
+    /// `GET /apps/{app}/origins` (`app_origins`). Who: an account holder (a passkey session not bound to an app's frontend).
+    pub async fn origins(self, app: &str) -> Result<AppOriginList> {
+        let req = Request::new(Method::GET, format!("apps/{}/origins", route::segment(app)));
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
+    /// An app's outbound requests.
+    ///
+    /// `GET /apps/{app}/outbound-log` (`app_outbound_log`). Who: signed in (a session or an API key).
+    pub async fn outbound_log(self, app: &str) -> Result<OutboundLog> {
+        let req = Request::new(
+            Method::GET,
+            format!("apps/{}/outbound-log", route::segment(app)),
         );
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -530,7 +586,7 @@ impl Apps<'_> {
         app: &str,
         run: &str,
         version: Option<u64>,
-    ) -> Result<PipelineReceiptReceiptResponse> {
+    ) -> Result<SignedPipelineReceipt> {
         let mut req = Request::new(
             Method::GET,
             format!(
@@ -548,7 +604,7 @@ impl Apps<'_> {
     /// Cancel a pipeline run.
     ///
     /// `POST /apps/{app}/pipeline-runs/{run}/cancel` (`pipelines_cancel`). Who: signed in (a session or an API key).
-    pub async fn pipelines_cancel(self, app: &str, run: &str) -> Result<PipelinesCancelResponse> {
+    pub async fn pipelines_cancel(self, app: &str, run: &str) -> Result<PipelineCancelled> {
         let req = Request::new(
             Method::POST,
             format!(
@@ -570,7 +626,7 @@ impl Apps<'_> {
         inputs: Option<BTreeMap<String, Vec<String>>>,
         counts: Option<BTreeMap<String, u64>>,
         params: Option<Map<String, Value>>,
-    ) -> Result<PipelinesEstimateRunResponse> {
+    ) -> Result<RunEstimate> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "inputs", inputs)?;
         route::put_some(&mut fields, "counts", counts)?;
@@ -591,7 +647,7 @@ impl Apps<'_> {
     /// One pipeline run.
     ///
     /// `GET /apps/{app}/pipeline-runs/{run}` (`pipelines_get`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn pipelines_get(self, app: &str, run: &str) -> Result<Map<String, Value>> {
+    pub async fn pipelines_get(self, app: &str, run: &str) -> Result<PipelineRunView> {
         let req = Request::new(
             Method::GET,
             format!(
@@ -606,11 +662,7 @@ impl Apps<'_> {
     /// An app's pipeline runs.
     ///
     /// `GET /apps/{app}/pipeline-runs` (`pipelines_list`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn pipelines_list(
-        self,
-        app: &str,
-        limit: Option<&str>,
-    ) -> Result<Map<String, Value>> {
+    pub async fn pipelines_list(self, app: &str, limit: Option<&str>) -> Result<PipelineRunList> {
         let mut req = Request::new(
             Method::GET,
             format!("apps/{}/pipeline-runs", route::segment(app)),
@@ -630,7 +682,7 @@ impl Apps<'_> {
         run: &str,
         limits: Option<BTreeMap<String, PipelinesRetryRequestLimitsValue>>,
         max_cost: Option<&str>,
-    ) -> Result<PipelinesRetryResponse> {
+    ) -> Result<PipelineStarted> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "limits", limits)?;
         route::put_some(&mut fields, "maxCost", max_cost)?;
@@ -657,7 +709,7 @@ impl Apps<'_> {
         inputs: Option<BTreeMap<String, Vec<String>>>,
         params: Option<Map<String, Value>>,
         max_cost: Option<&str>,
-    ) -> Result<PipelinesStartResponse> {
+    ) -> Result<PipelineStarted> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "inputs", inputs)?;
         route::put_some(&mut fields, "params", params)?;
@@ -683,7 +735,7 @@ impl Apps<'_> {
         source: &str,
         package: Option<&str>,
         version: Option<&str>,
-    ) -> Result<PipelinesValidateResponse> {
+    ) -> Result<PipelineValidation> {
         let mut fields = Map::new();
         route::put(&mut fields, "source", &source)?;
         route::put_some(&mut fields, "package", package)?;
@@ -729,7 +781,7 @@ impl Apps<'_> {
     /// Who is present.
     ///
     /// `GET /apps/{app}/presence` (`presence_get`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn presence_get(self, app: &str) -> Result<PresenceGetResponse> {
+    pub async fn presence_get(self, app: &str) -> Result<PresenceList> {
         let req = Request::new(
             Method::GET,
             format!("apps/{}/presence", route::segment(app)),
@@ -770,7 +822,7 @@ impl Apps<'_> {
         expires_at: Option<u64>,
         rate_per_minute: Option<u64>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<PublicLinkCreateResponse> {
+    ) -> Result<PublicLinkMade> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "label", label)?;
         route::put_some(&mut fields, "expiresAt", expires_at)?;
@@ -787,7 +839,7 @@ impl Apps<'_> {
     /// An instance's public links.
     ///
     /// `GET /apps/{app}/public-links` (`public_link_list`). Who: a passkey session (an API key is refused).
-    pub async fn public_link_list(self, app: &str) -> Result<PublicLinkListResponse> {
+    pub async fn public_link_list(self, app: &str) -> Result<PublicLinks> {
         let req = Request::new(
             Method::GET,
             format!("apps/{}/public-links", route::segment(app)),
@@ -833,7 +885,7 @@ impl Apps<'_> {
     /// A compute run's attempt logs.
     ///
     /// `GET /apps/{app}/runs/{run}/logs` (`app_run_logs`). Who: signed in (a session or an API key).
-    pub async fn run_logs(self, app: &str, run: &str) -> Result<AppRunLogsResponse> {
+    pub async fn run_logs(self, app: &str, run: &str) -> Result<RunLogs> {
         let req = Request::new(
             Method::GET,
             format!(
@@ -853,7 +905,7 @@ impl Apps<'_> {
         app: &str,
         limit: Option<&str>,
         before: Option<&str>,
-    ) -> Result<AppRunsResponse> {
+    ) -> Result<RunList> {
         let mut req = Request::new(Method::GET, format!("apps/{}/runs", route::segment(app)));
         if let Some(v) = limit {
             req = req.query("limit", v);
@@ -874,7 +926,7 @@ impl Apps<'_> {
         app: &str,
         name: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppSecretClearResponse> {
+    ) -> Result<SecretCleared> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::DELETE,
@@ -899,7 +951,7 @@ impl Apps<'_> {
         name: &str,
         value: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppSecretSetResponse> {
+    ) -> Result<SecretSet> {
         let mut fields = Map::new();
         route::put(&mut fields, "value", &value)?;
         let body = Value::Object(fields);
@@ -918,7 +970,7 @@ impl Apps<'_> {
     /// The secrets an app's release declares.
     ///
     /// `GET /apps/{app}/secrets` (`app_secrets`). Who: signed in (a session or an API key).
-    pub async fn secrets(self, app: &str) -> Result<AppSecretsResponse> {
+    pub async fn secrets(self, app: &str) -> Result<AppSecrets> {
         let req = Request::new(Method::GET, format!("apps/{}/secrets", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -933,7 +985,7 @@ impl Apps<'_> {
         app: &str,
         egress: bool,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppSetEgressResponse> {
+    ) -> Result<EgressSet> {
         let mut fields = Map::new();
         route::put(&mut fields, "egress", &egress)?;
         let body = Value::Object(fields);
@@ -945,7 +997,7 @@ impl Apps<'_> {
     /// What an app stores.
     ///
     /// `GET /apps/{app}/storage` (`app_storage`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn storage(self, app: &str) -> Result<AppStorageResponse> {
+    pub async fn storage(self, app: &str) -> Result<AppStorage> {
         let req = Request::new(Method::GET, format!("apps/{}/storage", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -992,11 +1044,7 @@ impl Apps<'_> {
     /// `POST /apps/{app}/undo` (`app_undo`). Who: an account holder (a passkey session not bound to an app's frontend).
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
-    pub async fn undo(
-        self,
-        app: &str,
-        passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppUndoResponse> {
+    pub async fn undo(self, app: &str, passkey: Option<&mut dyn Passkey>) -> Result<UndoDone> {
         let body = Value::Object(Map::new());
         let req =
             Request::new(Method::POST, format!("apps/{}/undo", route::segment(app))).json(body);
@@ -1006,7 +1054,7 @@ impl Apps<'_> {
     /// The upgrade an app may undo.
     ///
     /// `GET /apps/{app}/undo` (`app_undo_view`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn undo_view(self, app: &str) -> Result<AppUndoViewResponse> {
+    pub async fn undo_view(self, app: &str) -> Result<UndoView> {
         let req = Request::new(Method::GET, format!("apps/{}/undo", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1038,7 +1086,7 @@ impl Apps<'_> {
     /// Whether an update is available for an app.
     ///
     /// `GET /apps/{app}/update` (`app_update`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
-    pub async fn update(self, app: &str) -> Result<AppUpdateResponse> {
+    pub async fn update(self, app: &str) -> Result<UpdateView> {
         let req = Request::new(Method::GET, format!("apps/{}/update", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1053,7 +1101,7 @@ impl Apps<'_> {
         app: &str,
         body: AppUpgradeRequest,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppUpgradeResponse> {
+    ) -> Result<UpgradeApplied> {
         let body = route::value(&body)?;
         let req = Request::new(
             Method::POST,
@@ -1103,7 +1151,7 @@ impl Apps<'_> {
     /// Begin a file upload.
     ///
     /// `POST /apps/{app}/files/uploads` (`upload_begin`). Who: signed in (a session or an API key).
-    pub async fn upload_begin(self, app: &str, size: u64) -> Result<UploadBeginResponse> {
+    pub async fn upload_begin(self, app: &str, size: u64) -> Result<UploadView> {
         let mut fields = Map::new();
         route::put(&mut fields, "size", &size)?;
         let body = Value::Object(fields);
@@ -1118,7 +1166,7 @@ impl Apps<'_> {
     /// Commit an upload.
     ///
     /// `POST /apps/{app}/files/uploads/{upload}/complete` (`upload_complete`). Who: signed in (a session or an API key).
-    pub async fn upload_complete(self, app: &str, upload: &str) -> Result<UploadCompleteResponse> {
+    pub async fn upload_complete(self, app: &str, upload: &str) -> Result<FileStored> {
         let req = Request::new(
             Method::POST,
             format!(
@@ -1139,7 +1187,7 @@ impl Apps<'_> {
         upload: &str,
         k: &str,
         bytes: Vec<u8>,
-    ) -> Result<UploadPartResponse> {
+    ) -> Result<PartTaken> {
         let req = Request::new(
             Method::PUT,
             format!(
@@ -1156,7 +1204,7 @@ impl Apps<'_> {
     /// Where an upload is.
     ///
     /// `GET /apps/{app}/files/uploads/{upload}` (`upload_status`). Who: signed in (a session or an API key).
-    pub async fn upload_status(self, app: &str, upload: &str) -> Result<UploadStatusResponse> {
+    pub async fn upload_status(self, app: &str, upload: &str) -> Result<UploadStatus> {
         let req = Request::new(
             Method::GET,
             format!(
@@ -1171,7 +1219,7 @@ impl Apps<'_> {
     /// An app's runs per day.
     ///
     /// `GET /apps/{app}/usage` (`app_usage`). Who: signed in (a session or an API key).
-    pub async fn usage(self, app: &str) -> Result<AppUsageResponse> {
+    pub async fn usage(self, app: &str) -> Result<AppUsage> {
         let req = Request::new(Method::GET, format!("apps/{}/usage", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1180,7 +1228,7 @@ impl Apps<'_> {
     ///
     /// `POST /apps/{app}/views` (`views`). Who: whoever the app's grants admit (`anyone`: any signed-in account).
     ///
-    /// Retried while the node answers `503` or cannot be reached (D70).
+    /// Retried while the node answers `503` or cannot be reached.
     pub async fn view(
         self,
         app: &str,
@@ -1188,7 +1236,7 @@ impl Apps<'_> {
         args: Option<Value>,
         consistency: Option<ViewsRequestConsistency>,
         min_index: Option<u64>,
-    ) -> Result<ViewsResponse> {
+    ) -> Result<ViewResult> {
         let mut fields = Map::new();
         route::put(&mut fields, "method", &method)?;
         route::put_some(&mut fields, "args", args)?;
@@ -1203,7 +1251,7 @@ impl Apps<'_> {
     /// An app's cross-app calls.
     ///
     /// `GET /apps/{app}/xcalls` (`app_xcalls`). Who: signed in (a session or an API key).
-    pub async fn xcalls(self, app: &str) -> Result<AppXcallsResponse> {
+    pub async fn xcalls(self, app: &str) -> Result<XcallsReport> {
         let req = Request::new(Method::GET, format!("apps/{}/xcalls", route::segment(app)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1227,11 +1275,7 @@ impl Auth<'_> {
     /// The account's own apps.
     ///
     /// `GET /auth/apps` (`account_apps`). Who: signed in (a session or an API key).
-    pub async fn account_apps(
-        self,
-        after: Option<&str>,
-        limit: Option<u64>,
-    ) -> Result<AccountAppsResponse> {
+    pub async fn account_apps(self, after: Option<&str>, limit: Option<u64>) -> Result<AppsReport> {
         let mut req = Request::new(Method::GET, "auth/apps");
         if let Some(v) = after {
             req = req.query("after", v);
@@ -1265,7 +1309,7 @@ impl Auth<'_> {
     /// Start an account recovery.
     ///
     /// `POST /auth/recovery/begin` (`account_recovery_begin`). Who: anyone.
-    pub async fn account_recovery_begin(self, code: &str) -> Result<AccountRecoveryBeginResponse> {
+    pub async fn account_recovery_begin(self, code: &str) -> Result<PasskeyChallenge> {
         let mut fields = Map::new();
         route::put(&mut fields, "code", &code)?;
         let body = Value::Object(fields);
@@ -1312,7 +1356,7 @@ impl Auth<'_> {
         challenge_id: &str,
         code: &str,
         registration: Registration,
-    ) -> Result<AccountRecoveryStartResponse> {
+    ) -> Result<AccountRecoveryPending> {
         let mut fields = Map::new();
         route::put(&mut fields, "challengeId", &challenge_id)?;
         route::put(&mut fields, "code", &code)?;
@@ -1342,7 +1386,7 @@ impl Auth<'_> {
     /// What the account's passkeys did.
     ///
     /// `GET /auth/activity` (`activity_list`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn activity_list(self, after: Option<u64>) -> Result<ActivityListResponse> {
+    pub async fn activity_list(self, after: Option<u64>) -> Result<ActivityList> {
         let mut req = Request::new(Method::GET, "auth/activity");
         if let Some(v) = after {
             req = req.query("after", v.to_string());
@@ -1364,7 +1408,7 @@ impl Auth<'_> {
     /// Resolve an alias.
     ///
     /// `GET /auth/aliases/{alias}` (`alias_get`). Who: signed in (a session or an API key).
-    pub async fn alias_get(self, alias: &str) -> Result<AliasGetResponse> {
+    pub async fn alias_get(self, alias: &str) -> Result<AliasView> {
         let req = Request::new(
             Method::GET,
             format!("auth/aliases/{}", route::segment(alias)),
@@ -1375,7 +1419,7 @@ impl Auth<'_> {
     /// The account's aliases.
     ///
     /// `GET /auth/aliases` (`alias_list`). Who: signed in (a session or an API key).
-    pub async fn alias_list(self) -> Result<AliasListResponse> {
+    pub async fn alias_list(self) -> Result<AliasList> {
         let req = Request::new(Method::GET, "auth/aliases");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1404,7 +1448,7 @@ impl Auth<'_> {
         self,
         body: ApikeyCreateRequest,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<ApikeyCreateResponse> {
+    ) -> Result<ApiKeyMade> {
         let body = route::value(&body)?;
         let req = Request::new(Method::POST, "auth/apikeys").json(body);
         route::json(self.client.transport(), req, passkey, None, false).await
@@ -1413,7 +1457,7 @@ impl Auth<'_> {
     /// The account's API keys.
     ///
     /// `GET /auth/apikeys` (`apikey_list`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn apikey_list(self) -> Result<ApikeyListResponse> {
+    pub async fn apikey_list(self) -> Result<ApiKeyList> {
         let req = Request::new(Method::GET, "auth/apikeys");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1440,9 +1484,14 @@ impl Auth<'_> {
     /// Start a sign-in.
     ///
     /// `POST /auth/passkey/login/begin` (`login_begin`). Who: anyone.
-    pub async fn login_begin(self, origin: Option<&str>) -> Result<LoginBeginResponse> {
+    pub async fn login_begin(
+        self,
+        origin: Option<&str>,
+        holder_key: Option<&str>,
+    ) -> Result<PasskeyChallenge> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "origin", origin)?;
+        route::put_some(&mut fields, "holderKey", holder_key)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "auth/passkey/login/begin").json(body);
         route::json(self.client.transport(), req, None, None, false).await
@@ -1471,7 +1520,7 @@ impl Auth<'_> {
     /// End every session of the account.
     ///
     /// `POST /auth/logout-all` (`logout_all`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn logout_all(self) -> Result<LogoutAllResponse> {
+    pub async fn logout_all(self) -> Result<SessionsRevoked> {
         let req = Request::new(Method::POST, "auth/logout-all");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1479,7 +1528,7 @@ impl Auth<'_> {
     /// The caller's account.
     ///
     /// `GET /auth/me` (`me`). Who: signed in (a session or an API key).
-    pub async fn me(self) -> Result<MeResponse> {
+    pub async fn me(self) -> Result<AccountView> {
         let req = Request::new(Method::GET, "auth/me");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1487,7 +1536,7 @@ impl Auth<'_> {
     /// Start adding a passkey.
     ///
     /// `POST /auth/passkeys/add/begin` (`passkey_add_begin`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn passkey_add_begin(self) -> Result<PasskeyAddBeginResponse> {
+    pub async fn passkey_add_begin(self) -> Result<PasskeyChallenge> {
         let req = Request::new(Method::POST, "auth/passkeys/add/begin");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1502,7 +1551,7 @@ impl Auth<'_> {
         challenge_id: &str,
         registration: Registration,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<PasskeyAddFinishResponse> {
+    ) -> Result<PasskeyAdded> {
         let mut fields = Map::new();
         route::put(&mut fields, "challengeId", &challenge_id)?;
         route::put(&mut fields, "registration", &registration)?;
@@ -1550,10 +1599,7 @@ impl Auth<'_> {
     /// `POST /auth/recovery` (`recovery_create`). Who: an account holder (a passkey session not bound to an app's frontend).
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
-    pub async fn recovery_create(
-        self,
-        passkey: Option<&mut dyn Passkey>,
-    ) -> Result<RecoveryCreateResponse> {
+    pub async fn recovery_create(self, passkey: Option<&mut dyn Passkey>) -> Result<RecoveryCode> {
         let body = Value::Object(Map::new());
         let req = Request::new(Method::POST, "auth/recovery").json(body);
         route::json(self.client.transport(), req, passkey, None, false).await
@@ -1576,9 +1622,14 @@ impl Auth<'_> {
     /// Refresh a session.
     ///
     /// `POST /auth/refresh` (`refresh`). Who: anyone.
-    pub async fn refresh(self, refresh_token: &str) -> Result<Session> {
+    pub async fn refresh(
+        self,
+        refresh_token: &str,
+        holder_proof: Option<RefreshRequestHolderProof>,
+    ) -> Result<Session> {
         let mut fields = Map::new();
         route::put(&mut fields, "refreshToken", &refresh_token)?;
+        route::put_some(&mut fields, "holderProof", holder_proof)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "auth/refresh").json(body);
         route::json(self.client.transport(), req, None, None, false).await
@@ -1592,7 +1643,7 @@ impl Auth<'_> {
         name: Option<&str>,
         origin: Option<&str>,
         invite: Option<&str>,
-    ) -> Result<RegisterBeginResponse> {
+    ) -> Result<PasskeyChallenge> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "name", name)?;
         route::put_some(&mut fields, "origin", origin)?;
@@ -1612,12 +1663,14 @@ impl Auth<'_> {
         challenge_id: &str,
         registration: Registration,
         invite: Option<&str>,
+        holder_key: Option<&str>,
         passkey: Option<&mut dyn Passkey>,
     ) -> Result<Session> {
         let mut fields = Map::new();
         route::put(&mut fields, "challengeId", &challenge_id)?;
         route::put(&mut fields, "registration", &registration)?;
         route::put_some(&mut fields, "invite", invite)?;
+        route::put_some(&mut fields, "holderKey", holder_key)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "auth/passkey/register/finish").json(body);
         route::json(self.client.transport(), req, passkey, None, false).await
@@ -1637,7 +1690,7 @@ impl Auth<'_> {
     /// The account's live sessions.
     ///
     /// `GET /auth/sessions` (`sessions_list`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn sessions_list(self) -> Result<SessionsListResponse> {
+    pub async fn sessions_list(self) -> Result<SessionList> {
         let req = Request::new(Method::GET, "auth/sessions");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1645,7 +1698,7 @@ impl Auth<'_> {
     /// The account's usage against its quotas.
     ///
     /// `GET /auth/usage` (`usage`). Who: signed in (a session or an API key).
-    pub async fn usage(self) -> Result<UsageResponse> {
+    pub async fn usage(self) -> Result<AccountUsage> {
         let req = Request::new(Method::GET, "auth/usage");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1669,10 +1722,7 @@ impl Consent<'_> {
     /// Ask the account's owner to approve.
     ///
     /// `POST /consent/requests` (`consent_page_create`). Who: a passkey session (an API key is refused).
-    pub async fn page_create(
-        self,
-        body: ConsentPageCreateRequest,
-    ) -> Result<ConsentPageCreateResponse> {
+    pub async fn page_create(self, body: ConsentPageCreateRequest) -> Result<ConsentRequestMade> {
         let body = route::value(&body)?;
         let req = Request::new(Method::POST, "consent/requests").json(body);
         route::json(self.client.transport(), req, None, None, false).await
@@ -1681,7 +1731,7 @@ impl Consent<'_> {
     /// What became of a consent request.
     ///
     /// `GET /consent/{request}/result` (`consent_page_result`). Who: a passkey session (an API key is refused).
-    pub async fn page_result(self, request: &str) -> Result<ConsentPageResultResponse> {
+    pub async fn page_result(self, request: &str) -> Result<ConsentResult> {
         let req = Request::new(
             Method::GET,
             format!("consent/{}/result", route::segment(request)),
@@ -1715,7 +1765,7 @@ impl Deployments<'_> {
         name: &str,
         owner: Deployer,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<DeploymentCreateResponse> {
+    ) -> Result<DeploymentCreated> {
         let mut fields = Map::new();
         route::put(&mut fields, "name", &name)?;
         route::put(&mut fields, "owner", &owner)?;
@@ -1733,7 +1783,7 @@ impl Deployments<'_> {
         self,
         id: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<DeploymentDeleteResponse> {
+    ) -> Result<DeploymentDeleted> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::DELETE,
@@ -1754,7 +1804,7 @@ impl Deployments<'_> {
         until: Option<&str>,
         operator_proof: Option<OperatorProof>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<DeployerGrantResponse> {
+    ) -> Result<DeployerGranted> {
         let mut fields = Map::new();
         route::put(&mut fields, "deployer", &deployer)?;
         route::put_some(&mut fields, "until", until)?;
@@ -1767,7 +1817,7 @@ impl Deployments<'_> {
     /// The deployers.
     ///
     /// `GET /deployers` (`deployer_list`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn deployer_list(self) -> Result<DeployerListResponse> {
+    pub async fn deployer_list(self) -> Result<DeployerList> {
         let req = Request::new(Method::GET, "deployers");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1781,7 +1831,7 @@ impl Deployments<'_> {
         self,
         key: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<DeployerRevokeResponse> {
+    ) -> Result<DeployerRevoked> {
         let body = Value::Object(Map::new());
         let req =
             Request::new(Method::DELETE, format!("deployers/{}", route::segment(key))).json(body);
@@ -1791,7 +1841,7 @@ impl Deployments<'_> {
     /// One deployment.
     ///
     /// `GET /deployments/{id}` (`deployment_get`). Who: signed in (a session or an API key).
-    pub async fn get(self, id: &str) -> Result<DeploymentGetResponse> {
+    pub async fn get(self, id: &str) -> Result<PublicDeployment> {
         let req = Request::new(Method::GET, format!("deployments/{}", route::segment(id)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1799,7 +1849,7 @@ impl Deployments<'_> {
     /// Deployments.
     ///
     /// `GET /deployments` (`deployment_list`). Who: signed in (a session or an API key).
-    pub async fn list(self) -> Result<DeploymentListResponse> {
+    pub async fn list(self) -> Result<DeploymentList> {
         let req = Request::new(Method::GET, "deployments");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1816,7 +1866,7 @@ impl Deployments<'_> {
         package: &str,
         version: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<DeploymentOfferResponse> {
+    ) -> Result<AppOffered> {
         let mut fields = Map::new();
         route::put(&mut fields, "app", &app)?;
         route::put(&mut fields, "package", &package)?;
@@ -1833,7 +1883,7 @@ impl Deployments<'_> {
     /// The organizations a deployment serves.
     ///
     /// `GET /deployments/{id}/orgs` (`deployment_orgs`). Who: signed in (a session or an API key).
-    pub async fn orgs(self, id: &str) -> Result<DeploymentOrgsResponse> {
+    pub async fn orgs(self, id: &str) -> Result<DeploymentOrgs> {
         let req = Request::new(
             Method::GET,
             format!("deployments/{}/orgs", route::segment(id)),
@@ -1851,7 +1901,7 @@ impl Deployments<'_> {
         id: &str,
         name: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<DeploymentSecretClearResponse> {
+    ) -> Result<DeploymentSecretCleared> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::DELETE,
@@ -1876,7 +1926,7 @@ impl Deployments<'_> {
         name: &str,
         value: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<DeploymentSecretSetResponse> {
+    ) -> Result<DeploymentSecretSet> {
         let mut fields = Map::new();
         route::put(&mut fields, "value", &value)?;
         let body = Value::Object(fields);
@@ -1895,7 +1945,7 @@ impl Deployments<'_> {
     /// A deployment's secrets.
     ///
     /// `GET /deployments/{id}/secrets` (`deployment_secrets`). Who: signed in (a session or an API key).
-    pub async fn secrets(self, id: &str) -> Result<DeploymentSecretsResponse> {
+    pub async fn secrets(self, id: &str) -> Result<DeploymentSecrets> {
         let req = Request::new(
             Method::GET,
             format!("deployments/{}/secrets", route::segment(id)),
@@ -1913,7 +1963,7 @@ impl Deployments<'_> {
         uses: Option<u64>,
         ttl_secs: Option<u64>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<SignUpInviteCreateResponse> {
+    ) -> Result<SignUpInviteMade> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "uses", uses)?;
         route::put_some(&mut fields, "ttlSecs", ttl_secs)?;
@@ -1925,7 +1975,7 @@ impl Deployments<'_> {
     /// Cluster sign-up invites.
     ///
     /// `GET /sign-up/invites` (`sign_up_invite_list`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn sign_up_invite_list(self) -> Result<SignUpInviteListResponse> {
+    pub async fn sign_up_invite_list(self) -> Result<SignUpInviteList> {
         let req = Request::new(Method::GET, "sign-up/invites");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1952,7 +2002,7 @@ impl Deployments<'_> {
     /// The sign-up policy.
     ///
     /// `GET /sign-up` (`sign_up_public`). Who: anyone.
-    pub async fn sign_up_public(self) -> Result<SignUpPublicResponse> {
+    pub async fn sign_up_public(self) -> Result<SignUpPublic> {
         let req = Request::new(Method::GET, "sign-up");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -1976,6 +2026,69 @@ impl Deployments<'_> {
         route::json(self.client.transport(), req, passkey, None, false).await
     }
 
+    /// Accept a deployment offered to an owner.
+    ///
+    /// `POST /deployments/{id}/transfer/accept` (`deployment_transfer_accept`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn transfer_accept(
+        self,
+        id: &str,
+        to: Deployer,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<DeploymentAccepted> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "to", &to)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("deployments/{}/transfer/accept", route::segment(id)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Cancel the offer of a deployment.
+    ///
+    /// `DELETE /deployments/{id}/transfer` (`deployment_transfer_cancel`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn transfer_cancel(
+        self,
+        id: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<DeploymentTransferCancelled> {
+        let body = Value::Object(Map::new());
+        let req = Request::new(
+            Method::DELETE,
+            format!("deployments/{}/transfer", route::segment(id)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Offer a deployment to another owner.
+    ///
+    /// `POST /deployments/{id}/transfer` (`deployment_transfer_offer`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn transfer_offer(
+        self,
+        id: &str,
+        to: Deployer,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<DeploymentOffered> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "to", &to)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("deployments/{}/transfer", route::segment(id)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
     /// Withdraw an offer.
     ///
     /// `DELETE /deployments/{id}/apps/{app}` (`deployment_withdraw`). Who: an account holder (a passkey session not bound to an app's frontend).
@@ -1986,7 +2099,7 @@ impl Deployments<'_> {
         id: &str,
         app: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<DeploymentWithdrawResponse> {
+    ) -> Result<AppWithdrawn> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::DELETE,
@@ -2019,7 +2132,7 @@ impl Ops<'_> {
     /// What each app runs.
     ///
     /// `GET /ops/apps` (`ops_apps`). Who: the ops token.
-    pub async fn apps(self, after: Option<&str>, limit: Option<u64>) -> Result<OpsAppsResponse> {
+    pub async fn apps(self, after: Option<&str>, limit: Option<u64>) -> Result<OpsApps> {
         let mut req = Request::new(Method::GET, "ops/apps");
         if let Some(v) = after {
             req = req.query("after", v);
@@ -2033,7 +2146,7 @@ impl Ops<'_> {
     /// Snapshot the apps this node leads.
     ///
     /// `POST /ops/backup` (`ops_backup`). Who: the ops token.
-    pub async fn backup(self, all: Option<bool>) -> Result<OpsBackupResponse> {
+    pub async fn backup(self, all: Option<bool>) -> Result<BackupWritten> {
         let mut req = Request::new(Method::POST, "ops/backup");
         if let Some(v) = all {
             req = req.query("all", v.to_string());
@@ -2052,7 +2165,7 @@ impl Ops<'_> {
     /// The cluster's identity.
     ///
     /// `GET /ops/cluster` (`ops_cluster`). Who: the ops token.
-    pub async fn cluster(self) -> Result<OpsClusterResponse> {
+    pub async fn cluster(self) -> Result<ClusterIdentity> {
         let req = Request::new(Method::GET, "ops/cluster");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -2066,7 +2179,7 @@ impl Ops<'_> {
         self,
         owner: Deployer,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsClusterOwnerResponse> {
+    ) -> Result<ClusterOwnerNamed> {
         let mut fields = Map::new();
         route::put(&mut fields, "owner", &owner)?;
         let body = Value::Object(fields);
@@ -2085,7 +2198,7 @@ impl Ops<'_> {
         until: Option<&str>,
         confirm: Option<Confirm>,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsDeployerGrantResponse> {
+    ) -> Result<DeployerGranted> {
         let mut fields = Map::new();
         route::put(&mut fields, "deployer", &deployer)?;
         route::put_some(&mut fields, "until", until)?;
@@ -2104,7 +2217,7 @@ impl Ops<'_> {
         self,
         key: &str,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsDeployerRevokeDeleteResponse> {
+    ) -> Result<DeployerRevoked> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::DELETE,
@@ -2123,7 +2236,7 @@ impl Ops<'_> {
         self,
         key: &str,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsDeployerRevokePostResponse> {
+    ) -> Result<DeployerRevoked> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::POST,
@@ -2141,7 +2254,7 @@ impl Ops<'_> {
     pub async fn deployments_granted(
         self,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsDeploymentsGrantedResponse> {
+    ) -> Result<GovernanceSet> {
         let body = Value::Object(Map::new());
         let req = Request::new(Method::POST, "ops/deployments/granted").json(body);
         route::json(self.client.transport(), req, None, operator, false).await
@@ -2150,7 +2263,7 @@ impl Ops<'_> {
     /// Whether the cluster accepts a job node.
     ///
     /// `GET /ops/job-nodes/{id}/attestation` (`ops_job_node_attestation`). Who: the ops token.
-    pub async fn job_node_attestation(self, id: &str) -> Result<OpsJobNodeAttestationResponse> {
+    pub async fn job_node_attestation(self, id: &str) -> Result<JobNodeVerdict> {
         let req = Request::new(
             Method::GET,
             format!("ops/job-nodes/{}/attestation", route::segment(id)),
@@ -2189,7 +2302,7 @@ impl Ops<'_> {
     /// Each organization's approved releases.
     ///
     /// `GET /ops/orgs` (`ops_orgs`). Who: the ops token.
-    pub async fn orgs(self, after: Option<&str>, limit: Option<u64>) -> Result<OpsOrgsResponse> {
+    pub async fn orgs(self, after: Option<&str>, limit: Option<u64>) -> Result<OpsOrgs> {
         let mut req = Request::new(Method::GET, "ops/orgs");
         if let Some(v) = after {
             req = req.query("after", v);
@@ -2224,11 +2337,7 @@ impl Ops<'_> {
     /// Install a release from the registry as the operator.
     ///
     /// `POST /ops/packages/install` (`ops_package_install`). Who: the ops token.
-    pub async fn package_install(
-        self,
-        package: &str,
-        version: &str,
-    ) -> Result<OpsPackageInstallResponse> {
+    pub async fn package_install(self, package: &str, version: &str) -> Result<PackageInstalled> {
         let mut fields = Map::new();
         route::put(&mut fields, "package", &package)?;
         route::put(&mut fields, "version", &version)?;
@@ -2240,7 +2349,7 @@ impl Ops<'_> {
     /// The releases the operator installed.
     ///
     /// `GET /ops/packages` (`ops_package_list`). Who: the ops token.
-    pub async fn package_list(self) -> Result<OpsPackageListResponse> {
+    pub async fn package_list(self) -> Result<PackageList> {
         let req = Request::new(Method::GET, "ops/packages");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -2259,7 +2368,7 @@ impl Ops<'_> {
     /// Install an uploaded release as the operator.
     ///
     /// `POST /ops/packages` (`ops_package_upload`). Who: the ops token.
-    pub async fn package_upload(self, bytes: Vec<u8>) -> Result<OpsPackageUploadResponse> {
+    pub async fn package_upload(self, bytes: Vec<u8>) -> Result<PackageInstalled> {
         let req =
             Request::new(Method::POST, "ops/packages").bytes("application/octet-stream", bytes);
         route::json(self.client.transport(), req, None, None, false).await
@@ -2287,7 +2396,7 @@ impl Ops<'_> {
     /// Where every app's replicas are.
     ///
     /// `GET /ops/placement` (`ops_placement`). Who: the ops token.
-    pub async fn placement(self) -> Result<OpsPlacementResponse> {
+    pub async fn placement(self) -> Result<Placement> {
         let req = Request::new(Method::GET, "ops/placement");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -2295,7 +2404,7 @@ impl Ops<'_> {
     /// Compute pools.
     ///
     /// `GET /ops/pools` (`ops_pools_get`). Who: the ops token.
-    pub async fn pools_get(self) -> Result<OpsPoolsGetResponse> {
+    pub async fn pools_get(self) -> Result<OpsPools> {
         let req = Request::new(Method::GET, "ops/pools");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -2320,7 +2429,7 @@ impl Ops<'_> {
     /// The price table.
     ///
     /// `GET /ops/prices` (`ops_prices_get`). Who: the ops token.
-    pub async fn prices_get(self) -> Result<OpsPricesGetResponse> {
+    pub async fn prices_get(self) -> Result<PriceTableView> {
         let req = Request::new(Method::GET, "ops/prices");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -2368,7 +2477,7 @@ impl Ops<'_> {
     /// A node's receipt key.
     ///
     /// `GET /ops/nodes/{id}/receipt-key` (`ops_receipt_key`). Who: the ops token.
-    pub async fn receipt_key(self, id: &str) -> Result<OpsReceiptKeyResponse> {
+    pub async fn receipt_key(self, id: &str) -> Result<ReceiptKey> {
         let req = Request::new(
             Method::GET,
             format!("ops/nodes/{}/receipt-key", route::segment(id)),
@@ -2383,7 +2492,7 @@ impl Ops<'_> {
         self,
         system: OpsRecoverRequestSystem,
         code: Option<Vec<OpsRecoverRequestCodeItem>>,
-    ) -> Result<OpsRecoverResponse> {
+    ) -> Result<SystemRecovered> {
         let mut fields = Map::new();
         route::put(&mut fields, "system", &system)?;
         route::put_some(&mut fields, "code", code)?;
@@ -2395,7 +2504,7 @@ impl Ops<'_> {
     /// The recovery files a node reads.
     ///
     /// `GET /ops/recovery-files` (`ops_recovery_files`). Who: the ops token.
-    pub async fn recovery_files(self, holder: Option<&str>) -> Result<OpsRecoveryFilesResponse> {
+    pub async fn recovery_files(self, holder: Option<&str>) -> Result<RecoveryFiles> {
         let mut req = Request::new(Method::GET, "ops/recovery-files");
         if let Some(v) = holder {
             req = req.query("holder", v);
@@ -2497,7 +2606,7 @@ impl Ops<'_> {
         self,
         id: &str,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsRemoveNodeResponse> {
+    ) -> Result<NodeRemoved> {
         let body = Value::Object(Map::new());
         let req =
             Request::new(Method::DELETE, format!("ops/nodes/{}", route::segment(id))).json(body);
@@ -2515,7 +2624,7 @@ impl Ops<'_> {
         backup: Option<&str>,
         recovery: Option<OpsRestoreRequestRecovery>,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsRestoreResponse> {
+    ) -> Result<AppRestored> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "backup", backup)?;
         route::put_some(&mut fields, "recovery", recovery)?;
@@ -2531,7 +2640,7 @@ impl Ops<'_> {
     /// Custom domains to serve.
     ///
     /// `GET /ops/served-origins` (`ops_served`). Who: the ops token.
-    pub async fn served(self) -> Result<OpsServedResponse> {
+    pub async fn served(self) -> Result<ServedOrigins> {
         let req = Request::new(Method::GET, "ops/served-origins");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -2563,7 +2672,7 @@ impl Ops<'_> {
         app: &str,
         replicas: Vec<u64>,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsSetReplicasResponse> {
+    ) -> Result<ReplicasSet> {
         let mut fields = Map::new();
         route::put(&mut fields, "replicas", &replicas)?;
         let body = Value::Object(fields);
@@ -2599,7 +2708,7 @@ impl Ops<'_> {
     /// Cluster sign-up invites.
     ///
     /// `GET /ops/sign-up/invites` (`ops_sign_up_invite_list`). Who: the ops token.
-    pub async fn sign_up_invite_list(self) -> Result<OpsSignUpInviteListResponse> {
+    pub async fn sign_up_invite_list(self) -> Result<SignUpInviteList> {
         let req = Request::new(Method::GET, "ops/sign-up/invites");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -2664,7 +2773,7 @@ impl Ops<'_> {
     /// The node and the cluster.
     ///
     /// `GET /ops/status` (`ops_status`). Who: the ops token.
-    pub async fn status(self) -> Result<OpsStatusResponse> {
+    pub async fn status(self) -> Result<OpsStatus> {
         let req = Request::new(Method::GET, "ops/status");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -2679,7 +2788,7 @@ impl Ops<'_> {
         app: &str,
         body: OpsUpgradeRequest,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<OpsUpgradeResponse> {
+    ) -> Result<UpgradeApplied> {
         let body = route::value(&body)?;
         let req = Request::new(
             Method::POST,
@@ -2732,7 +2841,7 @@ impl Orgs<'_> {
     /// The organization's app teams.
     ///
     /// `GET /orgs/{org}/app-teams` (`app_team_list`). Who: signed in (a session or an API key).
-    pub async fn app_team_list(self, org: &str) -> Result<AppTeamListResponse> {
+    pub async fn app_team_list(self, org: &str) -> Result<AppTeamList> {
         let req = Request::new(
             Method::GET,
             format!("orgs/{}/app-teams", route::segment(org)),
@@ -2751,7 +2860,7 @@ impl Orgs<'_> {
         apps: Option<Vec<AppTeamsScopeRequestAppsItem>>,
         shared: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<AppTeamsScopeResponse> {
+    ) -> Result<AppTeamsScoped> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "apps", apps)?;
         route::put_some(&mut fields, "shared", shared)?;
@@ -2772,7 +2881,7 @@ impl Orgs<'_> {
         org: &str,
         after: Option<&str>,
         limit: Option<u64>,
-    ) -> Result<OrgAppsResponse> {
+    ) -> Result<AppsReport> {
         let mut req = Request::new(Method::GET, format!("orgs/{}/apps", route::segment(org)));
         if let Some(v) = after {
             req = req.query("after", v);
@@ -2828,7 +2937,7 @@ impl Orgs<'_> {
         name: &str,
         recovery_key: Option<&str>,
         capabilities: Option<u64>,
-    ) -> Result<OrgCreateResponse> {
+    ) -> Result<OrgCreated> {
         let mut fields = Map::new();
         route::put(&mut fields, "name", &name)?;
         route::put_some(&mut fields, "recoveryKey", recovery_key)?;
@@ -2843,11 +2952,7 @@ impl Orgs<'_> {
     /// `DELETE /orgs/{org}` (`org_delete`). Who: an account holder (a passkey session not bound to an app's frontend).
     ///
     /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
-    pub async fn delete(
-        self,
-        org: &str,
-        passkey: Option<&mut dyn Passkey>,
-    ) -> Result<OrgDeleteResponse> {
+    pub async fn delete(self, org: &str, passkey: Option<&mut dyn Passkey>) -> Result<OrgDeleted> {
         let body = Value::Object(Map::new());
         let req = Request::new(Method::DELETE, format!("orgs/{}", route::segment(org))).json(body);
         route::json(self.client.transport(), req, passkey, None, false).await
@@ -2863,7 +2968,7 @@ impl Orgs<'_> {
         org: &str,
         egress: bool,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<OrgEgressResponse> {
+    ) -> Result<EgressSet> {
         let mut fields = Map::new();
         route::put(&mut fields, "egress", &egress)?;
         let body = Value::Object(fields);
@@ -2875,8 +2980,23 @@ impl Orgs<'_> {
     /// One organization.
     ///
     /// `GET /orgs/{org}` (`org_get`). Who: signed in (a session or an API key).
-    pub async fn get(self, org: &str) -> Result<Org> {
-        let req = Request::new(Method::GET, format!("orgs/{}", route::segment(org)));
+    pub async fn get(
+        self,
+        org: &str,
+        limit: Option<u64>,
+        teams_after: Option<&str>,
+        members_after: Option<&str>,
+    ) -> Result<Org> {
+        let mut req = Request::new(Method::GET, format!("orgs/{}", route::segment(org)));
+        if let Some(v) = limit {
+            req = req.query("limit", v.to_string());
+        }
+        if let Some(v) = teams_after {
+            req = req.query("teamsAfter", v);
+        }
+        if let Some(v) = members_after {
+            req = req.query("membersAfter", v);
+        }
         route::json(self.client.transport(), req, None, None, false).await
     }
 
@@ -2890,7 +3010,7 @@ impl Orgs<'_> {
         org: &str,
         body: InviteCreateRequest,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<InviteCreateResponse> {
+    ) -> Result<InviteMade> {
         let body = route::value(&body)?;
         let req = Request::new(
             Method::POST,
@@ -2903,7 +3023,7 @@ impl Orgs<'_> {
     /// The organization's invites.
     ///
     /// `GET /orgs/{org}/invites` (`invite_list`). Who: a passkey session (an API key is refused).
-    pub async fn invite_list(self, org: &str) -> Result<InviteListResponse> {
+    pub async fn invite_list(self, org: &str) -> Result<InviteList> {
         let req = Request::new(Method::GET, format!("orgs/{}/invites", route::segment(org)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -2911,7 +3031,7 @@ impl Orgs<'_> {
     /// Join with an invite.
     ///
     /// `POST /invites/{token}/redeem` (`invite_redeem`). Who: a passkey session (an API key is refused).
-    pub async fn invite_redeem(self, token: &str) -> Result<InviteRedeemResponse> {
+    pub async fn invite_redeem(self, token: &str) -> Result<InviteRedeemed> {
         let req = Request::new(
             Method::POST,
             format!("invites/{}/redeem", route::segment(token)),
@@ -3028,7 +3148,7 @@ impl Orgs<'_> {
         self,
         org: &str,
         detail: Option<OrgMembersDetail>,
-    ) -> Result<OrgMembersResponse> {
+    ) -> Result<MemberSecurityList> {
         let mut req = Request::new(Method::GET, format!("orgs/{}/members", route::segment(org)));
         if let Some(v) = detail {
             req = req.query("detail", v.as_str());
@@ -3122,7 +3242,7 @@ impl Orgs<'_> {
         public_key: &str,
         signature: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<OrgPublisherResponse> {
+    ) -> Result<PublisherBound> {
         let mut fields = Map::new();
         route::put(&mut fields, "signerId", &signer_id)?;
         route::put(&mut fields, "publicKey", &public_key)?;
@@ -3193,7 +3313,7 @@ impl Orgs<'_> {
         self,
         org: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<RecoveryFinishResponse> {
+    ) -> Result<RecoveryFinished> {
         let body = Value::Object(Map::new());
         let req = Request::new(
             Method::POST,
@@ -3233,7 +3353,7 @@ impl Orgs<'_> {
         org: &str,
         nonce: &str,
         signature: &str,
-    ) -> Result<RecoveryStartResponse> {
+    ) -> Result<RecoveryStarted> {
         let mut fields = Map::new();
         route::put(&mut fields, "nonce", &nonce)?;
         route::put(&mut fields, "signature", &signature)?;
@@ -3304,7 +3424,7 @@ impl Orgs<'_> {
         org: &str,
         name: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<OrgRenameResponse> {
+    ) -> Result<OrgRenamed> {
         let mut fields = Map::new();
         route::put(&mut fields, "name", &name)?;
         let body = Value::Object(fields);
@@ -3370,7 +3490,7 @@ impl Orgs<'_> {
         allow_guests: Option<bool>,
         allow_public_links: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<OrgSettingsResponse> {
+    ) -> Result<OrgSettingsSet> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "allowGuests", allow_guests)?;
         route::put_some(&mut fields, "allowPublicLinks", allow_public_links)?;
@@ -3392,7 +3512,7 @@ impl Orgs<'_> {
         name: &str,
         join: TeamJoin,
         parent: Option<&str>,
-    ) -> Result<TeamCreateResponse> {
+    ) -> Result<TeamCreated> {
         let mut fields = Map::new();
         route::put(&mut fields, "name", &name)?;
         route::put(&mut fields, "join", &join)?;
@@ -3414,7 +3534,7 @@ impl Orgs<'_> {
         team: &str,
         keep_apps: Option<bool>,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<TeamDeleteResponse> {
+    ) -> Result<TeamDeleted> {
         let mut fields = Map::new();
         route::put_some(&mut fields, "keepApps", keep_apps)?;
         let body = Value::Object(fields);
@@ -3529,7 +3649,7 @@ impl Orgs<'_> {
     /// Updates waiting across an organization's apps.
     ///
     /// `GET /orgs/{org}/updates` (`org_updates`). Who: an account holder (a passkey session not bound to an app's frontend).
-    pub async fn updates(self, org: &str, after: Option<&str>) -> Result<OrgUpdatesResponse> {
+    pub async fn updates(self, org: &str, after: Option<&str>) -> Result<OrgUpdates> {
         let mut req = Request::new(Method::GET, format!("orgs/{}/updates", route::segment(org)));
         if let Some(v) = after {
             req = req.query("after", v);
@@ -3602,7 +3722,7 @@ impl Orgs<'_> {
     /// An organization's usage.
     ///
     /// `GET /orgs/{org}/usage` (`org_usage`). Who: signed in (a session or an API key).
-    pub async fn usage(self, org: &str) -> Result<OrgUsageResponse> {
+    pub async fn usage(self, org: &str) -> Result<OrgUsage> {
         let req = Request::new(Method::GET, format!("orgs/{}/usage", route::segment(org)));
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -3626,7 +3746,7 @@ impl Packages<'_> {
     /// Upload a raw component.
     ///
     /// `POST /bundles` (`bundle_put`). Who: an installer (an account holder, or an unscoped API key that is not read-only).
-    pub async fn bundle_put(self, bytes: Vec<u8>) -> Result<BundlePutResponse> {
+    pub async fn bundle_put(self, bytes: Vec<u8>) -> Result<BundleStored> {
         let req = Request::new(Method::POST, "bundles").bytes("application/wasm", bytes);
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -3639,7 +3759,7 @@ impl Packages<'_> {
         package: &str,
         version: &str,
         service: Option<&str>,
-    ) -> Result<PackageCapabilitiesResponse> {
+    ) -> Result<CapabilityCard> {
         let mut req = Request::new(
             Method::GET,
             format!(
@@ -3654,6 +3774,21 @@ impl Packages<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// A release's frontend files.
+    ///
+    /// `GET /packages/{package}/{version}/frontend` (`package_frontend`). Who: anyone.
+    pub async fn frontend(self, package: &str, version: &str) -> Result<FrontendDigests> {
+        let req = Request::new(
+            Method::GET,
+            format!(
+                "packages/{}/{}/frontend",
+                route::segment(package),
+                route::segment(version)
+            ),
+        );
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// One package.
     ///
     /// `GET /packages/{package}` (`package_get`). Who: signed in (a session or an API key).
@@ -3665,10 +3800,16 @@ impl Packages<'_> {
     /// Install a release from the registry.
     ///
     /// `POST /packages/install` (`package_install`). Who: an installer (an account holder, or an unscoped API key that is not read-only).
-    pub async fn install(self, package: &str, version: &str) -> Result<PackageInstallResponse> {
+    pub async fn install(
+        self,
+        package: &str,
+        version: &str,
+        org: Option<&str>,
+    ) -> Result<PackageInstalled> {
         let mut fields = Map::new();
         route::put(&mut fields, "package", &package)?;
         route::put(&mut fields, "version", &version)?;
+        route::put_some(&mut fields, "org", org)?;
         let body = Value::Object(fields);
         let req = Request::new(Method::POST, "packages/install").json(body);
         route::json(self.client.transport(), req, None, None, false).await
@@ -3677,7 +3818,7 @@ impl Packages<'_> {
     /// Installed packages.
     ///
     /// `GET /packages` (`package_list`). Who: signed in (a session or an API key).
-    pub async fn list(self) -> Result<PackageListResponse> {
+    pub async fn list(self) -> Result<PackageList> {
         let req = Request::new(Method::GET, "packages");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -3711,7 +3852,7 @@ impl Packages<'_> {
     /// A package's frontend origins.
     ///
     /// `GET /package-origins/{package}` (`origins_list`). Who: signed in (a session or an API key).
-    pub async fn origins_list(self, package: &str) -> Result<OriginsListResponse> {
+    pub async fn origins_list(self, package: &str) -> Result<OriginList> {
         let req = Request::new(
             Method::GET,
             format!("package-origins/{}", route::segment(package)),
@@ -3729,7 +3870,7 @@ impl Packages<'_> {
         package: &str,
         origin: &str,
         passkey: Option<&mut dyn Passkey>,
-    ) -> Result<OriginsRemoveResponse> {
+    ) -> Result<OriginRemoved> {
         let mut fields = Map::new();
         route::put(&mut fields, "origin", &origin)?;
         let body = Value::Object(fields);
@@ -3744,11 +3885,7 @@ impl Packages<'_> {
     /// A release's pipelines.
     ///
     /// `GET /packages/{package}/{version}/pipelines` (`package_pipelines`). Who: signed in (a session or an API key).
-    pub async fn pipelines(
-        self,
-        package: &str,
-        version: &str,
-    ) -> Result<BTreeMap<String, PackagePipelinesResponseValue>> {
+    pub async fn pipelines(self, package: &str, version: &str) -> Result<ReleasePipelines> {
         let req = Request::new(
             Method::GET,
             format!(
@@ -3774,8 +3911,12 @@ impl Packages<'_> {
     /// Upload a signed release.
     ///
     /// `POST /packages` (`package_upload`). Who: an installer (an account holder, or an unscoped API key that is not read-only).
-    pub async fn upload(self, bytes: Vec<u8>) -> Result<PackageUploadResponse> {
-        let req = Request::new(Method::POST, "packages").bytes("application/octet-stream", bytes);
+    pub async fn upload(self, bytes: Vec<u8>, org: Option<&str>) -> Result<PackageInstalled> {
+        let mut req =
+            Request::new(Method::POST, "packages").bytes("application/octet-stream", bytes);
+        if let Some(v) = org {
+            req = req.query("org", v);
+        }
         route::json(self.client.transport(), req, None, None, false).await
     }
 
@@ -3841,7 +3982,7 @@ impl Public<'_> {
     /// `GET /health` (`health`). Who: anyone.
     ///
     /// Sent in the clear, as the document says (`x-calimero-sealed: false`), without a credential.
-    pub async fn health(self) -> Result<HealthResponse> {
+    pub async fn health(self) -> Result<Health> {
         let req = Request::new(Method::GET, "health");
         route::clear(self.client.transport(), req).await
     }
@@ -3849,7 +3990,7 @@ impl Public<'_> {
     /// Whether a signing key is bound.
     ///
     /// `GET /publishers/{signer}` (`publisher_binding`). Who: signed in (a session or an API key).
-    pub async fn publisher_binding(self, signer: &str) -> Result<PublisherBindingResponse> {
+    pub async fn publisher_binding(self, signer: &str) -> Result<PublisherBinding> {
         let req = Request::new(
             Method::GET,
             format!("publishers/{}", route::segment(signer)),
@@ -3860,7 +4001,7 @@ impl Public<'_> {
     /// The cluster's releases.
     ///
     /// `GET /releases` (`releases_public`). Who: anyone.
-    pub async fn releases_public(self) -> Result<ReleasesPublicResponse> {
+    pub async fn releases_public(self) -> Result<ClusterReleases> {
         let req = Request::new(Method::GET, "releases");
         route::json(self.client.transport(), req, None, None, false).await
     }
@@ -3877,7 +4018,7 @@ impl Public<'_> {
         apps: Option<Vec<RestoreRecoverHolderRequestAppsItem>>,
         code: Option<Vec<RestoreRecoverHolderRequestCodeItem>>,
         operator: Option<&OperatorSigner<'_>>,
-    ) -> Result<RestoreRecoverHolderResponse> {
+    ) -> Result<HolderRecovered> {
         let mut fields = Map::new();
         route::put(&mut fields, "holder", &holder)?;
         route::put(&mut fields, "slice", &slice)?;

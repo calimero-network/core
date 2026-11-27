@@ -33,7 +33,7 @@ async fn org_members(
     headers: HeaderMap,
     Path(org): Path<String>,
     Query(q): Query<MembersQuery>,
-) -> ApiResult {
+) -> ApiResult<Json<MemberSecurityList>> {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     if q.detail.as_deref() != Some("security") {
@@ -56,39 +56,135 @@ async fn org_members(
             ));
         }
         let used = session_use(s, now);
-        let members: Vec<Value> = o
+        let members = o
             .members
             .iter()
             .filter(|(m, _)| o.sees_member(&account, m))
             .map(|(m, role)| {
                 let acc = s.accounts.get(m);
                 let passkeys = acc.map_or(0, |a| a.passkeys.len());
-                json!({
-                    "account": m,
-                    "name": o
+                MemberSecurity {
+                    account: m.clone(),
+                    name: o
                         .member_metadata
                         .get(m)
                         .and_then(|v| v.get("name"))
-                        .and_then(Value::as_str),
-                    "role": role,
-                    "teams": o
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    role: *role,
+                    teams: o
                         .teams
                         .keys()
                         .filter(|t| o.in_team(m, t))
-                        .collect::<Vec<_>>(),
-                    "passkeys": if passkeys >= PASSKEYS_COUNTED {
-                        json!(format!("{PASSKEYS_COUNTED}+"))
+                        .cloned()
+                        .collect(),
+                    passkeys: if passkeys >= PASSKEYS_COUNTED {
+                        PasskeyCount::AtLeast(format!("{PASSKEYS_COUNTED}+"))
                     } else {
-                        json!(passkeys)
+                        PasskeyCount::Exactly(passkeys)
                     },
-                    "recoveryCode": s.recovery_keys.values().any(|a| a == m),
-                    "lastActiveDay": last_active(s, m, &used).and_then(utc_day),
-                    "sessions": used.get(m.as_str()).map_or(0, |u| u.0),
-                })
+                    recovery_code: s.recovery_keys.values().any(|a| a == m),
+                    last_active_day: last_active(s, m, &used).and_then(utc_day),
+                    sessions: used.get(m.as_str()).map_or(0, |u| u.0),
+                }
             })
             .collect();
-        Ok(Json(json!({ "orgId": org, "members": members })))
+        Ok(Json(MemberSecurityList {
+            org_id: org.clone(),
+            members,
+        }))
     })
+}
+
+/// `GET /orgs/{org}/members?detail=security`: each member the caller sees, with what tells
+/// whether their account is safe.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MemberSecurityList {
+    org_id: String,
+    members: Vec<MemberSecurity>,
+}
+
+/// One member of [`MemberSecurityList`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct MemberSecurity {
+    account: String,
+    name: Option<String>,
+    role: OrgRole,
+    teams: Vec<String>,
+    passkeys: PasskeyCount,
+    recovery_code: bool,
+    last_active_day: Option<String>,
+    sessions: usize,
+}
+
+/// How many passkeys an account has: a number below [`PASSKEYS_COUNTED`], else `"3+"`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum PasskeyCount {
+    Exactly(usize),
+    AtLeast(String),
+}
+
+/// `GET /orgs/{org}/usage`: the apps billed to it, its developer usage today (decimal strings)
+/// and the cluster's quotas.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct OrgUsage {
+    apps: usize,
+    developer_fuel_today: String,
+    developer_writes_today: String,
+    quotas: crate::system::Quotas,
+}
+
+/// `POST /orgs/{org}/invites`: the invite's token, answered once.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct InviteMade {
+    token: String,
+}
+
+/// `GET /orgs/{org}/invites`.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct InviteList {
+    invites: Vec<InviteView>,
+}
+
+/// A pending invite as its list shows it, never its token.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct InviteView {
+    invite_key: String,
+    role: OrgRole,
+    teams: Vec<String>,
+    uses_left: u32,
+    expires_at: u64,
+    expired: bool,
+    created_by: Option<String>,
+    created_at: Option<u64>,
+    all_apps: bool,
+}
+
+/// `GET /orgs/{org}/app-teams`: the organization's mode and its app teams.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AppTeamList {
+    mode: crate::types::OrgMode,
+    app_teams: Vec<AppTeamRow>,
+}
+
+/// One app team of [`AppTeamList`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AppTeamRow {
+    package: String,
+    team_id: String,
+    name: String,
+    join: TeamJoin,
+    member_count: usize,
+    default_capabilities: Option<u32>,
+    member: bool,
+    manages: bool,
 }
 
 #[derive(Deserialize)]
@@ -96,7 +192,7 @@ async fn org_members(
 pub(super) struct OrgBody {
     name: String,
     /// The organization's recovery key (base64url Ed25519 public key): the
-    /// creator keeps the seed (`docs/specs/org-recovery.md`).
+    /// creator keeps the seed ([Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)).
     #[serde(default)]
     recovery_key: Option<String>,
     /// What its members can do unless set for them (capability bits).
@@ -156,12 +252,36 @@ pub(crate) async fn create_org(
     Ok(Json(v))
 }
 
+/// The teams, and the members, one `GET /orgs/{org}` answers when it names no `limit`, and the
+/// most it answers with one: as many as an organization may hold teams
+/// (`system::state_caps::MAX_TEAMS_PER_ORG`), so a caller that reads one page reads them all.
+pub(super) const ORG_PAGE_LIMIT: usize = 1_000;
+
+/// `GET /orgs/{org}`'s pages: at most `limit` teams (by id, after `teamsAfter`) and `limit`
+/// members (by account, after `membersAfter`), each page's `next...` the cursor of the next.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct OrgQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    teams_after: Option<String>,
+    #[serde(default)]
+    members_after: Option<String>,
+}
+
 async fn org_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
+    Query(q): Query<OrgQuery>,
 ) -> ApiResult {
+    let limit = q.limit.unwrap_or(ORG_PAGE_LIMIT);
+    if limit == 0 || limit > ORG_PAGE_LIMIT {
+        return Err(malformed("limit is 1 to 1000"));
+    }
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let o = node
@@ -192,6 +312,8 @@ async fn org_get(
     if let Some(m) = v.get_mut("allApps").and_then(Value::as_array_mut) {
         m.retain(|a| a.as_str().is_some_and(|a| o.sees_member(&account, a)));
     }
+    let teams_next = page_teams(&mut v, q.teams_after.as_deref(), limit);
+    let members_next = page_members(&mut v, &o, &account, q.members_after.as_deref(), limit);
     // Its settings, whatever they are: the state leaves a default out.
     v["allowGuests"] = json!(o.allow_guests);
     v["allowPublicLinks"] = json!(o.allow_public_links);
@@ -219,6 +341,8 @@ async fn org_get(
         let _prev = obj.insert("mode".into(), json!(o.mode()));
         let _prev = obj.insert("releaseApprovers".into(), json!(approvers));
         let _prev = obj.insert("publishes".into(), json!(publishes));
+        let _prev = obj.insert("nextTeamsAfter".into(), json!(teams_next));
+        let _prev = obj.insert("nextMembersAfter".into(), json!(members_next));
         let _prev = obj.insert(
             "newWorkStopped".into(),
             stall.map_or(
@@ -228,6 +352,50 @@ async fn org_get(
         );
     }
     Ok(Json(v))
+}
+
+/// Keeps the page of `teams` after `after`, at most `limit`; the cursor of the next page, if any.
+fn page_teams(v: &mut Value, after: Option<&str>, limit: usize) -> Option<String> {
+    let teams = v.get_mut("teams").and_then(Value::as_object_mut)?;
+    let page: Vec<String> = teams
+        .keys()
+        .filter(|id| after.is_none_or(|after| id.as_str() > after))
+        .take(limit + 1)
+        .cloned()
+        .collect();
+    let next = (page.len() > limit).then(|| page[limit - 1].clone());
+    let kept: BTreeSet<&String> = page.iter().take(limit).collect();
+    teams.retain(|id, _| kept.contains(id));
+    next
+}
+
+/// Keeps the page of the members `account` sees after `after`, at most `limit`, in `members`,
+/// `capabilities`, `memberMetadata` and `allApps`; the cursor of the next page, if any.
+fn page_members(
+    v: &mut Value,
+    o: &crate::types::Org,
+    account: &str,
+    after: Option<&str>,
+    limit: usize,
+) -> Option<String> {
+    let page: Vec<&String> = o
+        .members
+        .keys()
+        .filter(|m| o.sees_member(account, m))
+        .filter(|m| after.is_none_or(|after| m.as_str() > after))
+        .take(limit + 1)
+        .collect();
+    let next = (page.len() > limit).then(|| page[limit - 1].clone());
+    let kept: BTreeSet<&str> = page.iter().take(limit).map(|m| m.as_str()).collect();
+    for field in ["members", "capabilities", "memberMetadata"] {
+        if let Some(m) = v.get_mut(field).and_then(Value::as_object_mut) {
+            m.retain(|a, _| kept.contains(a.as_str()));
+        }
+    }
+    if let Some(m) = v.get_mut("allApps").and_then(Value::as_array_mut) {
+        m.retain(|a| a.as_str().is_some_and(|a| kept.contains(a)));
+    }
+    next
 }
 
 async fn org_delete(
@@ -409,7 +577,10 @@ async fn org_metadata(
     Path(org): Path<String>,
     Json(body): Json<MetadataBody>,
 ) -> ApiResult {
-    let actor = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    p.unscoped()?;
+    let actor = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetOrgMetadata {
             org,
@@ -426,7 +597,10 @@ async fn member_metadata(
     Path((org, account)): Path<(String, String)>,
     Json(body): Json<MetadataBody>,
 ) -> ApiResult {
-    let actor = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    p.unscoped()?;
+    let actor = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetMemberMetadata {
             org,
@@ -707,61 +881,100 @@ pub(crate) async fn remove_member_teams(
 /// A team as `account` may see it: its record, its members with their roles,
 /// the teams below it they see, and its apps. `None` when they may not see it
 /// (a restricted team they are not in looks like no team at all).
-fn team_view(
+pub(super) fn team_view(
     s: &crate::system::SystemState,
     o: &crate::types::Org,
     team: &str,
     account: &str,
-) -> Option<Value> {
+) -> Option<TeamView> {
     if !o.sees_team(account, team) {
         return None;
     }
     let t = o.teams.get(team)?;
-    let members: Vec<Value> = t
+    // Each member's row: `team_role` answers for every account in `members`.
+    let members = t
         .members
         .keys()
-        .map(|a| {
-            json!({
-                "account": a,
-                "role": o.team_role(a, team),
-                "capabilities": o.team_caps(a, team),
+        .filter_map(|a| {
+            Some(TeamMemberView {
+                account: a.clone(),
+                role: o.team_role(a, team)?,
+                capabilities: o.team_caps(a, team),
             })
         })
         .collect();
-    let children: Vec<&String> = o
+    let children = o
         .teams
         .values()
         .filter(|c| c.parent.as_deref() == Some(team) && o.sees_team(account, &c.team_id))
-        .map(|c| &c.team_id)
+        .map(|c| c.team_id.clone())
         .collect();
-    let apps: Vec<Value> = s
+    let apps = s
         .apps
         .values()
         .filter(|a| a.org == o.org_id && a.access.teams().iter().any(|t| t.as_str() == team))
-        .map(|a| json!({ "appId": a.app_id, "name": a.name, "contextId": hex::encode(sha256(a.app_id.as_bytes())) }))
+        .map(|a| TeamAppView {
+            app_id: a.app_id.clone(),
+            name: a.name.clone(),
+        })
         .collect();
-    Some(json!({
-        "teamId": t.team_id,
-        "name": t.name,
-        "parent": t.parent,
-        "join": t.join,
-        "metadata": t.metadata,
-        "package": t.app_package(),
-        "defaultCapabilities": t.default_capabilities,
-        "members": members,
-        "children": children,
-        "apps": apps,
-        "myRole": o.team_role(account, team),
-        "member": o.in_team(account, team),
-    }))
+    Some(TeamView {
+        team_id: t.team_id.clone(),
+        name: t.name.clone(),
+        parent: t.parent.clone(),
+        join: t.join,
+        metadata: t.metadata.clone(),
+        package: t.app_package().map(str::to_owned),
+        default_capabilities: t.default_capabilities,
+        members,
+        children,
+        apps,
+        my_role: o.team_role(account, team),
+        member: o.in_team(account, team),
+    })
+}
+
+/// A team as `GET /orgs/{org}/teams/{team}` answers it (`#TeamView`).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TeamView {
+    team_id: String,
+    name: String,
+    parent: Option<String>,
+    join: TeamJoin,
+    metadata: Value,
+    package: Option<String>,
+    default_capabilities: Option<u32>,
+    members: Vec<TeamMemberView>,
+    children: Vec<String>,
+    apps: Vec<TeamAppView>,
+    my_role: Option<crate::types::TeamRole>,
+    member: bool,
+}
+
+/// A member's row in a [`TeamView`].
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct TeamMemberView {
+    account: String,
+    role: crate::types::TeamRole,
+    capabilities: u32,
+}
+
+/// An app on the team, in a [`TeamView`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct TeamAppView {
+    app_id: String,
+    name: String,
 }
 
 async fn team_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((org, team)): Path<(String, String)>,
-) -> ApiResult {
+) -> ApiResult<Json<TeamView>> {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let v = node
@@ -804,6 +1017,25 @@ async fn team_update(
         None => {}
     }
     let actor = p.account()?;
+    // An update that names nothing changes nothing: answered without a log entry, `404` to
+    // whoever does not see the team, as a read is.
+    if body.name.is_none()
+        && body.join.is_none()
+        && body.parent.is_none()
+        && body.metadata.is_none()
+    {
+        node.sys_fresh_from(p.sys_index).await;
+        let sees = node.sys(|s| {
+            s.orgs
+                .get(&org)
+                .filter(|o| o.role(&actor).is_some() && o.teams.contains_key(&team))
+                .is_some_and(|o| o.sees_team(&actor, &team))
+        });
+        if !sees {
+            return Err(ApiError::not_found("no such team"));
+        }
+        return Ok(Json(json!({})));
+    }
     let _ok = node
         .sys_write(&SystemCmd::UpdateTeam {
             org,
@@ -925,7 +1157,7 @@ pub(crate) struct CapabilitiesBody {
 
 /// A member's capabilities (`account`, organization-wide or in `team`), or,
 /// without an account, the default: the organization's, or with `team` what
-/// everyone in that team holds there on top of their own (G6); approved with
+/// everyone in that team holds there on top of their own; approved with
 /// the actor's passkey (412 first).
 async fn org_capabilities(
     State(node): State<Arc<Node>>,
@@ -1064,6 +1296,15 @@ pub(crate) async fn create_invite(
             return Err(crate::node::cannot_grant_unheld());
         }
     }
+    // An invite's life is bounded as the consent page bounds it: one that never
+    // expires outlives every change to who may hand it out (security review).
+    let ttl = body.ttl_secs.unwrap_or(7 * 24 * 3600);
+    if ttl == 0 || ttl > crate::consent_page::MAX_INVITE_TTL {
+        return Err(ApiError::bad_request(
+            "BAD_REQUEST",
+            &format!("ttlSecs is 1 to {}", crate::consent_page::MAX_INVITE_TTL),
+        ));
+    }
     // Before the passkey step-up: an earlier release would drop the fields.
     node.require_features(&crate::system::cluster_version::invite_features(
         body.all_apps,
@@ -1075,7 +1316,7 @@ pub(crate) async fn create_invite(
         org: org.clone(),
         role: body.role,
         teams: body.teams,
-        expires_at: now_secs() + body.ttl_secs.unwrap_or(7 * 24 * 3600),
+        expires_at: now_secs() + ttl,
         uses_left: body.uses.unwrap_or(1).max(1),
         created_by: actor.clone(),
         created_at: now_secs(),
@@ -1125,7 +1366,7 @@ pub(crate) async fn create_invite(
             teams_seen: true,
         })
         .await?;
-    Ok(Json(json!({ "token": token })))
+    Ok(Json(json!(InviteMade { token })))
 }
 
 #[derive(Deserialize)]
@@ -1241,18 +1482,18 @@ pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> 
 
 /// An organization invite as its list shows it: its key and terms, never a
 /// token (the log never had one).
-fn invite_json(key: &str, inv: &Invite, now: u64) -> Value {
-    json!({
-        "inviteKey": key,
-        "role": inv.role,
-        "teams": inv.teams,
-        "usesLeft": inv.uses_left,
-        "expiresAt": inv.expires_at,
-        "expired": inv.expires_at <= now,
-        "createdBy": (!inv.created_by.is_empty()).then_some(&inv.created_by),
-        "createdAt": (inv.created_at != 0).then_some(inv.created_at),
-        "allApps": inv.all_apps,
-    })
+fn invite_json(key: &str, inv: &Invite, now: u64) -> InviteView {
+    InviteView {
+        invite_key: key.to_owned(),
+        role: inv.role,
+        teams: inv.teams.clone(),
+        uses_left: inv.uses_left,
+        expires_at: inv.expires_at,
+        expired: inv.expires_at <= now,
+        created_by: (!inv.created_by.is_empty()).then(|| inv.created_by.clone()),
+        created_at: (inv.created_at != 0).then_some(inv.created_at),
+        all_apps: inv.all_apps,
+    }
 }
 
 /// The organization's pending invites the caller may see and revoke
@@ -1263,21 +1504,22 @@ async fn invite_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<InviteList>> {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let now = now_secs();
     let v = node
         .sys(|s| {
             s.orgs.get(&org)?.role(&account)?;
-            let invites: Vec<Value> = s
+            let invites = s
                 .invites
                 .iter()
                 .filter(|(_, i)| i.org == org && s.sees_invite(i, &account))
                 .map(|(k, i)| invite_json(k, i, now))
                 .collect();
-            Some(json!({ "invites": invites }))
+            Some(InviteList { invites })
         })
         .ok_or_else(|| ApiError::not_found("no such organization"))?;
     Ok(Json(v))
@@ -1336,15 +1578,16 @@ async fn app_team_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<AppTeamList>> {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let v = node
         .sys(|s| {
             let o = s.orgs.get(&org)?;
             let role = o.role(&account)?;
-            let teams: Vec<Value> = o
+            let app_teams = o
                 .teams
                 .values()
                 .filter_map(|t| Some((t.app_package()?, t)))
@@ -1355,19 +1598,22 @@ async fn app_team_list(
                         .keys()
                         .filter(|m| o.in_team(m, &t.team_id))
                         .count();
-                    json!({
-                        "package": package,
-                        "teamId": t.team_id,
-                        "name": t.name,
-                        "join": t.join,
-                        "memberCount": count,
-                        "defaultCapabilities": t.default_capabilities,
-                        "member": o.in_team(&account, &t.team_id),
-                        "manages": o.manages_team(&account, &t.team_id),
-                    })
+                    AppTeamRow {
+                        package: package.to_owned(),
+                        team_id: t.team_id.clone(),
+                        name: t.name.clone(),
+                        join: t.join,
+                        member_count: count,
+                        default_capabilities: t.default_capabilities,
+                        member: o.in_team(&account, &t.team_id),
+                        manages: o.manages_team(&account, &t.team_id),
+                    }
                 })
                 .collect();
-            Some(json!({ "mode": o.mode(), "appTeams": teams }))
+            Some(AppTeamList {
+                mode: o.mode(),
+                app_teams,
+            })
         })
         .ok_or_else(|| ApiError::not_found("no such organization"))?;
     Ok(Json(v))
@@ -1410,10 +1656,21 @@ async fn app_teams_scope(
             "too many packages in one step",
         ));
     }
-    // The API always sets `by_release` (#4931).
+    // The API always sets `by_release`.
     let mut features = scope_app_features(body.apps.as_deref());
     features.push(Feature::ScopeByRelease);
     node.require_features(&features).await?;
+    // Before the passkey, as apply answers it: a package the actor may not use is missing.
+    node.sys_fresh_from(p.sys_index).await;
+    let unusable = node.sys(|s| {
+        body.apps
+            .iter()
+            .flatten()
+            .any(|a| s.package_used(&a.package, &actor, false).is_none())
+    });
+    if unusable {
+        return Err(crate::node::rejected("no such package"));
+    }
     let args = crate::system::scope_apps_args(body.apps.as_deref(), body.shared);
     let consent = org_consent(&node, &p, &org, "__scope_apps", &args, body.confirm).await?;
     Ok(Json(
@@ -1432,8 +1689,8 @@ async fn app_teams_scope(
     ))
 }
 
-/// What today's runs of the apps an organization is the developer of used (Q20, D76,
-/// D78): fuel and writes, summed over the component apps billed to it as their
+/// What today's runs of the apps an organization is the developer of used: fuel and
+/// writes, summed over the component apps billed to it as their
 /// developer (`usage::developer`: instances of its deployments, and its own apps made
 /// from a release), on the UTC day of the node's app time, with the quotas; for its
 /// admins and owner only, judged on fresh system state like `GET /orgs/{org}`. One
@@ -1442,8 +1699,10 @@ async fn org_usage(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(org): Path<String>,
-) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+) -> ApiResult<Json<OrgUsage>> {
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     node.sys_fresh().await;
     let (role, apps, quotas) = node.sys(|s| {
         (
@@ -1465,12 +1724,12 @@ async fn org_usage(
         Some(_) => {}
     }
     let today = node.developer_usage_today(&org).await;
-    Ok(Json(json!({
-        "apps": apps,
-        "developerFuelToday": today.fuel.to_string(),
-        "developerWritesToday": today.writes.to_string(),
-        "quotas": quotas,
-    })))
+    Ok(Json(OrgUsage {
+        apps,
+        developer_fuel_today: today.fuel.to_string(),
+        developer_writes_today: today.writes.to_string(),
+        quotas,
+    }))
 }
 
 /// An organization's apps, what they run and who upgraded them, the
@@ -1489,9 +1748,9 @@ async fn org_apps(
     if !member {
         return Err(ApiError::not_found("no such organization"));
     }
-    Ok(Json(
-        scope_report(&node, &p, &account, Some(&org), &q, limit).await,
-    ))
+    Ok(Json(json!(
+        scope_report(&node, &p, &account, Some(&org), &q, limit).await
+    )))
 }
 
 /// This area's routes, merged into [`super::router`].
@@ -1533,4 +1792,140 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         )
         .route("/invites/{token}/redeem", post(invite_redeem))
         .route("/orgs/{org}/settings", post(org_settings))
+}
+
+/// The typed answers write the bytes the `json!` they replaced wrote: each
+/// test keeps the replaced expression and compares the serialized text, key order included.
+#[cfg(test)]
+mod answer_tests {
+    use serde::Serialize;
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    fn same<T: Serialize>(typed: &T, before: &Value) {
+        assert_eq!(
+            serde_json::to_string(typed).expect("serializes"),
+            serde_json::to_string(before).expect("serializes")
+        );
+    }
+
+    #[test]
+    fn an_invite_answers_as_before() {
+        let with: Invite = serde_json::from_value(json!({
+            "org": "o1", "role": "member", "teams": ["t1"], "expiresAt": 100, "usesLeft": 2,
+            "createdBy": "alice", "createdAt": 7, "allApps": true
+        }))
+        .expect("an invite");
+        let without: Invite = serde_json::from_value(json!({
+            "org": "o1", "role": "admin", "teams": [], "expiresAt": 5, "usesLeft": 1
+        }))
+        .expect("an invite");
+        for (inv, now) in [(&with, 99), (&without, 10)] {
+            let key = "k";
+            let before = json!({
+                "inviteKey": key,
+                "role": inv.role,
+                "teams": inv.teams,
+                "usesLeft": inv.uses_left,
+                "expiresAt": inv.expires_at,
+                "expired": inv.expires_at <= now,
+                "createdBy": (!inv.created_by.is_empty()).then_some(&inv.created_by),
+                "createdAt": (inv.created_at != 0).then_some(inv.created_at),
+                "allApps": inv.all_apps,
+            });
+            same(&invite_json(key, inv, now), &before);
+            same(
+                &InviteList {
+                    invites: vec![invite_json(key, inv, now)],
+                },
+                &json!({ "invites": [before] }),
+            );
+        }
+        same(
+            &InviteMade {
+                token: "inv_t".to_owned(),
+            },
+            &json!({ "token": "inv_t" }),
+        );
+    }
+
+    #[test]
+    fn members_usage_and_app_teams_answer_as_before() {
+        for (passkeys, shown, name, day) in [
+            (2_usize, json!(2), Some("Al"), Some("2026-11-24")),
+            (5, json!("3+"), None, None),
+        ] {
+            let typed = MemberSecurityList {
+                org_id: "o1".to_owned(),
+                members: vec![MemberSecurity {
+                    account: "alice".to_owned(),
+                    name: name.map(str::to_owned),
+                    role: OrgRole::Admin,
+                    teams: vec!["t1".to_owned()],
+                    passkeys: if passkeys >= PASSKEYS_COUNTED {
+                        PasskeyCount::AtLeast(format!("{PASSKEYS_COUNTED}+"))
+                    } else {
+                        PasskeyCount::Exactly(passkeys)
+                    },
+                    recovery_code: true,
+                    last_active_day: day.map(str::to_owned),
+                    sessions: 3,
+                }],
+            };
+            let member = json!({
+                "account": "alice",
+                "name": name,
+                "role": OrgRole::Admin,
+                "teams": ["t1"],
+                "passkeys": shown,
+                "recoveryCode": true,
+                "lastActiveDay": day,
+                "sessions": 3,
+            });
+            same(&typed, &json!({ "orgId": "o1", "members": [member] }));
+        }
+        let quotas = crate::system::Quotas::default();
+        same(
+            &OrgUsage {
+                apps: 4,
+                developer_fuel_today: 18_446_744_073_709_551_615_u64.to_string(),
+                developer_writes_today: 0_u64.to_string(),
+                quotas: quotas.clone(),
+            },
+            &json!({
+                "apps": 4,
+                "developerFuelToday": 18_446_744_073_709_551_615_u64.to_string(),
+                "developerWritesToday": 0_u64.to_string(),
+                "quotas": quotas,
+            }),
+        );
+        for caps in [Some(3), None] {
+            same(
+                &AppTeamList {
+                    mode: crate::types::OrgMode::Shared,
+                    app_teams: vec![AppTeamRow {
+                        package: "p1".to_owned(),
+                        team_id: "t1".to_owned(),
+                        name: "P1".to_owned(),
+                        join: TeamJoin::Invite,
+                        member_count: 2,
+                        default_capabilities: caps,
+                        member: true,
+                        manages: false,
+                    }],
+                },
+                &json!({ "mode": crate::types::OrgMode::Shared, "appTeams": [json!({
+                    "package": "p1",
+                    "teamId": "t1",
+                    "name": "P1",
+                    "join": TeamJoin::Invite,
+                    "memberCount": 2,
+                    "defaultCapabilities": caps,
+                    "member": true,
+                    "manages": false,
+                })] }),
+            );
+        }
+    }
 }

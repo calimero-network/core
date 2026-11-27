@@ -6,6 +6,8 @@
 )]
 use super::files::files_gate;
 use super::*;
+use crate::event_streams::Full;
+use crate::event_streams::StreamSlot;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -19,7 +21,8 @@ pub(super) struct IntentBody {
     confirm: Option<ConfirmBody>,
 }
 
-/// The 422/503 of a component's run that did not end `Ok` (spec section 5, D23, D36).
+/// The 422/503 of a component's run that did not end `Ok`: `422` for an app error or a
+/// trap; a run past its deadline is a retryable `503 TIMEOUT`, not a `422 TRAP`.
 pub(super) fn component_failure(
     index: u64,
     status: &Status,
@@ -65,7 +68,7 @@ fn applied_refusal(a: &crate::component::Applied) -> Option<ApiError> {
 }
 
 /// A component call's answer. Its events are the ones the caller is in the
-/// audience of (R9).
+/// audience of (a team or org audience is resolved at delivery).
 fn component_answer(
     node: &Node,
     app_id: &str,
@@ -76,23 +79,31 @@ fn component_answer(
         return e.into_response();
     }
     let account = caller.account();
-    let events: Vec<Value> = node.sys(|s| {
+    let events: Vec<AppEvent> = node.sys(|s| {
         let Some(app) = s.apps.get(app_id) else {
             return Vec::new();
         };
         a.events
             .iter()
             .filter(|e| s.receives(app, &e.audience, account, account))
-            .map(|e| json!({ "kind": e.kind, "data": e.data }))
+            .map(|e| AppEvent {
+                kind: e.kind.clone(),
+                data: e.data.clone(),
+            })
             .collect()
     });
     let receipt = node.receipt(app_id, a.index, &a.result);
-    Json(json!({ "index": a.index, "result": a.result, "events": events, "receipt": receipt }))
-        .into_response()
+    Json(IntentResult {
+        index: a.index,
+        result: a.result,
+        events,
+        receipt,
+    })
+    .into_response()
 }
 
 /// `/intents` for a component app: the ABI of the bundle the app group runs
-/// (Ruling 40) decides whether it is a view and whether it needs a passkey.
+/// (not the app record) decides whether it is a view and whether it needs a passkey.
 async fn component_intents(
     node: &Node,
     app: &crate::types::AppRecord,
@@ -124,6 +135,7 @@ async fn component_intents(
                 strong: true,
                 min_index: 0,
                 via: None,
+                action: None,
             })
             .await?;
         return Ok(component_answer(
@@ -141,7 +153,7 @@ async fn component_intents(
             },
         ));
     }
-    // Confirm flags come from the running bundle's ABI (S5), never from the app record.
+    // Confirm flags come from the running bundle's ABI, never from the app record.
     let consent_value = if method.as_ref().is_some_and(|m| m.confirm) {
         Some(consent(node, &p, &app_id, &body.method, &body.args, body.confirm).await?)
     } else {
@@ -267,6 +279,7 @@ async fn views(
             strong: body.consistency.as_deref() != Some("stale"),
             min_index: body.min_index,
             via: None,
+            action: None,
         })
         .await?;
     Ok(
@@ -274,8 +287,12 @@ async fn views(
             Some(e) => e.into_response(),
             None => {
                 let receipt = node.receipt(&app_id, a.index, &a.result);
-                Json(json!({ "index": a.index, "result": a.result, "receipt": receipt }))
-                    .into_response()
+                Json(ViewResult {
+                    index: a.index,
+                    result: a.result,
+                    receipt,
+                })
+                .into_response()
             }
         },
     )
@@ -287,32 +304,25 @@ pub(super) struct EventsQuery {
     from: u64,
 }
 
-/// The most event streams one node serves at once (Xil's review, issue 12).
-pub const MAX_EVENT_STREAMS: usize = 4096;
-
-/// One open event stream, counted until the stream is dropped.
-struct StreamSlot(Arc<std::sync::atomic::AtomicUsize>);
-
-impl StreamSlot {
-    fn take(node: &Node) -> Result<Self, ApiError> {
-        use std::sync::atomic::Ordering;
-        let open = node.event_streams.fetch_add(1, Ordering::SeqCst);
-        let slot = Self(Arc::clone(&node.event_streams));
-        if open >= MAX_EVENT_STREAMS {
-            return Err(ApiError::new(
-                429,
-                "RATE_LIMITED",
-                "this node serves as many event streams as it can; try another node or later",
-            ));
-        }
-        Ok(slot)
-    }
-}
-
-impl Drop for StreamSlot {
-    fn drop(&mut self) {
-        let _was = self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
-    }
+/// A slot for one event or presence stream of `p` on `app_id`, released when the stream
+/// drops. A caller without an account counts toward the app's and the node's shares only.
+fn stream_slot(node: &Node, p: &Principal, app_id: &str) -> Result<StreamSlot, ApiError> {
+    node.event_streams
+        .take(p.caller.account(), app_id)
+        .map_err(|full| {
+            let why = match full {
+                Full::Account => {
+                    "this account has reached the per-account limit of event streams on this node; close one or try another node"
+                }
+                Full::App => {
+                    "this app has reached the per-app limit of event streams on this node; try another node or later"
+                }
+                Full::Node => {
+                    "this node serves as many event streams as it can; try another node or later"
+                }
+            };
+            ApiError::new(429, "RATE_LIMITED", why)
+        })
 }
 
 async fn events(
@@ -325,7 +335,7 @@ async fn events(
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "*", false).await?;
     let subscriber = p.caller.account().map(str::to_owned);
-    let slot = StreamSlot::take(&node)?;
+    let slot = stream_slot(&node, &p, &app_id)?;
     if let Some(stream) = local_events(&node, &app_id, q.from, subscriber.clone(), Some(p.clone()))
     {
         let stream = stream.map(move |e| {
@@ -427,11 +437,13 @@ async fn presence_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(app_id): Path<String>,
-) -> ApiResult {
+) -> ApiResult<Json<PresenceList>> {
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let _p = gate(&node, &headers, &app, "*", false).await?;
-    Ok(Json(json!({ "present": node.presence.snapshot(&app_id) })))
+    Ok(Json(PresenceList {
+        present: node.presence.snapshot(&app_id),
+    }))
 }
 
 /// Presence as a stream: a `snapshot` event, then a `presence` event per change
@@ -446,7 +458,7 @@ async fn presence_stream(
     let app_id = node.canonical_app_id(&app_id);
     let app = node.app(&app_id).await?;
     let p = gate(&node, &headers, &app, "*", false).await?;
-    let slot = StreamSlot::take(&node)?;
+    let slot = stream_slot(&node, &p, &app_id)?;
     let (now, rx) = node.presence.subscribe(&app_id);
     let first = futures_util::stream::once(async move {
         Ok::<_, Infallible>(
@@ -556,6 +568,7 @@ async fn app_run(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     if answer.result.is_null() {
@@ -571,7 +584,7 @@ async fn app_run_logs(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path((app_id, run)): Path<(String, String)>,
-) -> ApiResult {
+) -> ApiResult<Json<RunLogs>> {
     let (app, account) = files_gate(&node, &headers, &app_id, false).await?;
     let answer = node
         .view(&ViewRequest {
@@ -582,12 +595,13 @@ async fn app_run_logs(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     if answer.result.is_null() {
         return Err(ApiError::not_found("no such run"));
     }
-    Ok(Json(json!({ "logs": [] })))
+    Ok(Json(RunLogs { logs: Vec::new() }))
 }
 
 #[derive(Deserialize)]
@@ -629,6 +643,7 @@ async fn app_runs(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     Ok(Json(answer.result))
@@ -673,4 +688,57 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/intents", post(intents))
         .route("/apps/{app}/views", post(views))
         .route("/apps/{app}/events", get(events))
+}
+
+/// An event a call emitted that the caller is in the audience of: its kind and data (the
+/// app's own value).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppEvent {
+    kind: String,
+    data: Value,
+}
+
+/// What a call (`/intents`) answers: the log index of its entry, the app's result, the events
+/// the caller receives, and the answering node's receipt.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct IntentResult {
+    index: u64,
+    result: Value,
+    events: Vec<AppEvent>,
+    receipt: calimero_client::attest::Receipt,
+}
+
+/// What a view (`/views`) answers: the log index it read at, the app's result, and the
+/// answering node's receipt.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ViewResult {
+    index: u64,
+    result: Value,
+    receipt: calimero_client::attest::Receipt,
+}
+
+/// What `POST /apps/{app}/methods/{method}` answers: a call's answer, or a view's (no
+/// `events`), as the method is. The handler answers one of [`IntentResult`] and [`ViewResult`];
+/// this is their schema together, for the API's document.
+#[cfg(test)]
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct MethodResult {
+    index: u64,
+    result: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    events: Option<Vec<AppEvent>>,
+    receipt: calimero_client::attest::Receipt,
+}
+
+/// `GET /apps/{app}/presence`: who is here, on which device, and their state (`null`: none
+/// set).
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PresenceList {
+    present: Vec<crate::presence::PresenceDiff>,
+}
+
+/// `GET /apps/{app}/runs/{run}/logs` (deprecated): always empty, a run keeps no log.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct RunLogs {
+    logs: Vec<Value>,
 }

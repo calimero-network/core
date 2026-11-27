@@ -1,4 +1,4 @@
-//! A component app's blobs (R8): the host's record of each blob the app holds, kept by
+//! A component app's blobs: the host's record of each blob the app holds, kept by
 //! references in state (host-tracked retention), and the download grants runs hand out.
 //!
 //! The bytes live in the cluster's blob store (`Node::store_blob`, spread to a majority,
@@ -11,7 +11,7 @@
 //! another app holds the same content) and logs that it did
 //! (`ComponentCmd::BlobsCollected`).
 //!
-//! The records are host-owned (D39): hidden rows of the group (`rows::CBLOB`) and, in
+//! The records are host-owned: hidden rows of the group (`rows::CBLOB`) and, in
 //! memory, an ordered map shared with runs as their view of the app's blobs.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -32,6 +32,9 @@ pub const BLOB_IDLE_MS: u64 = 60 * 60 * 1_000;
 pub const BLOB_EXPIRY_STEP: usize = 256;
 /// Blobs one component app holds at most; an upload past it is refused.
 pub const MAX_COMPONENT_BLOBS: usize = 100_000;
+/// Bytes of the plain blobs one component app holds at most; an upload past it is refused
+/// `429 QUOTA_EXCEEDED`. Uploads are also charged to the payer's file quota.
+pub const MAX_APP_BLOB_BYTES: u64 = 10 * 1024 * 1024 * 1024;
 /// Forgotten blobs whose bytes wait for the leader to collect them; past it the oldest are
 /// dropped from the queue (their bytes stay in the store until the owner's delete).
 pub const MAX_COLLECT_QUEUE: usize = 4_096;
@@ -67,6 +70,11 @@ pub struct BlobRecord {
     /// count it was made under, and one made under another no longer holds.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub epoch: u32,
+    /// Set for a plain blob uploaded once the cluster meters uploads
+    /// ([`Feature::MeteredBlobs`](crate::system::cluster_version::Feature::MeteredBlobs)): its
+    /// size is charged to the file quota, which forgetting it releases.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub metered: bool,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -95,6 +103,7 @@ impl BlobRecord {
             }),
             charged: false,
             epoch: 0,
+            metered: false,
         };
         Some((id, record))
     }
@@ -202,8 +211,10 @@ impl BlobTable {
     }
 
     /// Record an upload at `ts_ms`. A blob the app already holds keeps its references; an
-    /// idle one is held [`BLOB_IDLE_MS`] from now. Refused (`false`) past
-    /// [`MAX_COMPONENT_BLOBS`] or when `id` is a sealed file.
+    /// idle one is held [`BLOB_IDLE_MS`] from now. Refused (`None`) past
+    /// [`MAX_COMPONENT_BLOBS`] or when `id` is a sealed file. With `metered`, the uploader
+    /// charged its size to the quota: answers whether this record took that charge, which it
+    /// does unless the blob already held one (the uploader then gives it back).
     pub fn upload(
         &mut self,
         tx: &mut StateTx<'_>,
@@ -211,14 +222,16 @@ impl BlobTable {
         size: u64,
         mime: &str,
         ts_ms: u64,
-    ) -> bool {
+        metered: bool,
+    ) -> Option<bool> {
         let prev = self.records.get(&id).cloned();
         if prev.as_ref().is_some_and(|p| p.file.is_some()) {
-            return false;
+            return None;
         }
         if prev.is_none() && self.records.len() >= MAX_COMPONENT_BLOBS {
-            return false;
+            return None;
         }
+        let held_charge = prev.as_ref().is_some_and(|p| p.charged || p.metered);
         let refs = prev.as_ref().map_or(0, |p| p.refs);
         if let Some(p) = &prev {
             if p.refs == 0 {
@@ -233,12 +246,13 @@ impl BlobTable {
             file: None,
             charged: prev.as_ref().is_some_and(|p| p.charged),
             epoch: prev.as_ref().map_or(self.floor, |p| p.epoch),
+            metered: prev.as_ref().is_some_and(|p| p.metered) || (metered && !held_charge),
         };
         if refs == 0 {
             let _new = self.idle.insert((ts_ms, id));
         }
         self.put(tx, id, record);
-        true
+        Some(metered && !held_charge)
     }
 
     /// Record a file an entry finished, unreferenced: held [`BLOB_IDLE_MS`] from `ts_ms` unless
@@ -315,6 +329,7 @@ impl BlobTable {
             file: None,
             charged: true,
             epoch: self.floor,
+            metered: false,
         };
         let _new = self.idle.insert((ts_ms, id));
         self.put(tx, id, record);
@@ -324,7 +339,7 @@ impl BlobTable {
     /// retention rules forget. Answers the bytes it had charged to the quota, if it held it.
     pub fn forget_blob(&mut self, tx: &mut StateTx<'_>, id: &[u8; 32]) -> Option<u64> {
         let r = self.records.get(id).filter(|r| r.file.is_none())?;
-        let charged = if r.charged { r.size } else { 0 };
+        let charged = if r.charged || r.metered { r.size } else { 0 };
         self.forget(tx, id).then_some(charged)
     }
 
@@ -386,8 +401,8 @@ impl BlobTable {
     }
 
     /// Forget the blobs idle for [`BLOB_IDLE_MS`] at `now_ms`, at most [`BLOB_EXPIRY_STEP`];
-    /// returns them, with the size of each that was charged to the quota (a sealed file or a
-    /// published blob) and the segments of a sealed file.
+    /// returns them, with the size of each that was charged to the quota (a sealed file, a
+    /// published blob or a metered upload) and the segments of a sealed file.
     pub fn expire(&mut self, tx: &mut StateTx<'_>, now_ms: u64) -> Vec<Expired> {
         let due: Vec<(u64, [u8; 32])> = self
             .idle
@@ -399,8 +414,8 @@ impl BlobTable {
         due.into_iter()
             .filter_map(|(_, id)| {
                 let record = self.records.get(&id);
-                let charged =
-                    record.and_then(|r| (r.file.is_some() || r.charged).then_some(r.size));
+                let charged = record
+                    .and_then(|r| (r.file.is_some() || r.charged || r.metered).then_some(r.size));
                 self.forget(tx, &id).then_some((id, charged))
             })
             .collect()
@@ -605,6 +620,7 @@ mod tests {
             }),
             charged: false,
             epoch: 0,
+            metered: false,
         };
         let _ = records.insert([1; 32], record(true));
         let _ = records.insert([2; 32], record(false));

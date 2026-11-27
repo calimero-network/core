@@ -175,10 +175,11 @@ pub struct Governance {
     pub outbound: Authority,
     /// Who may install apps (signed packages, raw bundles). `open`: any
     /// account. `granted`: only an account holding a live deployer grant, or
-    /// a `MANAGE_APPLICATION` holder of an organization holding one; anyone
-    /// may still create instances of the releases they see. Left out of the
-    /// JSON when `open`, so a cluster with the defaults attests the bytes it
-    /// did before this field.
+    /// a `MANAGE_APPLICATION` holder of an organization holding one. Anyone
+    /// else creates instances only from a deployment's offer or of a release
+    /// the operator installed ([Deployers](https://calimero-network.github.io/core/protocol/governance/#deployers)).
+    /// Left out of the JSON when `open`, so a cluster with the defaults
+    /// attests the bytes it did before this field.
     #[serde(default, skip_serializing_if = "Deployments::is_default")]
     pub deployments: Deployments,
     /// Who grants deployers where deployments are `granted`. `operator`: the
@@ -1011,30 +1012,41 @@ impl calimero_sealed::client::Attest for HttpAttestor {
         http: &'a reqwest::Client,
         api_url: &'a Url,
     ) -> BoxFuture<'a, eyre::Result<[u8; 32]>> {
-        Box::pin(async move {
-            let nonce: [u8; 32] = rand_nonce();
-            let mut url = calimero_sealed::client::resolve_path(api_url, "attestation")?;
+        Box::pin(self.attest_with(http, api_url, |req, _nonce| req))
+    }
+}
+
+impl HttpAttestor {
+    /// Attest the node at `api_url` as [`calimero_sealed::client::Attest`]
+    /// does, with `decorate` adding to the `GET /attestation` request what it
+    /// needs of the fresh nonce (a node's peer header).
+    pub async fn attest_with(
+        &self,
+        http: &reqwest::Client,
+        api_url: &Url,
+        decorate: impl FnOnce(reqwest::RequestBuilder, &[u8; 32]) -> reqwest::RequestBuilder,
+    ) -> eyre::Result<[u8; 32]> {
+        let nonce: [u8; 32] = rand_nonce();
+        let mut url = calimero_sealed::client::resolve_path(api_url, "attestation")?;
+        let _q = url
+            .query_pairs_mut()
+            .append_pair("nonce", &hex::encode(nonce));
+        if let Some(h) = self.policy.app_hash {
             let _q = url
                 .query_pairs_mut()
-                .append_pair("nonce", &hex::encode(nonce));
-            if let Some(h) = self.policy.app_hash {
-                let _q = url
-                    .query_pairs_mut()
-                    .append_pair("appHash", &hex::encode(h));
-            }
-            let doc: AttestationDoc = http
-                .get(url)
-                .send()
-                .await?
-                .error_for_status()?
-                .json()
-                .await?;
-            let key = verify(&doc, &nonce, &self.policy).await?;
-            if let Ok(mut seen) = self.seen_release.lock() {
-                *seen = Some(doc.release.version.clone());
-            }
-            Ok(key)
-        })
+                .append_pair("appHash", &hex::encode(h));
+        }
+        let doc: AttestationDoc = decorate(http.get(url), &nonce)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let key = verify(&doc, &nonce, &self.policy).await?;
+        if let Ok(mut seen) = self.seen_release.lock() {
+            *seen = Some(doc.release.version.clone());
+        }
+        Ok(key)
     }
 }
 
@@ -1605,7 +1617,7 @@ mod tests {
         assert!(err.to_string().contains("no measurement policy"), "{err}");
     }
 
-    /// Xil's review, issue 14: with no floor named, any old release was trusted.
+    /// With no floor named, the default floor applies: an old release is not trusted.
     #[tokio::test]
     async fn the_default_floor_applies_when_none_is_named() {
         let policy = Policy {

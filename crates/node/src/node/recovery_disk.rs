@@ -124,7 +124,10 @@ impl Node {
             &self.config.cluster,
             self.config.node_id,
         ));
-        let quote = self.quoter.quote(report).await?;
+        let quote = self
+            .quoter
+            .quote_in(crate::attest::Lane::Peer, report)
+            .await?;
         let doc = crate::attest::AttestationDoc {
             quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, quote),
             transport_key: hex::encode(self.transport.public_key()),
@@ -390,7 +393,7 @@ mod segment_tests {
     use super::*;
     use crate::app::rows;
 
-    /// Review finding A6 audit: a blob record that did not read gave "no segments", so a
+    /// A blob record that did not read gave "no segments", so a
     /// restore went on without that file's bytes and the restored app silently lost them.
     #[test]
     fn a_blob_record_that_does_not_read_is_an_error_not_no_segments() {

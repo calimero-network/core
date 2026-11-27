@@ -6,8 +6,20 @@
 # debug-built nodes (and job_runs a job node too), and eight of them at once on
 # four cores miss their own deadlines (`503 TIMEOUT` on an app call, a sealed
 # request that times out). Each takes more than one thread's slot instead, so
-# fewer of them run at once while the light tests fill the rest. The first
-# override that matches a test applies.
+# fewer of them run at once while the light tests fill the rest. For each
+# setting, the first override that matches a test and sets it applies.
+
+[[profile.default.overrides]]
+# The longest tests start first, so they run beside the rest instead of after them:
+# the guest builder's own tests compile components from an empty cache (up to 170 s
+# on CI), and the SDK's compile-fail cases run rustc. Started last, two of them
+# held one shard about four minutes past the others. They also run alone: a build
+# saturates the runner's cores for minutes, and the cluster tests beside it took 25 s
+# or more for 12 s of work, past the 30 s kill of CI's profile. Only `priority` and
+# `threads-required` are set here, so the overrides below still apply to every test.
+filter = 'package(calimero-app-build) | binary_id(calimero-sdk::compile_fail)'
+priority = 100
+threads-required = "num-test-threads"
 
 [[profile.default.overrides]]
 # Cluster plus job node, and multi-MiB sealed inputs written through an app.

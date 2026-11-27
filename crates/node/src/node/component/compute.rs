@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use calimero_app_host::{Invocation, InvocationKind, TrapKind};
 use calimero_log::{Group, GroupId, NodeId, Proposal, Stage, Staged};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{debug, warn};
 
@@ -25,7 +25,7 @@ use super::{entry_bytes, LoggedRun, Node, Ran, RunExtras};
 use crate::app::{AppMachine, Status};
 use crate::component::{
     Applied, Attempt, AttemptEntry, ComponentCmd, FailedReason, FileMark, FinalEntry, FinalOutcome,
-    Outcome, RunRecord, RunState, DEADLINE_GRACE, MAX_ATTEMPTS,
+    Outcome, RunCaps, RunRecord, RunState, DEADLINE_GRACE, MAX_ATTEMPTS,
 };
 use crate::error::ApiError;
 use crate::job_wire::{assignment_digest, FailReason, Report, ReportStatus, ReportUsage};
@@ -499,64 +499,128 @@ fn run_json(
     progress: Option<(u8, String)>,
     queue: Option<Value>,
     files: bool,
-) -> Value {
-    let marks = |outputs: &[FileMark]| -> Vec<Value> {
+) -> RunView {
+    let marks = |outputs: &[FileMark]| -> Vec<RunFileView> {
         outputs
             .iter()
-            .map(|o| {
-                if files {
-                    json!({ "id": o.id, "size": o.size, "sha256": hex::encode(&o.sha256.0) })
-                } else {
-                    json!({ "id": o.id })
-                }
+            .map(|o| RunFileView {
+                id: o.id.clone(),
+                size: files.then_some(o.size),
+                sha256: files.then(|| hex::encode(&o.sha256.0)),
             })
             .collect()
     };
-    let inputs: Vec<Value> = rec
-        .inputs
-        .iter()
-        .map(|i| {
-            if files {
-                json!(i)
-            } else {
-                json!({ "id": i.id })
-            }
-        })
-        .collect();
-    let mut out = json!({
-        "run": rec.run,
-        "method": rec.method,
-        "state": rec.state,
-        "cancelRequested": rec.cancel_requested,
-        "startTsMs": rec.start_ts_ms,
-        "caps": rec.caps,
-        "inputs": inputs,
-        "attempts": rec.attempts.iter().map(|a| json!({
-            "attempt": a.attempt,
-            "node": a.node,
-            "tsMs": a.ts_ms,
-        })).collect::<Vec<_>>(),
-        "final": rec.final_.as_ref().map(|f| json!({
-            "attempt": f.attempt,
-            "outcome": f.outcome,
-            "outputs": marks(&f.outputs),
-            "usage": f.usage,
-            "tsMs": f.ts_ms,
-            "message": (files && !f.message.is_empty()).then_some(&f.message),
-        })),
-        "progress": progress
+    RunView {
+        run: rec.run.clone(),
+        method: rec.method.clone(),
+        state: rec.state,
+        cancel_requested: rec.cancel_requested,
+        start_ts_ms: rec.start_ts_ms,
+        caps: rec.caps,
+        inputs: rec
+            .inputs
+            .iter()
+            .map(|i| RunFileView {
+                id: i.id.clone(),
+                size: files.then_some(i.size),
+                sha256: files.then(|| i.sha256.clone()),
+            })
+            .collect(),
+        attempts: rec
+            .attempts
+            .iter()
+            .map(|a| AttemptView {
+                attempt: a.attempt,
+                node: a.node,
+                ts_ms: a.ts_ms,
+            })
+            .collect(),
+        final_: rec.final_.as_ref().map(|f| FinalView {
+            attempt: f.attempt,
+            outcome: f.outcome,
+            outputs: marks(&f.outputs),
+            usage: f.usage,
+            ts_ms: f.ts_ms,
+            message: (files && !f.message.is_empty()).then(|| f.message.clone()),
+        }),
+        progress: progress
             .filter(|_| files)
-            .map(|(percent, step)| json!({ "percent": percent, "step": step })),
-    });
-    if let Some(queue) = queue.filter(|_| files && rec.state == RunState::Queued) {
-        out["queue"] = queue;
-    }
-    if files {
+            .map(|(percent, step)| ProgressView { percent, step }),
+        queue: queue.filter(|_| files && rec.state == RunState::Queued),
         // A run keeps no log (an app's log lines may hold user data); one an earlier release
         // kept (`rec.log`) is answered to no one.
-        out["logs"] = json!([]);
+        logs: files.then(Vec::new),
     }
-    out
+}
+
+/// `GET /apps/{app}/runs`: a page of the app's compute runs, newest first, and the cursor of
+/// the next page (`null`: none).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunList {
+    runs: Vec<RunView>,
+    next: Option<String>,
+}
+
+/// A run's record as the API shows it (`#Run`): no arguments, no keys, and the plaintext sizes
+/// and hashes of its files, its progress, queue state and failure text only to those who may
+/// list the app's files.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunView {
+    run: String,
+    method: String,
+    state: RunState,
+    cancel_requested: bool,
+    start_ts_ms: u64,
+    caps: RunCaps,
+    inputs: Vec<RunFileView>,
+    attempts: Vec<AttemptView>,
+    #[serde(rename = "final")]
+    final_: Option<FinalView>,
+    progress: Option<ProgressView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    queue: Option<Value>,
+    /// Always empty, to those who may list the files (deprecated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    logs: Option<Vec<Value>>,
+}
+
+/// A file a run reads or wrote (`#RunFile`): its size and hash only to those who may list files.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RunFileView {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+}
+
+/// One attempt of a [`RunView`].
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttemptView {
+    attempt: u32,
+    node: u64,
+    ts_ms: u64,
+}
+
+/// How a [`RunView`] ended.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalView {
+    attempt: u32,
+    outcome: FinalOutcome,
+    outputs: Vec<RunFileView>,
+    usage: ReportUsage,
+    ts_ms: u64,
+    message: Option<String>,
+}
+
+/// The leader's last poll of a running run.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProgressView {
+    percent: u8,
+    step: String,
 }
 
 impl Node {
@@ -733,7 +797,7 @@ impl Node {
             status: Status::Ok,
             result: record.map_or(Value::Null, |r| {
                 let queue = self.queue_json(&req.app_id, &r, files);
-                run_json(&r, progress, queue, files)
+                json!(run_json(&r, progress, queue, files))
             }),
             error: Value::Null,
             timeout: false,
@@ -801,7 +865,7 @@ impl Node {
             (page, next, applied)
         });
         let status = g.status();
-        let runs: Vec<Value> = page
+        let runs: Vec<RunView> = page
             .iter()
             .map(|r| {
                 let progress = (status.is_leader && r.state.is_active())
@@ -814,9 +878,9 @@ impl Node {
         Ok(ViewAnswer {
             index: applied,
             status: Status::Ok,
-            result: json!({
-                "runs": runs,
-                "next": next.map(|(ts, run)| format!("{ts}:{run}")),
+            result: json!(RunList {
+                runs,
+                next: next.map(|(ts, run)| format!("{ts}:{run}")),
             }),
             error: Value::Null,
             timeout: false,
@@ -1777,6 +1841,114 @@ mod tests {
         assert!(watch.cancel_overdue(limit, late));
     }
 
+    /// `run_json` as it was before its answer was typed: the oracle
+    /// `a_run_answers_the_bytes_it_did_before` holds the typed one to.
+    fn run_json_before(
+        rec: &RunRecord,
+        progress: Option<(u8, String)>,
+        queue: Option<Value>,
+        files: bool,
+    ) -> Value {
+        let marks = |outputs: &[FileMark]| -> Vec<Value> {
+            outputs
+                .iter()
+                .map(|o| {
+                    if files {
+                        json!({ "id": o.id, "size": o.size, "sha256": hex::encode(&o.sha256.0) })
+                    } else {
+                        json!({ "id": o.id })
+                    }
+                })
+                .collect()
+        };
+        let inputs: Vec<Value> = rec
+            .inputs
+            .iter()
+            .map(|i| {
+                if files {
+                    json!(i)
+                } else {
+                    json!({ "id": i.id })
+                }
+            })
+            .collect();
+        let mut out = json!({
+            "run": rec.run,
+            "method": rec.method,
+            "state": rec.state,
+            "cancelRequested": rec.cancel_requested,
+            "startTsMs": rec.start_ts_ms,
+            "caps": rec.caps,
+            "inputs": inputs,
+            "attempts": rec.attempts.iter().map(|a| json!({
+                "attempt": a.attempt,
+                "node": a.node,
+                "tsMs": a.ts_ms,
+            })).collect::<Vec<_>>(),
+            "final": rec.final_.as_ref().map(|f| json!({
+                "attempt": f.attempt,
+                "outcome": f.outcome,
+                "outputs": marks(&f.outputs),
+                "usage": f.usage,
+                "tsMs": f.ts_ms,
+                "message": (files && !f.message.is_empty()).then_some(&f.message),
+            })),
+            "progress": progress
+                .filter(|_| files)
+                .map(|(percent, step)| json!({ "percent": percent, "step": step })),
+        });
+        if let Some(queue) = queue.filter(|_| files && rec.state == RunState::Queued) {
+            out["queue"] = queue;
+        }
+        if files {
+            // A run keeps no log (an app's log lines may hold user data); one an earlier release
+            // kept (`rec.log`) is answered to no one.
+            out["logs"] = json!([]);
+        }
+        out
+    }
+
+    /// The typed run view writes the bytes the `json!` it replaced wrote, key order included,
+    /// for a queued run with inputs and a queue, and an ended one with outputs and a message,
+    /// each to a caller who may list the files and one who may not.
+    #[test]
+    fn a_run_answers_the_bytes_it_did_before() {
+        let mut queued = ended((1, 1));
+        queued.state = RunState::Queued;
+        queued.final_ = None;
+        queued.inputs = vec![crate::component::RunInputRef {
+            id: "a".repeat(64),
+            size: 10,
+            sha256: "b".repeat(64),
+        }];
+        let mut done = ended((2, 3));
+        done.attempts = vec![serde_json::from_value(json!({
+            "attempt": 1, "node": 4, "jobKey": "c".repeat(64),
+            "assignmentDigest": "d".repeat(64), "tsMs": 9
+        }))
+        .unwrap()];
+        if let Some(f) = done.final_.as_mut() {
+            f.message = "Denied: no".into();
+            f.outputs = vec![serde_json::from_value(json!({
+                "id": "e".repeat(64), "size": 3, "sha256": "AAAA",
+                "wrappedKey": "AAAA", "segments": ["f".repeat(64)]
+            }))
+            .unwrap()];
+        }
+        let queue = Some(json!({ "state": "waiting", "capacity": 2, "pool": "default" }));
+        let progress = Some((40, "hashing".to_owned()));
+        for rec in [&queued, &done] {
+            for files in [true, false] {
+                let typed = run_json(rec, progress.clone(), queue.clone(), files);
+                let before = run_json_before(rec, progress.clone(), queue.clone(), files);
+                assert_eq!(
+                    serde_json::to_string(&typed).unwrap(),
+                    serde_json::to_string(&before).unwrap()
+                );
+            }
+        }
+    }
+
     #[test]
     fn progress_and_the_failure_text_are_shown_only_to_those_who_list_files() {
         let mut rec = ended((1, 1));
@@ -1784,13 +1956,13 @@ mod tests {
             f.message = "Denied: no".into();
         }
         let progress = Some((40, "hashing".to_owned()));
-        let seen = run_json(&rec, progress.clone(), None, true);
+        let seen = json!(run_json(&rec, progress.clone(), None, true));
         assert_eq!(
             seen["progress"],
             json!({ "percent": 40, "step": "hashing" })
         );
         assert_eq!(seen["final"]["message"], json!("Denied: no"));
-        let hidden = run_json(&rec, progress, None, false);
+        let hidden = json!(run_json(&rec, progress, None, false));
         assert!(hidden["progress"].is_null(), "{hidden}");
         assert!(hidden["final"]["message"].is_null(), "{hidden}");
     }

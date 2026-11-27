@@ -70,7 +70,7 @@ fn what(req: &Request) -> String {
 /// Send a JSON route and read its answer. `passkey` answers a `412
 /// CONFIRM_REQUIRED`, `operator` a `428 OPERATOR_SIGNATURE_REQUIRED`
 /// ([`Transport::approved`]); a `retry` route without either is sent again
-/// with the same body while the node is unavailable (D70). An approved
+/// with the same body while the node is unavailable. An approved
 /// request is not: its challenge is single-use.
 pub(crate) async fn json<T: DeserializeOwned>(
     t: &Transport,

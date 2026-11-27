@@ -10,6 +10,7 @@ import ed25519_sign
 from upgrade_deep import (VOLATILE, _http, DeepCase, Failed, anyone, check, decision, decisions, eq, events, host,
                           hosts, join, kv_wasm, new_org, people, person, same_decisions, same_read, scrub, snap, subset,
                           team_id, until)
+from upgrade_deep import not_covered
 from upgrade_path import case
 
 
@@ -607,3 +608,142 @@ class Usage(DeepCase):
         same_read(una, "auth/usage", s["me"], "the account's usage", USAGE_VOLATILE)
         same_read(una, f"orgs/{s['org']}/usage", s["org_usage"], "the organization's usage", USAGE_VOLATILE | {"apps"})
         subset(una.result(s["app"], "len"), 10, "the metered app")
+
+
+# What no case in this file seeds yet, and why (the matrix lists it as not covered).
+
+@case
+class AppOrigins(DeepCase):
+    name = "app-origins"
+    area = "Apps"
+    since = "1.0.0-rc.39"
+    seeds = "a web origin registered for one instance by its owner"
+    verifies = ("the owner's list as they read it; a stranger refused the list and the registration; on every "
+                "node a sign-in begun from the origin names its host as its rp-id; on the new release the origin "
+                "removed and another registered, after a restart too; a removed origin is refused "
+                "`ORIGIN_NOT_REGISTERED`. The assertion itself is not signed")
+
+    def _path(self, s):
+        return f"apps/{s['app']}/origins"
+
+    def _decisions(self, w, s):
+        zola = person(w, "zola")
+        return decisions({"stranger lists": lambda: zola.get(self._path(s)),
+                          "stranger registers": lambda: zola.raw("post", self._path(s),
+                                                                 {"origin": "https://zola-app.example.test"})})
+
+    def _begin(self, w, origin, node):
+        got = decision(lambda: anyone(w, "POST", "auth/passkey/login/begin", {"origin": origin}, node=node))
+        if got != "ok":
+            return got
+        return anyone(w, "POST", "auth/passkey/login/begin", {"origin": origin}, node=node)["options"]["rpId"]
+
+    def _ceremonies(self, w, s):
+        for node in w.members():
+            eq(self._begin(w, s["origin"], node), s["origin"].split("://", 1)[1], f"{s['origin']}'s rp-id on node {node}")
+            for origin in s["gone"]:
+                eq(self._begin(w, origin, node), "ORIGIN_NOT_REGISTERED", f"{origin} on node {node}")
+
+    def _read(self, w, s):
+        s["read"] = snap(person(w, "yara"), self._path(s))
+        eq([o["origin"] for o in s["read"]["origins"]], [s["origin"]], "the instance's origins")
+
+    def populate(self, w):
+        yara = person(w, "yara")
+        s = {"app": yara.deploy(kv_wasm(w), "origins"), "origin": "https://store-yara.example.test",
+             "gone": ["https://never-yara.example.test"]}
+        yara.raw("post", self._path(s), {"origin": s["origin"]})
+        s["decisions"] = self._decisions(w, s)
+        check("ok" not in s["decisions"].values(), f"a stranger handled the origins: {s['decisions']}")
+        self._read(w, s)
+        self._ceremonies(w, s)
+        return s
+
+    def check(self, w, s):
+        yara = person(w, "yara")
+        until("the origins read back", lambda: same_read(yara, self._path(s), s["read"], "the instance's origins"), 15)
+        same_decisions(self._decisions(w, s), s["decisions"], "a stranger and the origins")
+        self._ceremonies(w, s)
+
+    def exercise(self, w, s):
+        yara = person(w, "yara")
+        yara.raw("delete", self._path(s), {"origin": s["origin"]})
+        s["gone"].append(s["origin"])
+        s["origin"] = "https://store-yara-2.example.test"
+        yara.raw("post", self._path(s), {"origin": s["origin"]})
+        self._read(w, s)
+        self.check(w, s)
+
+
+not_covered("Apps", "Only an owner or admin of an app's organization approves its upgrades, runs and upgrade keys "
+            "(`SystemState::approves_upgrades`, `owner_approves` on `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey`)",
+            "it changes who may, not a stored shape: an entry without `owner_approves` reads and replays as it applied "
+            "below cluster version 1.0.0-rc.33 (`Feature::OwnerApprovedUpgrades`), and the owner's upgrade after the "
+            "roll is already the `kv-package` case's (`extend`: the organization's owner upgrades on the new release). "
+            "`system::tests::only_an_organizations_owner_and_admins_approve_its_upgrades` covers the replay, and "
+            "`a_member_needs_the_capability_to_create_apps_or_invite`, `the_leader_checks_upgrade_authority_again` and "
+            "`an_upgrade_key_is_an_owners_or_admins_of_the_apps_organization` the refusals on one build")
+
+not_covered("Apps", "A green update applying on its own after its hold (`UpgradeApp::auto`, `lastUpgrade.auto`)",
+            "the hold is at least a day (`MIN_HOLD_HOURS`) of logged time from the release's install, which a deep run "
+            "cannot wait on either release (the tests move the update clock with a testing hook a release `merod` "
+            "lacks), so no automatic update is seeded or made; the policy that asks for one is the "
+            "`upgrade-policies` case's, and the restore point every upgrade takes and its undo are "
+            "`restore-points-undo`'s. An upgrade entry and a record without `auto` read and replay as before. "
+            "`system::tests` (`a_green_update_applies_on_its_own_after_its_hold_under_the_policy`, "
+            "`a_deployment_instances_hold_runs_from_its_offer`) and `tests/auto_updates.rs` cover it on one build")
+
+not_covered("Apps", "An undo refused to a release no longer installed (`UndoUpgrade::release_installed`, `UNDO_RELEASE_GONE`)",
+            "it adds a refusal, not a stored shape: an entry without the flag replays as it applied below cluster "
+            "version 1.0.0-rc.36 (`Feature::UndoToInstalledRelease`), and the undo itself is `restore-points-undo`'s. "
+            "The refusal needs a release uninstalled while another release's WASM keeps the bundle, which the case's "
+            "single-WASM releases do not make. `system::tests::an_undo_never_returns_to_a_release_that_is_no_longer_installed` "
+            "and `tests/auto_updates.rs::an_undo_is_refused_to_a_release_that_was_uninstalled` cover it on one build")
+
+not_covered("Apps", "An instance's outbound audit (`GET /apps/{app}/outbound-log`, `meroctl instance outbound-log`)",
+            "it stores nothing: each node keeps its runs' requests in memory (`calimero_outbound::OutboundAudit`), which "
+            "a restart or a roll empties by design, so there is no data to carry across releases; the suite's clusters "
+            "also run with outbound off. `an_instances_owner_reads_its_outbound_requests_without_values` "
+            "(`component_cluster.rs`) and `calimero_outbound`'s audit tests cover it on one build")
+
+not_covered("Apps", "Host work charged to fuel, and at most `MAX_SEARCHES_PER_RUN` searches per request (`calimero_app_host`'s fuel table)",
+            "it changes what a run may spend, not a stored shape: followers apply a call's diff and never run it, so "
+            "the log replays alike on either release, and a search cap answers a view, which is never logged. The "
+            "deep cases' calls and searches run far within the default fuel on both releases. `tests/engine.rs` "
+            "(`reading_megabytes_of_state_costs_fuel`, `a_view_makes_at_most_max_searches_per_run`, "
+            "`a_guest_cannot_spend_fuel_its_host_calls_already_owe`, `refused_xcall_arguments_cost_fuel`, "
+            "`stdout_costs_fuel_after_the_log_is_full`) covers it on one build")
+
+not_covered("Apps", "Timers (`#[app::every]`) firing across the roll",
+            "the only timer the suite's apps carry is the kv fixture's `beat`, declared `#[app::every(\"1h\")]` and run on "
+            "the nodes' wall clock: one tick needs an hour, and a roll takes minutes, so no tick falls in any phase and "
+            "there is nothing to seed or read. The tests move the app clock with a test-only clock "
+            "that a release `merod` lacks, and no flag or route moves it; `ticks_run_once_per_slot`, "
+            "`a_tick_runs_once_across_failover` and `missed_ticks_collapse_into_one` (`component_cluster.rs`) cover ticks "
+            "on one build")
+
+not_covered("Apps", "The consent page's install sheet (`install`), update sheets with their class, policy and "
+            "approval step (\"Approve (1 of 2)\", \"Approve and update (2 of 2)\"), an update policy changed on the page "
+            "(`updatePolicy`), the node's updates page (`updates`, `/updates/{id}`, `POST /consent/{id}/open`) and "
+            "`GET /apps/{app}/update`'s `summary`",
+            "pages and reads that store nothing of their own: a consent request lives in one node's memory for minutes, "
+            "and what the pages approve is logged by the routes they run (`POST /apps`, `SetUpgradePolicy`, "
+            "`ApproveUpgrade`, `UpgradeApp`), whose stored shapes are the `upgrade-policies` and "
+            "`update-classes-approvals` cases'. "
+            "`an_install_sheet_shows_what_gets_created_and_where_data_can_go` and "
+            "`an_update_shows_its_class_and_takes_two_approvers_on_the_pages` (`consent_page.rs`) cover them on one build")
+not_covered("Apps", "A view's arguments held to `MAX_ARGS_BYTES` (`413 ARGS_TOO_LARGE` before it runs, as a call's)",
+            "it adds a refusal of a request, not a stored shape: a view logs nothing, and the API refuses before any "
+            "node runs it, so there is no data to carry across releases. "
+            "`oversized_view_args_are_refused_before_running` (`component_cluster.rs`) covers it on one build")
+
+not_covered("Apps", "An xcall chain ending at its budget (`MAX_XCALL_CHAIN`, `Feature::XcallBudget`): a message sent "
+            "with none left is dead-lettered",
+            "the chain needs `hop`, which the published kv fixture the old release seeds with does not have; what a "
+            "chain stores is an outbox row and a dead letter, whose old shapes (no budget) the `xcall` case reads "
+            "back. `an_app_that_xcalls_itself_stops_at_the_chain_budget` (`component_cluster.rs`) covers it on one "
+            "build")
+not_covered("Apps", "A pinned instance (`lineage: pinned`, `AppRecord::lineage`) held to its package, publisher and "
+            "forward order",
+            "no release before 1.0.0-rc.39 installs a pinning release (`Feature::PinnedLineage`), so the old build "
+            "seeds none; `tests/it/lineage.rs` covers the refusals end to end and `system/tests.rs` the rule at apply")

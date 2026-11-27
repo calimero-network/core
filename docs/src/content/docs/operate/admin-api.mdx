@@ -65,7 +65,7 @@ The **Who** column below uses these terms:
 | Who | Means |
 | --- | --- |
 | anyone | no credential needed |
-| signed in | a session or an API key |
+| signed in | a session or an API key; a key scoped to some apps reaches only those on every route that names an app (and `GET /apps` lists only those), a read-only or method-scoped key changes no settings (app metadata, aliases), and an organization's settings need an unscoped key |
 | session | a passkey session; an API key is refused (`403`) |
 | account holder | a passkey session not bound to an app's frontend |
 | installer | an account holder, or an API key scoped to no app and no method and not read-only |
@@ -136,7 +136,7 @@ with `details` when there is more to say (for example `leaderUrl` with
 | `POST /auth/recovery/begin`, `/start` | signed out | `begin { code }` → a passkey registration; `start { challengeId, code, registration }` spends the code and logs the new passkey as pending → `{ accountId, credentialId, startedAt, readyAt }`. `401` wrong or spent code, `409 RECOVERY_PENDING` | - |
 | `POST /auth/recovery/cancel` | account holder | Cancel the recovery under way with a passkey the account has; `412` first | - |
 | `POST /auth/recovery/finish` | signed out | `{ accountId? }`, `412` first, approved by the new passkey once `readyAt` passed (72 h): adds it, ends every session of the account → a session. `409 RECOVERY_NOT_READY` before | - |
-| `POST /auth/refresh` | anyone with a refresh token | `{ refreshToken }` → a new session and the refresh token to use next (the same one until it is an hour old) | (automatic) |
+| `POST /auth/refresh` | anyone with a refresh token | `{ refreshToken, holderProof? }` → a new session and the refresh token to use next (the same one until it is an hour old) | (automatic) |
 | `POST /auth/logout` | session | End this session | |
 | `POST /auth/logout-all` | account holder | End every session of the account | `logout --all` |
 | `GET /auth/sessions` | account holder | The account's live sessions, latest active first (at most 256): `{ sessions: [{ session, passkey, app, origin, openedAt, lastActiveAt, current }] }` ([Sessions](/operate/auth/#sessions)) | `account session list` |
@@ -157,18 +157,18 @@ with `details` when there is more to say (for example `leaderUrl` with
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /bundles` | installer | Upload raw WASM (16 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `app install --path X.wasm` |
-| `POST /packages` | installer | Upload a signed `.mpk`. Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `app install --path X.mpk` |
-| `POST /packages/install` | installer | `{ package, version }` from the registry | `app install P@V` |
-| `GET /packages` | signed in | Installed packages, only the releases the caller may see ([who sees a release](/protocol/applications/#who-sees-a-release)) | `app list` |
-| `GET /packages/{package}` | signed in | One package and the versions the caller may see; `404` when none | `app get`, `app versions`, `app get-latest-version` |
-| `DELETE /packages/{package}` | account holder | Uninstall every version; refused while an app runs one | `app uninstall` |
-| `DELETE /packages/{package}/{version}` | account holder | Uninstall one version | `app uninstall --version` |
-| `GET /packages/{package}/{version}/pipelines` | signed in | The pipelines the release registers: per name `hash`, `worstCaseFuel`, the `modules` they pin and the canonical `pipeline`; `404` for a release the caller may not see | `app pipelines` |
-| `GET /packages/{package}/{version}/capabilities` | signed in | What a release is and may do, before any app of it exists: `package`, `version`, `service`, `bundle` (the service WASM's hash), `mpk`, `manifestHash`, `signer`, `name`, `author`, the sorted `outbound` prefixes and the embedded `abi` (`null` when none), and over the release and the apps its `uses` would create, `destinations` (empty: no data leaves Calimero; an external endpoint, a TEE included, is listed like any other) and `members` (both `null` while such a release is not installed); `?service=<name>` picks the service (default: the release's only one; `400 NO_SUCH_SERVICE` for an unknown name, or none on a release with several; `400 BAD_REQUEST` for an over-long name); `404` for a release the caller may not see, a session bound to the package sees all its releases | - |
-| `GET /package-origins/{package}` | signed in | The web origins the package's manager registered (`origin`, `rpId`, `addedBy`, `addedAt`, `served`) | `app origins list` |
-| `POST /package-origins/{package}` | account holder | `{ origin, rpId?, served?, confirm? }`: register an origin whose pages sign people in to the package (`served: true`: the cluster also serves its frontend there, a custom domain); the package's manager, `412` first ([Registered origins](/protocol/identities/#registered-origins)) | `app origins add` |
-| `DELETE /package-origins/{package}` | account holder | `{ origin, confirm? }`: remove one; the sessions opened there end. `412` first | `app origins remove` |
+| `POST /bundles` | installer | Upload raw WASM (16 MiB at most). Only with `--allow-unsigned-bundles` or `--dev`. | `package install --path X.wasm` |
+| `POST /packages?org=` | installer | Upload a signed `.mpk`, private to `org` (else the caller's only organization; in none, to the accounts that install it). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. | `package install --path X.mpk [--org ORG]` |
+| `POST /packages/install` | installer | `{ package, version, org? }` from the registry, for `org` (else the caller's only organization); public when the registry serves it to anyone, else private to that organization (in none, to the accounts that install it) | `package install P@V [--org ORG]` |
+| `GET /packages` | signed in | Installed packages, only the releases the caller may see ([who sees a release](/protocol/applications/#who-sees-a-release)) | `package list` |
+| `GET /packages/{package}` | signed in | One package and the versions the caller may see; `404` when none | `package get`, `package versions`, `package get-latest-version` |
+| `DELETE /packages/{package}` | account holder | Uninstall every version; refused while an app runs one | `package uninstall` |
+| `DELETE /packages/{package}/{version}` | account holder | Uninstall one version | `package uninstall --version` |
+| `GET /packages/{package}/{version}/pipelines` | signed in | The pipelines the release registers: per name `hash`, `worstCaseFuel`, the `modules` they pin and the canonical `pipeline`; `404` for a release the caller may not see | `package pipelines` |
+| `GET /packages/{package}/{version}/capabilities` | signed in | What a release is and may do, before any app of it exists: `package`, `version`, `service`, `bundle` (the service WASM's hash), `mpk`, `manifestHash`, `signer`, `name`, `author`, the sorted `outbound` prefixes and the embedded `abi` (`null` when none), and over the release and the apps its `uses` would create, `destinations` (empty: no data leaves Calimero; an external endpoint, a TEE included, is listed like any other) and `members` (both `null` while such a release is not installed); `?service=<name>` picks the service (default: the release's only one; `400 NO_SUCH_SERVICE` for an unknown name, or none on a release with several; `400 BAD_REQUEST` for an over-long name); `404` for a release the caller may not see; a session bound to the package sees what its account sees | - |
+| `GET /package-origins/{package}` | signed in | The web origins the package's manager registered (`origin`, `rpId`, `addedBy`, `addedAt`, `served`) | `package origins list` |
+| `POST /package-origins/{package}` | account holder | `{ origin, rpId?, served?, confirm? }`: register an origin whose pages sign people in to the package (`served: true`: the cluster also serves its frontend there, a custom domain); the package's manager, `412` first ([Registered origins](/protocol/identities/#registered-origins)) | `package origins add` |
+| `DELETE /package-origins/{package}` | account holder | `{ origin, confirm? }`: remove one; the sessions opened there end. `412` first | `package origins remove` |
 | `POST /orgs/{org}/publishers` | account holder | `{ signerId, publicKey, signature, confirm? }`: bind a package signing key to the organization (the key's signature over the binding, an `APPROVE_RELEASES` holder's passkey, `412` first), so its `MANAGE_APPLICATION` holders upgrade the apps of packages that declare `upgrades: publisher` | |
 | `GET /publishers/{signer}` | signed in | `{ bound, generation }`: whether a signing key (`did:key`) is bound on this cluster, never to which organization, and the generation the next binding signs | |
 
@@ -177,13 +177,13 @@ artifact digest, `minRuntimeVersion`, the package's pinned signer (the first
 release's wins) and that each service's WASM compiles. A node that later runs
 the release fetches and verifies it again.
 
-## Apps (contexts)
+## Apps (app instances)
 
 `{app}` is an app id or its context id (`hex(SHA-256(app_id))`).
 
 | Route | Who | What | meroctl |
 | --- | --- | --- | --- |
-| `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, deployment?, org?, newOrg?: { name }, grants?, initArgs?, metadata? }` → `{ appId, contextId, group, replicas, compute }`. The organization is the release's `instanceOrg` choice: `org`, the caller's only one, or a new one made with it (`newOrg`; [Where an instance goes](/protocol/organizations/#where-an-instance-goes)); `deployment` creates from a deployment's offer. Confirm methods are the ones the app's ABI declares (`#[app::confirm]`) | `instance create` |
+| `POST /apps` | installer | `{ name, package?, version?, service?, bundle?, deployment?, org?, newOrg?: { name }, grants?, initArgs?, metadata? }` → `{ appId, group, replicas, compute, links }`. The organization is the release's `instanceOrg` choice: `org`, the caller's only one, or a new one made with it (`newOrg`; [Where an instance goes](/protocol/organizations/#where-an-instance-goes)); `deployment` creates from a deployment's offer. Confirm methods are the ones the app's ABI declares (`#[app::confirm]`) | `instance create` |
 | `GET /apps[?package=P]` | signed in or anyone | Apps the caller reaches | `instance list` |
 | `GET /apps/{app}` | signed in or anyone | One app | `instance get` |
 | `DELETE /apps/{app}` | account holder | Delete (owner or org admin) | `instance delete` |
@@ -200,11 +200,12 @@ the release fetches and verifies it again.
 | `POST /apps/{app}/metadata` | signed in | `{ metadata }` (owner or org admin; 16 KiB) | `instance metadata` |
 | `GET /apps/{app}/storage` | app access | Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one) | `instance storage` |
 | `GET /apps/{app}/usage` | owner or org admin | A component's runs per UTC day: `today` and the 30 `days` before it, each `{ date, runs, fuel, wallMs, writes, bytesWritten, events }`, figures as decimal strings; `wallMs` is information only | |
+| `GET /apps/{app}/outbound-log` | owner or org admin | `{ entries, partial }`: the instance's outbound HTTPS requests, sent or refused, newest first (at most 100, none older than 7 days, kept in memory by the replica whose run made each): `{ atMs, method, host, path, pathTruncated, status?, failure?, secrets, requestBytes, responseBytes }` (`status` when the host answered, else `failure`); never a secret value, a body, a query string or a header ([What the owner sees](/build/guides/outbound/#what-the-owner-sees)) | `instance outbound-log` |
 | `GET /apps/{app}/abi` | app access | The bundle's embedded ABI | `instance abi` |
 | `POST /pipelines/validate` | a signed-in account | `{ source, package?, version? }`: `{ ok, errors: [{ path, code, message }], pipeline?, worstCaseFuel?, worstCaseCost? }`; with `package` and `version` (both, a release the caller sees, else `404`) the source is checked against that release's methods, modules and the cluster's pools. Writes nothing | `cloud compute pipeline validate` |
 | `POST /apps/{app}/pipelines/{name}/estimate` | the app's owner or its organization's members | `{ inputs?: { name: [fileId] } \| counts?: { name: n }, params? }`: `{ steps: { step: { runs, fuel, cost? } }, fuel, cost?, priceVersion? }`, numbers as decimal strings; ids are only counted. `400 BAD_INPUTS`, `404 NO_SUCH_PIPELINE` | `cloud compute pipeline estimate` |
-| `POST /apps/{app}/pipelines/{name}/runs` | the app's owner or its organization's members | `{ inputs: { name: [fileId] }, params, maxCost? }`: start a run of a pipeline the app's release registers; `202 { run }`, with `worstCase` when `maxCost` (micro-units, a decimal string) is given. `404 NO_SUCH_PIPELINE`, `400 BAD_INPUTS`, `400 BAD_PARAMS`, `400 BAD_MAX_COST`, `409 NO_PRICE_TABLE`, `429 TOO_MANY_PIPELINE_RUNS`, `409 CLUSTER_NOT_UPGRADED` | `cloud compute pipeline run` |
-| `POST /apps/{app}/pipeline-runs/{run}/retry` | the app's owner or its organization's members | `{ limits?: { step: { fuel?, memoryMib?, wallSecs? } }, maxCost? }`: a new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, `retryOf` set and the limits applied; `202 { run, retryOf }`. `409 STILL_RUNNING`, `400 BAD_LIMITS` (a step the pipeline lacks, or zero), `400 LIMIT_EXCEEDS_CAP`, `410 OUTPUT_EXPIRED` once an input was forgotten | `cloud compute pipeline retry` |
+| `POST /apps/{app}/pipelines/{name}/runs` | the app's owner or its organization's members | `{ inputs: { name: [fileId] }, params, maxCost? }`: start a run of a pipeline the app's release registers; `200 { run }`, with `worstCase` when `maxCost` (micro-units, a decimal string) is given. `404 NO_SUCH_PIPELINE`, `400 BAD_INPUTS`, `400 BAD_PARAMS`, `400 BAD_MAX_COST`, `409 NO_PRICE_TABLE`, `429 TOO_MANY_PIPELINE_RUNS`, `409 CLUSTER_NOT_UPGRADED` | `cloud compute pipeline run` |
+| `POST /apps/{app}/pipeline-runs/{run}/retry` | the app's owner or its organization's members | `{ limits?: { step: { fuel?, memoryMib?, wallSecs? } }, maxCost? }`: a new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, `retryOf` set and the limits applied; `200 { run, retryOf }`. `409 STILL_RUNNING`, `400 BAD_LIMITS` (a step the pipeline lacks, or zero), `400 LIMIT_EXCEEDS_CAP`, `410 OUTPUT_EXPIRED` once an input was forgotten | `cloud compute pipeline retry` |
 | `GET /apps/{app}/pipeline-runs`, `GET /apps/{app}/pipeline-runs/{run}` | app access | A pipeline run's record (`state`, `version`, `hash`, `computeBundle`, `inputs`, `params`, per-step `status`, `runs`, `outputs`, `result`, `reason`, `cost`; `cost` and `costSoFar` for a run with a cap), or the recent ones as `{ runs }` (`limit` 1 to 100; each step shows its counters only, without `runs`, `outputs`, `result` or `results`, which one run's record carries); sizes, hashes and results only for callers who may list the app's files | `cloud compute pipeline get`, `cloud compute pipeline runs` |
 | `GET /apps/{app}/pipeline-runs/{run}/receipt` | the app's owner or its organization's members | `{ receipt, node, signature }` for an ended run, signed by the node's receipt key; `409 RUN_NOT_ENDED` | `cloud compute pipeline receipt` |
 | `GET /apps/{app}/pipeline-runs/{run}/events` | whoever may read the run | Server-sent events, metadata only: `snapshot`, then `run` and `step` per change, then `end` and the stream closes; at most 64 per app per node (`429 TOO_MANY_SUBSCRIBERS`), one hour long | `cloud compute pipeline watch` |
@@ -280,7 +281,7 @@ node's receipt key over `(app, index, SHA-256(JCS(result)), node)`.
 | `POST /orgs/{org}/outbound` | account holder | `{ package, prefixes, replace, confirm? }` (owner) | `org outbound` |
 | `POST /orgs/{org}/upgrade` | account holder | `{ package, version, team?, cascade?, migrate?, confirm? }`: an upgrade run, by the organization's owner or an admin | `team upgrade trigger` |
 | `POST /orgs/{org}/packages/{package}/upgrade` | account holder | `{ version, migrate?, confirm? }`: a publisher's upgrade run, by an owner or admin of the publisher organization, over the package's instances in the organizations they are an owner or admin of; `412` first | |
-| `GET /orgs/{org}/backup-key`, `POST /orgs/{org}/backup-key` | account holder | The organization's [recovery-disk](/operate/deployment/#backups-and-the-recovery-disk) backup key `{ holder, key, apps }` (any member), or set it (`{ publicKey, confirm? }`, 64 hex, an X25519 public key; org-wide `MANAGE_APPLICATION`, where owners upgrade apps; `412` first; `409 FEATURE_NOT_ACTIVE` below 1.0.0-rc.20) | |
+| `GET /orgs/{org}/backup-key`, `POST /orgs/{org}/backup-key` | account holder | The organization's [recovery-disk](/operate/deployment/#backups-and-the-recovery-disk) backup key `{ holder, key, apps }` (any member), or set it (`{ publicKey, confirm? }`, 64 hex, an X25519 public key; the organization's owner and admins, where owners upgrade apps (org-wide `MANAGE_APPLICATION` below cluster version 1.0.0-rc.38); `412` first; `409 FEATURE_NOT_ACTIVE` below 1.0.0-rc.20) | |
 | `GET /orgs/{org}/upgrades/{run}` | signed in (a member) | A run's progress | `team upgrade status` |
 | `POST /orgs/{org}/upgrades/{run}/retry` | account holder, or ops for an operator's run | Retry the failed apps as a new run | `team upgrade retry` |
 
@@ -417,3 +418,43 @@ token, never by a session or the ops token.
   before any of these routes: `GET`/`HEAD` of a package's frontend files and
   `/.well-known/calimero.json`. See [Networking](/operate/networking/#app-frontends).
 </Aside>
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Placement read
+
+Code: `GET /ops/placement`, `meroctl ops placement`, for mdma's rebalancer.
+
+Each app's id, group and replicas, each node's id, zone, attested release (`Node::release_of_node`,
+at most `PLACEMENT_RELEASE_WAIT`) and app count, after `sys_fresh` (`fresh` in the answer).
+Ids and counts only.
+
+### Version and approval reports
+
+Code: `report.rs`, read-only.
+
+`GET /ops/apps`, `GET /ops/orgs` (operator), `GET /orgs/{org}/apps` (any member; `404` else) and
+`GET /auth/apps` (the account's own apps), paged (`?after&limit`, `report::MAX_REPORT_PAGE`).
+Per app: scope, bundle digest, package release (`report::release_of_app`: the one the instance runs,
+so releases sharing a WASM are told apart), `upgradesHeldBy` (`operator`, else `owner` once the
+logged version brings `Feature::OwnerApprovedUpgrades`, else the manifest's), `lastUpgrade`
+(`AppRecord::last_upgrade`, with `report::actor_kind`: `owner`/`member`/`operator`, judged against
+the app's and org's owners as they stand), approved releases, each replica's release and whether
+approved; for accounts also name, the upgrader's account, newer visible releases
+(`availableVersions`, the newest `MAX_AVAILABLE_VERSIONS`, from the release it runs, those with its
+WASM included), the newest of all of them it can reach (`latestReachable`) and why the latest is not
+it (`latestBlocked`: `runtime`, `authority`), and `clusterReleases`.
+`lastUpgrade.from`/`to` name each end's release from `UpgradeRecord::from_release`/`to_release` when
+recorded.
+The operator sees a package name only for releases it installed (`Reader::Operator`,
+`sees_release`), never an account, a name or an upgrade's error text.
+Node releases come from `Node::release_of_node` (attested once, then kept; at most
+`PLACEMENT_RELEASE_WAIT` each), as for placement.
+Every report also names each app's `lastWriteAt` (Unix seconds, `null` before its first write;
+`api::with_last_writes`): `ComponentHead::last_write_ms`, read from this node's replica or, for an
+app it does not host, a replica's (`Node::last_write_ms`, `internal/last-write`, at most
+`LAST_WRITE_WAIT` each, one page at a time).

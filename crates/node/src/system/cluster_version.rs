@@ -33,38 +33,38 @@ use crate::types::TeamJoin;
 pub enum Feature {
     /// `SetClusterVersion` itself.
     ClusterVersion,
-    /// `MoveApp` (#4907).
+    /// `MoveApp`.
     MoveApp,
-    /// `ScopeApps` naming one app team's `join` or `keep` (#4903): an earlier
+    /// `ScopeApps` naming one app team's `join` or `keep`: an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamJoin,
-    /// `SetOrgQuotas` (#4899).
+    /// `SetOrgQuotas`.
     OrgQuotas,
-    /// `SetPools` (#4898).
+    /// `SetPools`.
     ComputePools,
-    /// `UpdateTeam` closing a team with `close_drops_below` (#4911): an
+    /// `UpdateTeam` closing a team with `close_drops_below`: an
     /// earlier release ignores the field and keeps the rows below.
     TeamCloseDropsBelow,
-    /// `MoveApp` with `accounts_in_app_team` (#4912): an earlier release
+    /// `MoveApp` with `accounts_in_app_team`: an earlier release
     /// ignores the field and gives a moved DM's people no app-team row.
     MoveAccountsAppTeam,
-    /// `ScopeApps` with `by_release` (#4931): an earlier release judges an
+    /// `ScopeApps` with `by_release`: an earlier release judges an
     /// instance's package by its bundle and can put it on another app team.
     ScopeByRelease,
     /// `SetAllApps`, and an invite that gives every app added later
-    /// (`Invite::all_apps`) (#4914): an earlier release cannot read the
+    /// (`Invite::all_apps`): an earlier release cannot read the
     /// command and drops the invite's flag.
     AllApps,
-    /// `RestoreApp` and `FinishRestore` (#4928): an earlier release cannot
+    /// `RestoreApp` and `FinishRestore`: an earlier release cannot
     /// read them, so its replicas keep the app where it was.
     RestoreApp,
-    /// `RenameOrg` (#4913): an earlier release cannot read it, so its
+    /// `RenameOrg`: an earlier release cannot read it, so its
     /// replicas keep the old name.
     RenameOrg,
-    /// `SetTeamMembers` and `RemoveTeamMembers` (#4916): an earlier release
+    /// `SetTeamMembers` and `RemoveTeamMembers`: an earlier release
     /// cannot read them.
     TeamMembersBatch,
-    /// `ScopeApps` naming one app team's `childTeams` (#4917): an earlier
+    /// `ScopeApps` naming one app team's `childTeams`: an earlier
     /// `ScopeApp` refuses unknown fields.
     AppTeamChildTeams,
     /// `SetPriceTable`: an earlier release cannot read it.
@@ -76,11 +76,11 @@ pub enum Feature {
     Pipelines,
     /// `AcquireRun` naming a pool: an earlier release ignores `pool` and places by memory.
     NamedPool,
-    /// `AttributeByRelease` (#4935): an earlier release cannot read it, so
+    /// `AttributeByRelease`: an earlier release cannot read it, so
     /// its replicas would keep judging apps by the release each bundle was
     /// first recorded from.
     AttributeByRelease,
-    /// `RequireCurrentRules` (#4940): an earlier release cannot read it, so
+    /// `RequireCurrentRules`: an earlier release cannot read it, so
     /// its replicas would keep applying later entries' flags as logged.
     CurrentRules,
     /// `SetBackupKey` and `ImportHolder`: an earlier release cannot read
@@ -204,6 +204,10 @@ pub enum Feature {
     /// a part's release no longer installed, approved first and applied as red. rc.34
     /// cannot decode the reason, and a node stops a group on an entry it cannot decode.
     UnclassifiedUpdates,
+    /// `InstallPackage` whose release carries `visibility` or `orgs`: who may use it. An
+    /// earlier release drops both and would let anyone sharing an organization with an
+    /// installer, or reaching an app of it, use a private release.
+    PrivateReleases,
     /// `CreateApp { offers_only }`: where deployments are granted, an instance from no
     /// deployment's offer is a deployer's (`SystemState::creates_outside_offers`). An earlier
     /// release ignores the field and would create one a later one refuses. Apply also reads the
@@ -214,12 +218,6 @@ pub enum Feature {
     /// `UndoUpgrade { release_installed }`: an undo goes back only to an installed release;
     /// an earlier release would apply one to a release uninstalled under a shared bundle.
     UndoToInstalledRelease,
-    /// Host work charged to fuel (C7, `calimero_app_host`'s fuel table): a run's host calls
-    /// pay a base and a per-byte or per-result cost out of its fuel. No entry changes shape:
-    /// only the leader runs and followers apply the diff, so the log replays alike either way.
-    /// It is gated so a call answers the same on every node through a rolling upgrade: below
-    /// it a node runs calls, views and actions without the charges, as an earlier release does.
-    HostFuel,
     /// `UpgradeApp { auto, members_stay }`: an update on its own moves the instance alone,
     /// so it is refused where its release would move the unit's members
     /// (`SystemState::moves_members`). An earlier release would apply it and leave them behind.
@@ -227,10 +225,70 @@ pub enum Feature {
     /// `CreateApiKey { then }`: a key whose consent also approved confirm calls. An earlier
     /// release rebuilds the statement without them and refuses the key a later one makes.
     KeyFollowUps,
+    /// Below admin, a team's row, a row's capabilities and a team's default are set only on a
+    /// team the actor sees, and grant only capabilities the actor holds organization-wide
+    /// (`set_team_row`, `SetCapabilities`, `SetDefaultCapabilities`), as an invite's are. No
+    /// entry changes shape: apply reads the logged version, so a log replays unchanged, and an
+    /// earlier release, which would apply what this one refuses, holds it below the version.
+    HeldTeamGrants,
+    /// An invite hands out only what its creator could still hand out when it is redeemed: an
+    /// organization invite's creator no longer a member, below the invite's role, or no longer
+    /// seeing a team it names, gives nothing (`SystemState::redeem_org_invite`), and an
+    /// instance invite's creator who no longer manages the instance's grants names nobody
+    /// (`system::apps::redeem_app_invite`). No entry changes shape.
+    InviteCreatorStanding,
+    /// An organization's backup key is set only by those who approve its upgrades, its owner
+    /// and admins (`SystemState::may_set_backup_key`), as `OwnerApprovedUpgrades` made
+    /// upgrades theirs. No entry changes shape.
+    BackupKeyApprovers,
+    /// `CreateDeployment` and `SetRecoveryKey` with `deployment_needs_recovery`: an
+    /// organization owns a deployment only with a recovery key, and keeps it while it does
+    /// (`SystemState::keeps_recoverable`). An earlier release ignores the field. Apply also
+    /// reads the logged version, so an entry before it replays as it applied.
+    DeploymentNeedsRecovery,
+    /// `OfferDeployment`, `AcceptDeployment` and `CancelDeploymentTransfer`: an earlier
+    /// release cannot read them, so its replicas would keep the deployment's owner.
+    DeploymentTransfer,
+    /// `CreateRefresh`, `UseRefresh` and `CreateAccount` whose refresh record names a
+    /// holder key (`RefreshRecord::holder`): an earlier release drops the field, so its
+    /// replicas would hold the session unbound, with the 30-day lifetime, and take an
+    /// exchange that drops the binding where a later one refuses it. Also `RefreshReused`
+    /// with `holder_proof`: an earlier release drops the proof and would revoke a bound
+    /// session for a copy of its old token that a later one refuses.
+    SessionHolders,
+    /// Bounds on what one organization and one account keep in the system state: teams per
+    /// organization (`maxTeamsPerOrg`) and metadata bytes per organization and per owning
+    /// account (`maxMetadataBytesPerOrg`, `maxMetadataBytesPerAccount`), checked at apply
+    /// (`SystemState::check_state_caps`). No entry changes shape: apply reads the logged
+    /// version, so a log replays unchanged, and an earlier release, which would apply what
+    /// this one refuses, holds it below the version; so are the three quotas, which an earlier
+    /// release drops, written only from it.
+    StateCaps,
+    /// `componentBlob { metered }` in an app's log: an uploaded blob's bytes are charged to the
+    /// app's payer (`ChargeFileBytes`) and given back when the app forgets it
+    /// (`component::blobs::BlobRecord::metered`). An earlier release ignores the field and would
+    /// keep no record of the charge, so it would never give it back. Below it, uploads are not
+    /// charged. No system entry names it: the API reads the logged version before an upload.
+    MeteredBlobs,
+    /// A component app's xcall carries its chain's budget (`XcallOut::budget`), and apply
+    /// dead-letters one sent with none left
+    /// ([Chain budget](https://calimero-network.github.io/core/protocol/xcall/#chain-budget)).
+    /// An app's entry, not a system one: an earlier release ignores the field and would
+    /// queue the message.
+    XcallBudget,
+    /// `InstallPackage` of a release that declares `lineage: pinned`
+    /// (`PackageVersion::lineage`): an earlier release drops the field, so its replicas would
+    /// let an instance of it move off its package, signer or forward order. Also an
+    /// `ImportHolder` bringing a lineage (`brings_lineage`), which it would drop, and
+    /// `UpgradeApp` and `ApproveUpgrade` whose class carries a `pinsLineage` reason.
+    PinnedLineage,
+    /// `AddAppOrigin` and `RemoveAppOrigin`: an earlier release cannot read them, so its
+    /// replicas would keep no instance's origin; nor `AddPackageOrigin`'s `registration`.
+    AppOrigins,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 51] = [
+pub const FEATURES: [Feature; 62] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -277,11 +335,22 @@ pub const FEATURES: [Feature; 51] = [
     Feature::AutoUpdates,
     Feature::RestorePoints,
     Feature::UnclassifiedUpdates,
+    Feature::PrivateReleases,
     Feature::OffersOnly,
     Feature::UndoToInstalledRelease,
-    Feature::HostFuel,
     Feature::AutoUpdateMembersStay,
     Feature::KeyFollowUps,
+    Feature::HeldTeamGrants,
+    Feature::InviteCreatorStanding,
+    Feature::BackupKeyApprovers,
+    Feature::DeploymentNeedsRecovery,
+    Feature::DeploymentTransfer,
+    Feature::SessionHolders,
+    Feature::StateCaps,
+    Feature::MeteredBlobs,
+    Feature::XcallBudget,
+    Feature::PinnedLineage,
+    Feature::AppOrigins,
 ];
 
 impl Feature {
@@ -335,19 +404,40 @@ impl Feature {
             Self::AutoUpdates => "autoUpdates",
             Self::RestorePoints => "restorePoints",
             Self::UnclassifiedUpdates => "unclassifiedUpdates",
+            Self::PrivateReleases => "privateReleases",
             Self::OffersOnly => "offersOnly",
             Self::UndoToInstalledRelease => "undoToInstalledRelease",
-            Self::HostFuel => "hostFuel",
             Self::AutoUpdateMembersStay => "autoUpdateMembersStay",
             Self::KeyFollowUps => "keyFollowUps",
+            Self::HeldTeamGrants => "heldTeamGrants",
+            Self::InviteCreatorStanding => "inviteCreatorStanding",
+            Self::BackupKeyApprovers => "backupKeyApprovers",
+            Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
+            Self::DeploymentTransfer => "deploymentTransfer",
+            Self::SessionHolders => "sessionHolders",
+            Self::StateCaps => "stateCaps",
+            Self::MeteredBlobs => "meteredBlobs",
+            Self::XcallBudget => "xcallBudget",
+            Self::PinnedLineage => "pinnedLineage",
+            Self::AppOrigins => "appOrigins",
         }
     }
 
-    /// Whether an entry carries it ([`SystemCmd::features`] names it). `HostFuel` is a rule
-    /// the node reads from the logged version when it runs an app, and no entry names it.
+    /// Whether a system entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
+    /// `InviteCreatorStanding`, `BackupKeyApprovers` and `StateCaps` are rules apply reads from
+    /// the logged version, and `MeteredBlobs` and `XcallBudget` are fields of an app's entry,
+    /// which the leader shapes from the logged version: no system entry names them.
     #[must_use]
     pub const fn names_an_entry(self) -> bool {
-        !matches!(self, Self::HostFuel)
+        !matches!(
+            self,
+            Self::HeldTeamGrants
+                | Self::InviteCreatorStanding
+                | Self::BackupKeyApprovers
+                | Self::StateCaps
+                | Self::MeteredBlobs
+                | Self::XcallBudget
+        )
     }
 
     /// The first core release that applies it. The features of a release
@@ -398,11 +488,24 @@ impl Feature {
             | Self::AutoUpdates
             | Self::RestorePoints => "1.0.0-rc.34",
             Self::UnclassifiedUpdates => "1.0.0-rc.35",
-            Self::OffersOnly
-            | Self::UndoToInstalledRelease
-            | Self::HostFuel
-            | Self::AutoUpdateMembersStay
-            | Self::KeyFollowUps => "1.0.0-rc.36",
+            Self::OffersOnly | Self::UndoToInstalledRelease | Self::AutoUpdateMembersStay => {
+                "1.0.0-rc.36"
+            }
+            // Key follow-ups merged after 1.0.0-rc.37 was cut, so rc.37 does not decode
+            // `then`: it rebuilds the key's statement without it and refuses the key.
+            Self::PrivateReleases
+            | Self::KeyFollowUps
+            | Self::HeldTeamGrants
+            | Self::InviteCreatorStanding
+            | Self::BackupKeyApprovers
+            | Self::DeploymentNeedsRecovery
+            | Self::DeploymentTransfer => "1.0.0-rc.38",
+            Self::SessionHolders
+            | Self::StateCaps
+            | Self::MeteredBlobs
+            | Self::XcallBudget
+            | Self::PinnedLineage
+            | Self::AppOrigins => "1.0.0-rc.39",
         }
     }
 }
@@ -583,37 +686,40 @@ pub const BAD_VERSION: &str = "a cluster version is a semver release";
 /// than the active version. Judged from the entry and the state alone, so
 /// every replica decides the same.
 pub(super) fn apply(
-    s: &mut SystemState,
+    state: &mut SystemState,
     version: String,
     nodes: &BTreeMap<u64, String>,
 ) -> Result<Value, crate::system::Rejection> {
     if version.len() > MAX_RELEASE_VERSION_BYTES
         || semver::Version::parse(&version).is_err()
-        || nodes.values().any(|v| v.len() > MAX_RELEASE_VERSION_BYTES)
+        || nodes
+            .values()
+            .any(|advertised| advertised.len() > MAX_RELEASE_VERSION_BYTES)
     {
         return Err(BAD_VERSION.into());
     }
-    let registered: Vec<u64> = s
+    let registered: Vec<u64> = state
         .replica_nodes()
-        .map(|n| n.id)
-        .filter(|id| !s.removed_nodes.contains(id))
+        .map(|node| node.id)
+        .filter(|id| !state.removed_nodes.contains(id))
         .collect();
     if registered.is_empty() || !nodes.keys().copied().eq(registered.iter().copied()) {
         return Err(NOT_EVERY_NODE.into());
     }
     if nodes
         .values()
-        .any(|v| compare_versions(v, &version) == Ordering::Less)
+        .any(|advertised| compare_versions(advertised, &version) == Ordering::Less)
     {
         return Err(ABOVE_A_NODE.into());
     }
-    if s.cluster_version
+    if state
+        .cluster_version
         .as_deref()
-        .is_some_and(|c| compare_versions(&version, c) != Ordering::Greater)
+        .is_some_and(|logged| compare_versions(&version, logged) != Ordering::Greater)
     {
         return Err(NOT_FORWARD.into());
     }
-    s.cluster_version = Some(version.clone());
+    state.cluster_version = Some(version.clone());
     Ok(json!({ "clusterVersion": version }))
 }
 
@@ -623,6 +729,25 @@ fn unclassified(class: &crate::types::UpgradeClass) -> bool {
         .reasons
         .iter()
         .any(|r| matches!(r, calimero_bundle::update::Reason::Unclassified { .. }))
+}
+
+/// Whether `slice` brings a lineage ([`Feature::PinnedLineage`]): an app record pinned, or a
+/// release declaring `lineage: pinned`.
+fn brings_lineage(slice: &super::HolderSlice) -> bool {
+    slice.apps.values().any(|a| a.lineage.is_some())
+        || slice
+            .packages
+            .values()
+            .flat_map(|p| p.versions.values())
+            .any(|v| !v.lineage.is_free())
+}
+
+/// Whether `class` carries a `pinsLineage` reason ([`Feature::PinnedLineage`]).
+fn pins_lineage(class: &crate::types::UpgradeClass) -> bool {
+    class
+        .reasons
+        .iter()
+        .any(|r| matches!(r, calimero_bundle::update::Reason::PinsLineage { .. }))
 }
 
 impl SystemCmd {
@@ -678,6 +803,9 @@ impl SystemCmd {
                 if class.as_ref().is_some_and(unclassified) {
                     f.push(Feature::UnclassifiedUpdates);
                 }
+                if class.as_ref().is_some_and(pins_lineage) {
+                    f.push(Feature::PinnedLineage);
+                }
                 if *auto {
                     f.push(Feature::AutoUpdates);
                 }
@@ -693,12 +821,17 @@ impl SystemCmd {
                 from_release: Some(_),
                 ..
             } => vec![Feature::AutoUpdates],
-            Self::ApproveUpgrade { class, .. } if unclassified(class) => {
-                vec![Feature::UpgradePolicies, Feature::UnclassifiedUpdates]
+            Self::ApproveUpgrade { class, .. } => {
+                let mut f = vec![Feature::UpgradePolicies];
+                if unclassified(class) {
+                    f.push(Feature::UnclassifiedUpdates);
+                }
+                if pins_lineage(class) {
+                    f.push(Feature::PinnedLineage);
+                }
+                f
             }
-            Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
-                vec![Feature::UpgradePolicies]
-            }
+            Self::SetUpgradePolicy { .. } => vec![Feature::UpgradePolicies],
             Self::UndoUpgrade {
                 release_installed, ..
             } => {
@@ -764,6 +897,21 @@ impl SystemCmd {
                 vec![Feature::DeploymentSecrets]
             }
             Self::SetPools { .. } => vec![Feature::ComputePools],
+            Self::CreateDeployment {
+                deployment_needs_recovery: true,
+                ..
+            }
+            | Self::SetRecoveryKey {
+                deployment_needs_recovery: true,
+                ..
+            } => vec![Feature::DeploymentNeedsRecovery],
+            Self::OfferDeployment { .. }
+            | Self::AcceptDeployment { .. }
+            | Self::CancelDeploymentTransfer { .. } => vec![Feature::DeploymentTransfer],
+            Self::AddAppOrigin { .. } | Self::RemoveAppOrigin { .. } => vec![Feature::AppOrigins],
+            Self::AddPackageOrigin { registration, .. } if !registration.is_empty() => {
+                vec![Feature::AppOrigins]
+            }
             Self::ScopeApps {
                 apps, by_release, ..
             } => {
@@ -785,21 +933,37 @@ impl SystemCmd {
             Self::AttributeByRelease => vec![Feature::AttributeByRelease],
             Self::RequireCurrentRules => vec![Feature::CurrentRules],
             Self::ExpireProofs => vec![Feature::ExpireProofs],
+            Self::ImportHolder { slice, .. } if brings_lineage(slice) => {
+                vec![Feature::BackupKeys, Feature::PinnedLineage]
+            }
             Self::SetBackupKey { .. } | Self::ImportHolder { .. } => vec![Feature::BackupKeys],
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
             }
             Self::RedeemInvite {
                 clamp_grants: true, ..
-            }
-            | Self::CreateAccount {
-                invite:
-                    Some(crate::system::SignUpRedemption {
-                        clamp_grants: true, ..
-                    }),
-                ..
             } => vec![Feature::InviteCapabilities],
-            Self::CreateAccount { .. } => Vec::new(),
+            Self::CreateAccount {
+                invite, refresh, ..
+            } => {
+                let mut f = Vec::new();
+                if invite.as_ref().is_some_and(|i| i.clamp_grants) {
+                    f.push(Feature::InviteCapabilities);
+                }
+                if refresh.as_ref().is_some_and(|g| g.record.holder.is_some()) {
+                    f.push(Feature::SessionHolders);
+                }
+                f
+            }
+            Self::CreateRefresh { record, .. } | Self::UseRefresh { record, .. }
+                if record.holder.is_some() =>
+            {
+                vec![Feature::SessionHolders]
+            }
+            Self::RefreshReused {
+                holder_proof: Some(_),
+                ..
+            } => vec![Feature::SessionHolders],
             Self::RedeemInvite { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
@@ -824,6 +988,12 @@ impl SystemCmd {
                 }
                 if release.guests.is_some() {
                     f.push(Feature::Guests);
+                }
+                if release.visibility.is_some() || !release.orgs.is_empty() {
+                    f.push(Feature::PrivateReleases);
+                }
+                if !release.lineage.is_free() {
+                    f.push(Feature::PinnedLineage);
                 }
                 f
             }
@@ -1009,6 +1179,66 @@ mod tests {
     const RC34: &str = "1.0.0-rc.34";
     const RC35: &str = "1.0.0-rc.35";
     const RC36: &str = "1.0.0-rc.36";
+    const RC37: &str = "1.0.0-rc.37";
+    const RC38: &str = "1.0.0-rc.38";
+    const RC39: &str = "1.0.0-rc.39";
+
+    /// An `ImportHolder` of a slice whose app record, or whose package's release, carries a
+    /// lineage: an earlier release drops both.
+    fn pinned_import(record: bool) -> SystemCmd {
+        let mut app = json!({ "appId": "a", "name": "a", "group": 2, "bundle": "b",
+            "owner": "alice", "org": "org", "replicas": [1], "createdAt": 0 });
+        let mut release = json!({ "version": "1.0.0", "mpk": "h", "mpkSize": 1,
+            "source": "upload", "services": { "": "b" }, "installedBy": "alice",
+            "installedAt": 0 });
+        if record {
+            app["lineage"] = json!({ "package": "p", "signerId": "did:key:z", "floor": "1.0.0" });
+        } else {
+            release["lineage"] = json!("pinned");
+        }
+        entry(
+            json!({ "op": "importHolder", "holder": { "kind": "org", "id": "org" },
+            "slice": { "holder": { "kind": "org", "id": "org" }, "accounts": [], "apps": { "a": app },
+                "bundles": {}, "packages": { "p": { "name": "p", "signerId": "did:key:z",
+                    "owner": "alice", "versions": { "1.0.0": release } } } },
+            "slice_sha256": "ab", "public_key": "cd", "seed": 1, "apps": [], "at": 1,
+            "proof": null }),
+        )
+    }
+
+    /// An import bringing a lineage needs the feature as well as backup keys.
+    #[test]
+    fn an_import_that_brings_a_lineage_needs_the_feature() {
+        for record in [true, false] {
+            assert_eq!(
+                pinned_import(record).features(),
+                [Feature::BackupKeys, Feature::PinnedLineage],
+                "record: {record}"
+            );
+        }
+    }
+
+    /// An approval or upgrade whose class carries `pinsLineage` names the feature: an
+    /// earlier release cannot decode the reason.
+    #[test]
+    fn a_class_that_pins_a_lineage_needs_the_feature() {
+        let class = json!({ "class": "red", "reasons": [{ "code": "pinsLineage",
+            "member": null, "package": "p" }] });
+        let approve = entry(
+            json!({ "op": "approveUpgrade", "app_id": "app", "package": "p",
+            "version": "2.0.0", "actor": "alice", "at": 1, "class": class }),
+        );
+        assert_eq!(
+            approve.features(),
+            [Feature::UpgradePolicies, Feature::PinnedLineage]
+        );
+        let upgrade = entry(json!({ "op": "upgradeApp", "app_id": "app", "bundle": "b",
+            "actor": "alice", "class": class }));
+        assert_eq!(
+            upgrade.features(),
+            [Feature::UpgradeClasses, Feature::PinnedLineage]
+        );
+    }
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1266,10 +1496,24 @@ mod tests {
             Feature::KeyFollowUps => entry(json!({ "op": "createApiKey", "hash": "h",
                 "record": { "keyId": "k", "account": "a", "label": "", "expiresAt": 1 },
                 "then": [{ "app": "app", "method": "setAccess", "argsHash": "h" }] })),
+            Feature::DeploymentNeedsRecovery => entry(json!({ "op": "createDeployment",
+                "id": "d", "name": "acme", "owner": { "org": "org" }, "actor": "alice", "at": 1,
+                "deployment_needs_recovery": true })),
+            Feature::DeploymentTransfer => entry(json!({ "op": "offerDeployment",
+                "deployment": "d", "to": { "org": "org" }, "actor": "alice", "at": 1 })),
+            Feature::SessionHolders => entry(json!({ "op": "createRefresh", "hash": "h",
+                "record": { "account": "a", "session": "s", "expiresAt": 1, "holder": "BA" } })),
+            Feature::AppOrigins => entry(json!({ "op": "addAppOrigin", "app_id": "app",
+                "origin": "https://kv.example.com", "rp_id": "kv.example.com", "actor": "alice",
+                "at": 1 })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
                     "member": null, "package": "p", "version": "1.0.0" }] } })),
+            Feature::PrivateReleases => {
+                install(json!({ "visibility": "private", "orgs": ["org"] }))
+            }
+            Feature::PinnedLineage => install(json!({ "lineage": "pinned" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1277,7 +1521,12 @@ mod tests {
                 "outbound": ["https://api.example.com/"],
                 "secrets": { "API_KEY": { "host": "api.example.com", "paths": ["/"], "header": "x-api-key" } },
             })),
-            Feature::HostFuel => unreachable!("no entry names hostFuel"),
+            Feature::HeldTeamGrants
+            | Feature::InviteCreatorStanding
+            | Feature::BackupKeyApprovers
+            | Feature::StateCaps
+            | Feature::MeteredBlobs
+            | Feature::XcallBudget => unreachable!("no system entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",
@@ -1396,11 +1645,11 @@ mod tests {
         );
     }
 
-    /// Reproduction (B4): every node runs rc.16 and no version is logged yet,
-    /// so the gate admits a feature of rc.16 on what the nodes advertise. Were
-    /// the entry proposed then, a node on rc.15 registered before the leader
-    /// logs rc.16 would still be admitted at the logged version (`may_join`),
-    /// and reach an entry it cannot decode. The version is logged first.
+    /// A feature's entry is proposed only after the version is logged. While every node
+    /// runs rc.16 and no version is logged yet, the gate admits a feature of rc.16 on what
+    /// the nodes advertise; were the entry proposed then, a node on rc.15 registered before
+    /// the leader logs rc.16 would still be admitted at the logged version (`may_join`),
+    /// and reach an entry it cannot decode.
     #[test]
     fn a_feature_is_proposed_only_once_the_version_that_keeps_older_nodes_out_is_logged() {
         let mut nodes = cluster(&[RC16, RC16, RC16]);
@@ -1447,10 +1696,10 @@ mod tests {
         assert_eq!(admit(None, Some(RC15), &quotas), Admission::Admitted);
     }
 
-    /// Reproduction (B4): a system entry this node cannot decode (a later
-    /// release's command) was skipped, so the node kept serving a state the
-    /// others no longer had (a revoked API key still working there). The
-    /// group's batch now fails, which stops its Raft core on that entry.
+    /// A system entry this node cannot decode (a later release's command) fails
+    /// the group's batch, which stops its Raft core on that entry: skipped, the
+    /// node would serve a state the others no longer have (a revoked API key
+    /// still working there).
     #[test]
     fn an_entry_this_node_cannot_decode_stops_the_system_group() {
         struct NoPeers;
@@ -1518,6 +1767,26 @@ mod tests {
         assert!(super::scope_app_features(Some(&[plain])).is_empty());
     }
 
+    /// Both commands the recovery rule judges carry it as a feature once their flag is set,
+    /// and neither does without it.
+    #[test]
+    fn the_recovery_rule_is_a_feature_of_both_commands_it_judges() {
+        let key = |flag| SystemCmd::SetRecoveryKey {
+            org: "org".into(),
+            public_key: None,
+            at: 1,
+            actor: "alice".into(),
+            consent: Value::Null,
+            deployment_needs_recovery: flag,
+        };
+        assert_eq!(key(true).features(), [Feature::DeploymentNeedsRecovery]);
+        assert_eq!(key(false).features(), []);
+        assert_eq!(
+            uses(Feature::DeploymentNeedsRecovery).features(),
+            [Feature::DeploymentNeedsRecovery]
+        );
+    }
+
     /// While an older node replicates the system log, no feature newer than
     /// it is proposed, so every node keeps the same state; once it leaves,
     /// the leader raises the cluster version and the features work.
@@ -1561,7 +1830,7 @@ mod tests {
             .filter(|f| f.names_an_entry())
             .partition(|f| {
                 ![
-                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36,
+                    RC19, RC20, RC22, RC24, RC29, RC31, RC32, RC33, RC34, RC35, RC36, RC38, RC39,
                 ]
                 .contains(&f.since())
             });
@@ -1651,8 +1920,12 @@ mod tests {
             later.into_iter().partition(|f| f.since() == RC33);
         let (rc34, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC34);
-        let (rc35, rc36): (Vec<Feature>, Vec<Feature>) =
+        let (rc35, later): (Vec<Feature>, Vec<Feature>) =
             later.into_iter().partition(|f| f.since() == RC35);
+        let (rc36, later): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC36);
+        let (rc38, rc39): (Vec<Feature>, Vec<Feature>) =
+            later.into_iter().partition(|f| f.since() == RC38);
         for &feature in &rc22 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
@@ -1843,15 +2116,14 @@ mod tests {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
         // rc.36's (an instance outside every deployment is a deployer's, an undo only to a
-        // release still installed, an update on its own that keeps the unit's members, a key
-        // with follow-ups) for every node on rc.36: an rc.35 node ignores the flags and fields.
+        // release still installed, an update on its own that keeps the unit's members) for
+        // every node on rc.36: an rc.35 node ignores the flags.
         assert_eq!(
             rc36,
             [
                 Feature::OffersOnly,
                 Feature::UndoToInstalledRelease,
                 Feature::AutoUpdateMembersStay,
-                Feature::KeyFollowUps
             ]
         );
         for &feature in &rc36 {
@@ -1872,6 +2144,76 @@ mod tests {
         for &feature in &rc36 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
+        // rc.38's (who may use a release, a key with follow-ups, an organization owns a
+        // deployment only with a recovery key, a deployment changes hands) waits past rc.37, which was cut without it: a
+        // cluster on the published rc.37 logs rc.37 and still refuses it, as an rc.37 node
+        // would refuse the key (it rebuilds the statement without `then`).
+        assert_eq!(
+            rc38,
+            [
+                Feature::PrivateReleases,
+                Feature::KeyFollowUps,
+                Feature::DeploymentNeedsRecovery,
+                Feature::DeploymentTransfer
+            ]
+        );
+        for n in &mut nodes {
+            n.release = RC37;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC37.into(),
+            nodes: (1..=3).map(|id| (id, RC37.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc38 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC37))
+            );
+        }
+        for n in &mut nodes {
+            n.release = RC38;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC38.into(),
+            nodes: (1..=3).map(|id| (id, RC38.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc38 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        // rc.39's (holder-bound sessions, pinning releases, instance origins) wait past rc.38:
+        // an rc.38 node drops the holder and the lineage, and cannot read the origin ops.
+        assert_eq!(
+            rc39,
+            [
+                Feature::SessionHolders,
+                Feature::PinnedLineage,
+                Feature::AppOrigins
+            ]
+        );
+        for &feature in &rc39 {
+            let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
+            assert_eq!(
+                (refused.feature, refused.active.as_deref()),
+                (feature, Some(RC38))
+            );
+        }
+        let refused = propose(&mut nodes, &pinned_import(true)).unwrap_err();
+        assert_eq!(refused.feature, Feature::PinnedLineage);
+        for n in &mut nodes {
+            n.release = RC39;
+        }
+        let raise = SystemCmd::SetClusterVersion {
+            version: RC39.into(),
+            nodes: (1..=3).map(|id| (id, RC39.to_owned())).collect(),
+        };
+        propose(&mut nodes, &raise).unwrap();
+        for &feature in &rc39 {
+            propose(&mut nodes, &uses(feature)).unwrap();
+        }
+        propose(&mut nodes, &pinned_import(true)).unwrap();
         assert!(same_state(&nodes));
     }
 
@@ -2109,20 +2451,6 @@ mod tests {
             let refused = check(Some(below), &invite_features(all_apps, capabilities)).unwrap_err();
             assert_eq!(refused.feature, feature);
         }
-    }
-
-    /// C7: host work is charged to fuel only from the logged cluster version that brings
-    /// `hostFuel` (`Node::charges_host_fuel`); a cluster on rc.35, or with none logged, runs
-    /// apps as rc.35 does. No entry names it.
-    #[test]
-    fn host_fuel_follows_the_logged_cluster_version() {
-        let mut state = crate::system::SystemState::default();
-        assert!(!state.cluster_brings(Feature::HostFuel));
-        state.cluster_version = Some(RC35.to_owned());
-        assert!(!state.cluster_brings(Feature::HostFuel));
-        state.cluster_version = Some(RC36.to_owned());
-        assert!(state.cluster_brings(Feature::HostFuel));
-        assert!(!Feature::HostFuel.names_an_entry());
     }
 
     #[test]

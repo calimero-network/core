@@ -1,13 +1,19 @@
 //! What an always-on log line may say about an error whose words are not the node's.
 //!
 //! `merod run` logs at INFO, and on a fleet node every line ships to the
-//! operator's log store (review finding F6). An error's words can quote what it
+//! operator's log store. An error's words can quote what it
 //! failed on: serde_json's `invalid type: string "alice@example.com", expected
 //! u64` quotes the input, a peer's error quotes its answer, an upstream's quotes
 //! its body. A log line names such an error by what the node knows of it (a
 //! category, a position, a code, an I/O kind); the words go to the caller who
 //! caused it, or to `debug!`. `scripts/check-no-user-data-at-info.py` refuses
-//! the words at `info!`, `warn!` and `error!`.
+//! the words at `info!`, `warn!` and `error!`;
+//! `scripts/check-no-user-data-at-info.allow` lists the lines whose text is the
+//! node's own.
+//!
+//! An `ApiError` is logged as its status and code, never its message. A
+//! `StateTx::fail` reason ends up in the group's stop reason and its log lines,
+//! so a decode failure passes [`serde()`], never the error itself.
 
 use std::error::Error;
 

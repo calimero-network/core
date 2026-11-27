@@ -30,7 +30,7 @@ class AppsFacade internal constructor(
      */
     suspend fun abi(
         app: kotlin.String,
-    ): AppAbi200Response =
+    ): AppAbi =
         api(null, null, emptySet()).apps.appAbi(app = app)
 
     /**
@@ -68,7 +68,7 @@ class AppsFacade internal constructor(
         version: kotlin.String,
         unit: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
-    ): AppApproveUpgrade200Response =
+    ): ApprovalLogged =
         api(passkey, null, emptySet()).apps.appApproveUpgrade(app = app, appApproveUpgradeRequest = AppApproveUpgradeRequest(version = version, unit = unit))
 
     /**
@@ -85,7 +85,7 @@ class AppsFacade internal constructor(
     suspend fun attestation(
         app: kotlin.String,
         nonce: kotlin.String,
-    ): AppAttestation200Response =
+    ): AppAttestations =
         api(null, null, emptySet()).apps.appAttestation(app = app, nonce = nonce)
 
     /**
@@ -111,7 +111,7 @@ class AppsFacade internal constructor(
         initArgs: kotlinx.serialization.json.JsonElement? = null,
         metadata: kotlinx.serialization.json.JsonElement? = null,
         deployment: kotlin.String? = null,
-    ): AppCreate200Response =
+    ): AppCreated =
         api(null, null, emptySet()).apps.appCreate(appCreateRequest = AppCreateRequest(name = name, bundle = bundle, `package` = `package`, version = version, service = service, org = org, newOrg = newOrg, grants = grants, initArgs = initArgs, metadata = metadata, deployment = deployment))
 
     /**
@@ -131,7 +131,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         target: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppDelegate200Response =
+    ): DelegationMade =
         api(passkey, null, emptySet()).apps.appDelegate(app = app, target = target, appDelegateRequest = AppDelegateRequest())
 
     /**
@@ -147,7 +147,7 @@ class AppsFacade internal constructor(
      */
     suspend fun delegations(
         app: kotlin.String,
-    ): AppDelegations200Response =
+    ): Delegations =
         api(null, null, emptySet()).apps.appDelegations(app = app)
 
     /**
@@ -163,7 +163,7 @@ class AppsFacade internal constructor(
      */
     suspend fun delete(
         app: kotlin.String,
-    ): AppDelete200Response =
+    ): AppDeleted =
         api(null, null, emptySet()).apps.appDelete(app = app)
 
     /**
@@ -179,7 +179,7 @@ class AppsFacade internal constructor(
      */
     suspend fun egress(
         app: kotlin.String,
-    ): AppEgress200Response =
+    ): EgressView =
         api(null, null, emptySet()).apps.appEgress(app = app)
 
     /**
@@ -217,7 +217,7 @@ class AppsFacade internal constructor(
         uses: kotlin.Long? = null,
         scope: kotlinx.serialization.json.JsonElement? = null,
         passkey: PasskeyProvider? = null,
-    ): AppInviteCreate200Response =
+    ): AppInviteMade =
         api(passkey, null, emptySet()).apps.appInviteCreate(app = app, appInviteCreateRequest = AppInviteCreateRequest(ttlSecs = ttlSecs, uses = uses, scope = scope))
 
     /**
@@ -233,7 +233,7 @@ class AppsFacade internal constructor(
      */
     suspend fun inviteList(
         app: kotlin.String,
-    ): AppInviteList200Response =
+    ): AppInviteList =
         api(null, null, emptySet()).apps.appInviteList(app = app)
 
     /**
@@ -274,7 +274,7 @@ class AppsFacade internal constructor(
         name: kotlin.String,
         bodyApp: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppLink200Response =
+    ): LinkRow =
         api(passkey, null, emptySet()).apps.appLink(app = app, name = name, appLinkRequest = AppLinkRequest(app = bodyApp))
 
     /**
@@ -290,7 +290,7 @@ class AppsFacade internal constructor(
      */
     suspend fun links(
         app: kotlin.String,
-    ): AppLinks200Response =
+    ): AppLinkList =
         api(null, null, emptySet()).apps.appLinks(app = app)
 
     /**
@@ -307,7 +307,7 @@ class AppsFacade internal constructor(
     suspend fun list(
         `package`: kotlin.String? = null,
         bundle: kotlin.String? = null,
-    ): AppList200Response =
+    ): AppList =
         api(null, null, emptySet()).apps.appList(`package` = `package`, bundle = bundle)
 
     /**
@@ -325,7 +325,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         metadata: kotlinx.serialization.json.JsonElement?,
     ): kotlinx.serialization.json.JsonObject =
-        api(null, null, emptySet()).apps.appMetadata(app = app, appMetadataRequest = AppMetadataRequest(metadata = metadata))
+        api(null, null, emptySet()).apps.appMetadata(app = app, metadataBody = MetadataBody(metadata = metadata))
 
     /**
      * Call a method by its path
@@ -348,7 +348,7 @@ class AppsFacade internal constructor(
         consistency: AppMethodRequest.Consistency? = null,
         minIndex: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
-    ): AppMethod200Response =
+    ): MethodResult =
         api(passkey, null, emptySet()).apps.appMethod(app = app, method = method, appMethodRequest = AppMethodRequest(args = args, idempotencyKey = idempotencyKey, consistency = consistency, minIndex = minIndex))
 
     /**
@@ -369,7 +369,7 @@ class AppsFacade internal constructor(
         toOrg: kotlin.String,
         bringMembers: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
-    ): AppMove200Response =
+    ): AppMoved =
         api(passkey, null, emptySet()).apps.appMove(app = app, appMoveRequest = AppMoveRequest(toOrg = toOrg, bringMembers = bringMembers))
 
     /**
@@ -385,8 +385,81 @@ class AppsFacade internal constructor(
      */
     suspend fun openapi(
         app: kotlin.String,
-    ): kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?> =
+    ): kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement> =
         api(null, null, emptySet()).apps.appOpenapi(app = app)
+
+    /**
+     * Register a web origin for an instance
+     *
+     * By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `POST /apps/{app}/origins` (`app_origin_add`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun originAdd(
+        app: kotlin.String,
+        origin: kotlin.String,
+        rpId: kotlin.String? = null,
+        passkey: PasskeyProvider? = null,
+    ): PackageOrigin =
+        api(passkey, null, emptySet()).apps.appOriginAdd(app = app, appOriginAddRequest = AppOriginAddRequest(origin = origin, rpId = rpId))
+
+    /**
+     * Remove an instance's web origin
+     *
+     * Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+     *
+     * `DELETE /apps/{app}/origins` (`app_origin_remove`).
+     *
+     * Answers `412 CONFIRM_REQUIRED` first: approved with [passkey], else the client's ([CalimeroClient.passkey]); with neither, [com.calimero.mero.ConfirmRequired] reaches the caller.
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun originRemove(
+        app: kotlin.String,
+        origin: kotlin.String,
+        passkey: PasskeyProvider? = null,
+    ): OriginRemoved =
+        api(passkey, null, emptySet()).apps.appOriginRemove(app = app, appOriginRemoveRequest = AppOriginRemoveRequest(origin = origin))
+
+    /**
+     * An instance's web origins
+     *
+     * The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+     *
+     * **Who:** an account holder (a passkey session not bound to an app's frontend).
+     *
+     * `GET /apps/{app}/origins` (`app_origins`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun origins(
+        app: kotlin.String,
+    ): AppOriginList =
+        api(null, null, emptySet()).apps.appOrigins(app = app)
+
+    /**
+     * An app's outbound requests
+     *
+     * The owner or an organization admin: the outbound HTTPS requests the instance's runs made, sent or refused, newest first, at most 100 (`MAX_AUDIT_ENTRIES`) and none older than 7 days (`AUDIT_RETENTION_MS`). Each replica keeps those its own runs made, in memory, until it restarts; `partial` says a replica did not answer. An entry holds no secret value, body, query string or header.
+     *
+     * **Who:** signed in (a session or an API key).
+     *
+     * `GET /apps/{app}/outbound-log` (`app_outbound_log`).
+     *
+     * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
+     */
+    suspend fun outboundLog(
+        app: kotlin.String,
+    ): OutboundLog =
+        api(null, null, emptySet()).apps.appOutboundLog(app = app)
 
     /**
      * The update policy an app follows
@@ -419,10 +492,10 @@ class AppsFacade internal constructor(
      */
     suspend fun policySet(
         app: kotlin.String,
-        policy: com.calimero.mero.Explicit<AppPolicySetRequestPolicy>? = null,
+        policy: com.calimero.mero.Explicit<UpgradePolicyBodyPolicy>? = null,
         passkey: PasskeyProvider? = null,
     ): PolicyView =
-        api(passkey, null, setOfNotNull("policy".takeIf { policy != null && policy.value == null })).apps.appPolicySet(app = app, appPolicySetRequest = AppPolicySetRequest(policy = policy?.value))
+        api(passkey, null, setOfNotNull("policy".takeIf { policy != null && policy.value == null })).apps.appPolicySet(app = app, upgradePolicyBody = UpgradePolicyBody(policy = policy?.value))
 
     /**
      * One compute run
@@ -455,7 +528,7 @@ class AppsFacade internal constructor(
     suspend fun runLogs(
         app: kotlin.String,
         run: kotlin.String,
-    ): AppRunLogs200Response =
+    ): RunLogs =
         api(null, null, emptySet()).apps.appRunLogs(app = app, run = run)
 
     /**
@@ -473,7 +546,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         limit: kotlin.String? = null,
         before: kotlin.String? = null,
-    ): AppRuns200Response =
+    ): RunList =
         api(null, null, emptySet()).apps.appRuns(app = app, limit = limit, before = before)
 
     /**
@@ -493,7 +566,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         name: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppSecretClear200Response =
+    ): SecretCleared =
         api(passkey, null, emptySet()).apps.appSecretClear(app = app, name = name)
 
     /**
@@ -514,7 +587,7 @@ class AppsFacade internal constructor(
         name: kotlin.String,
         value: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppSecretSet200Response =
+    ): SecretSet =
         api(passkey, null, emptySet()).apps.appSecretSet(app = app, name = name, appSecretSetRequest = AppSecretSetRequest(value = value))
 
     /**
@@ -530,7 +603,7 @@ class AppsFacade internal constructor(
      */
     suspend fun secrets(
         app: kotlin.String,
-    ): AppSecrets200Response =
+    ): AppSecrets =
         api(null, null, emptySet()).apps.appSecrets(app = app)
 
     /**
@@ -550,7 +623,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         egress: kotlin.Boolean,
         passkey: PasskeyProvider? = null,
-    ): AppSetEgress200Response =
+    ): EgressSet =
         api(passkey, null, emptySet()).apps.appSetEgress(app = app, appSetEgressRequest = AppSetEgressRequest(egress = egress))
 
     /**
@@ -566,7 +639,7 @@ class AppsFacade internal constructor(
      */
     suspend fun storage(
         app: kotlin.String,
-    ): AppStorage200Response =
+    ): AppStorage =
         api(null, null, emptySet()).apps.appStorage(app = app)
 
     /**
@@ -609,7 +682,7 @@ class AppsFacade internal constructor(
     /**
      * Undo an app's last upgrade
      *
-     * An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+     * An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -622,7 +695,7 @@ class AppsFacade internal constructor(
     suspend fun undo(
         app: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): AppUndo200Response =
+    ): UndoDone =
         api(passkey, null, emptySet()).apps.appUndo(app = app, appUndoRequest = AppUndoRequest())
 
     /**
@@ -638,7 +711,7 @@ class AppsFacade internal constructor(
      */
     suspend fun undoView(
         app: kotlin.String,
-    ): AppUndoView200Response =
+    ): UndoView =
         api(null, null, emptySet()).apps.appUndoView(app = app)
 
     /**
@@ -664,7 +737,7 @@ class AppsFacade internal constructor(
     /**
      * Whether an update is available for an app
      *
-     * For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's).
+     * For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring `lineage: pinned` pins an instance that was not (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
      *
      * **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
      *
@@ -674,13 +747,13 @@ class AppsFacade internal constructor(
      */
     suspend fun update(
         app: kotlin.String,
-    ): AppUpdate200Response =
+    ): UpdateView =
         api(null, null, emptySet()).apps.appUpdate(app = app)
 
     /**
      * Upgrade an app instance
      *
-     * To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+     * To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409 LINEAGE_OLDER_RELEASE`, before the step-up.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -698,13 +771,13 @@ class AppsFacade internal constructor(
         service: kotlin.String? = null,
         migrate: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
-    ): AppUpgrade200Response =
+    ): UpgradeApplied =
         api(passkey, null, emptySet()).apps.appUpgrade(app = app, appUpgradeRequest = AppUpgradeRequest(bundle = bundle, `package` = `package`, version = version, service = service, migrate = migrate))
 
     /**
      * Upgrade an app and the apps it created, in one consent
      *
-     * An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks.
+     * An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks. A version the caller may not use answers as one that is not installed, as `POST /apps` installs one (`404 NOT_FOUND`, `400 NO_REGISTRY`), and for an instance from a deployment anything but its offer that still serves `409 OUTSIDE_DEPLOYMENT`, before anything of it is read.
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -734,7 +807,7 @@ class AppsFacade internal constructor(
      */
     suspend fun usage(
         app: kotlin.String,
-    ): AppUsage200Response =
+    ): AppUsage =
         api(null, null, emptySet()).apps.appUsage(app = app)
 
     /**
@@ -750,7 +823,7 @@ class AppsFacade internal constructor(
      */
     suspend fun xcalls(
         app: kotlin.String,
-    ): AppXcalls200Response =
+    ): XcallsReport =
         api(null, null, emptySet()).apps.appXcalls(app = app)
 
     /**
@@ -767,7 +840,7 @@ class AppsFacade internal constructor(
     suspend fun blobDelete(
         app: kotlin.String,
         id: kotlin.String,
-    ): BlobDelete200Response =
+    ): Logged =
         api(null, null, emptySet()).apps.blobDelete(app = app, id = id)
 
     /**
@@ -800,7 +873,7 @@ class AppsFacade internal constructor(
     suspend fun blobInfo(
         app: kotlin.String,
         id: kotlin.String,
-    ): BlobInfo200Response =
+    ): BlobView =
         api(null, null, emptySet()).apps.blobInfo(app = app, id = id)
 
     /**
@@ -816,7 +889,7 @@ class AppsFacade internal constructor(
      */
     suspend fun blobList(
         app: kotlin.String,
-    ): BlobList200Response =
+    ): BlobList =
         api(null, null, emptySet()).apps.blobList(app = app)
 
     /**
@@ -833,7 +906,7 @@ class AppsFacade internal constructor(
     suspend fun blobRevoke(
         app: kotlin.String,
         id: kotlin.String,
-    ): BlobDelete200Response =
+    ): Logged =
         api(null, null, emptySet()).apps.blobRevoke(app = app, id = id)
 
     /**
@@ -851,7 +924,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         body: kotlin.ByteArray,
         sealed: kotlin.Boolean? = null,
-    ): BlobUpload200Response =
+    ): BlobStored =
         api(null, null, emptySet()).apps.blobUpload(app = app, body = body, sealed = sealed)
 
     /**
@@ -886,7 +959,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         id: kotlin.String,
         recipient: kotlin.String,
-    ): ExportsExport200Response =
+    ): FileExport =
         api(null, null, emptySet()).apps.exportsExport(app = app, id = id, exportsExportRequest = ExportsExportRequest(recipient = recipient))
 
     /**
@@ -921,7 +994,7 @@ class AppsFacade internal constructor(
     suspend fun fileInfo(
         app: kotlin.String,
         id: kotlin.String,
-    ): FileInfo200Response =
+    ): FileView =
         api(null, null, emptySet()).apps.fileInfo(app = app, id = id)
 
     /**
@@ -935,7 +1008,7 @@ class AppsFacade internal constructor(
      */
     suspend fun filesList(
         app: kotlin.String,
-    ): FilesList200Response =
+    ): FileList =
         api(null, null, emptySet()).apps.filesList(app = app)
 
     /**
@@ -952,7 +1025,7 @@ class AppsFacade internal constructor(
     suspend fun filesUpload(
         app: kotlin.String,
         body: kotlin.ByteArray,
-    ): FilesUpload200Response =
+    ): FileStored =
         api(null, null, emptySet()).apps.filesUpload(app = app, body = body)
 
     /**
@@ -974,7 +1047,7 @@ class AppsFacade internal constructor(
         args: kotlinx.serialization.json.JsonElement? = null,
         idempotencyKey: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
-    ): Intents200Response =
+    ): IntentResult =
         api(passkey, null, emptySet()).apps.intents(app = app, intentsRequest = IntentsRequest(method = method, args = args, idempotencyKey = idempotencyKey))
 
     /**
@@ -1009,7 +1082,7 @@ class AppsFacade internal constructor(
         app: kotlin.String,
         run: kotlin.String,
         version: kotlin.Long? = null,
-    ): PipelineReceiptReceipt200Response =
+    ): SignedPipelineReceipt =
         api(null, null, emptySet()).apps.pipelineReceiptReceipt(app = app, run = run, version = version)
 
     /**
@@ -1026,7 +1099,7 @@ class AppsFacade internal constructor(
     suspend fun pipelinesCancel(
         app: kotlin.String,
         run: kotlin.String,
-    ): PipelinesCancel200Response =
+    ): PipelineCancelled =
         api(null, null, emptySet()).apps.pipelinesCancel(app = app, run = run)
 
     /**
@@ -1045,8 +1118,8 @@ class AppsFacade internal constructor(
         name: kotlin.String,
         inputs: kotlin.collections.Map<kotlin.String, kotlin.collections.List<kotlin.String>>? = null,
         counts: kotlin.collections.Map<kotlin.String, kotlin.Long>? = null,
-        params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>? = null,
-    ): PipelinesEstimateRun200Response =
+        params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement?>? = null,
+    ): RunEstimate =
         api(null, null, emptySet()).apps.pipelinesEstimateRun(app = app, name = name, pipelinesEstimateRunRequest = PipelinesEstimateRunRequest(inputs = inputs, counts = counts, params = params))
 
     /**
@@ -1063,7 +1136,7 @@ class AppsFacade internal constructor(
     suspend fun pipelinesGet(
         app: kotlin.String,
         run: kotlin.String,
-    ): kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement> =
+    ): PipelineRunView =
         api(null, null, emptySet()).apps.pipelinesGet(app = app, run = run)
 
     /**
@@ -1080,13 +1153,13 @@ class AppsFacade internal constructor(
     suspend fun pipelinesList(
         app: kotlin.String,
         limit: kotlin.String? = null,
-    ): kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement> =
+    ): PipelineRunList =
         api(null, null, emptySet()).apps.pipelinesList(app = app, limit = limit)
 
     /**
      * Retry a pipeline run
      *
-     * The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `202`.
+     * The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -1099,13 +1172,13 @@ class AppsFacade internal constructor(
         run: kotlin.String,
         limits: kotlin.collections.Map<kotlin.String, PipelinesRetryRequestLimitsValue>? = null,
         maxCost: kotlin.String? = null,
-    ): PipelinesRetry200Response =
+    ): PipelineStarted =
         api(null, null, emptySet()).apps.pipelinesRetry(app = app, run = run, pipelinesRetryRequest = PipelinesRetryRequest(limits = limits, maxCost = maxCost))
 
     /**
      * Start a pipeline run
      *
-     * The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. `202`.
+     * The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -1119,7 +1192,7 @@ class AppsFacade internal constructor(
         inputs: kotlin.collections.Map<kotlin.String, kotlin.collections.List<kotlin.String>>? = null,
         params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>? = null,
         maxCost: kotlin.String? = null,
-    ): PipelinesStart200Response =
+    ): PipelineStarted =
         api(null, null, emptySet()).apps.pipelinesStart(app = app, name = name, pipelinesStartRequest = PipelinesStartRequest(inputs = inputs, params = params, maxCost = maxCost))
 
     /**
@@ -1137,7 +1210,7 @@ class AppsFacade internal constructor(
         source: kotlin.String,
         `package`: kotlin.String? = null,
         version: kotlin.String? = null,
-    ): PipelinesValidate200Response =
+    ): PipelineValidation =
         api(null, null, emptySet()).apps.pipelinesValidate(pipelinesValidateRequest = PipelinesValidateRequest(source = source, `package` = `package`, version = version))
 
     /**
@@ -1153,7 +1226,7 @@ class AppsFacade internal constructor(
      */
     suspend fun presenceGet(
         app: kotlin.String,
-    ): PresenceGet200Response =
+    ): PresenceList =
         api(null, null, emptySet()).apps.presenceGet(app = app)
 
     /**
@@ -1207,7 +1280,7 @@ class AppsFacade internal constructor(
         expiresAt: kotlin.Long? = null,
         ratePerMinute: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
-    ): PublicLinkCreate200Response =
+    ): PublicLinkMade =
         api(passkey, null, emptySet()).apps.publicLinkCreate(app = app, publicLinkCreateRequest = PublicLinkCreateRequest(label = label, expiresAt = expiresAt, ratePerMinute = ratePerMinute))
 
     /**
@@ -1223,7 +1296,7 @@ class AppsFacade internal constructor(
      */
     suspend fun publicLinkList(
         app: kotlin.String,
-    ): PublicLinkList200Response =
+    ): PublicLinks =
         api(null, null, emptySet()).apps.publicLinkList(app = app)
 
     /**
@@ -1275,7 +1348,7 @@ class AppsFacade internal constructor(
     suspend fun uploadBegin(
         app: kotlin.String,
         propertySize: kotlin.Long,
-    ): UploadBegin200Response =
+    ): UploadView =
         api(null, null, emptySet()).apps.uploadBegin(app = app, uploadBeginRequest = UploadBeginRequest(propertySize = propertySize))
 
     /**
@@ -1292,7 +1365,7 @@ class AppsFacade internal constructor(
     suspend fun uploadComplete(
         app: kotlin.String,
         upload: kotlin.String,
-    ): UploadComplete200Response =
+    ): FileStored =
         api(null, null, emptySet()).apps.uploadComplete(app = app, upload = upload)
 
     /**
@@ -1311,7 +1384,7 @@ class AppsFacade internal constructor(
         upload: kotlin.String,
         k: kotlin.String,
         body: kotlin.ByteArray,
-    ): UploadPart200Response =
+    ): PartTaken =
         api(null, null, emptySet()).apps.uploadPart(app = app, upload = upload, k = k, body = body)
 
     /**
@@ -1326,7 +1399,7 @@ class AppsFacade internal constructor(
     suspend fun uploadStatus(
         app: kotlin.String,
         upload: kotlin.String,
-    ): UploadStatus200Response =
+    ): UploadStatus =
         api(null, null, emptySet()).apps.uploadStatus(app = app, upload = upload)
 
     /**
@@ -1346,6 +1419,6 @@ class AppsFacade internal constructor(
         args: kotlinx.serialization.json.JsonElement? = null,
         consistency: ViewsRequest.Consistency? = null,
         minIndex: kotlin.Long? = null,
-    ): Views200Response =
+    ): ViewResult =
         api(null, null, emptySet()).apps.views(app = app, viewsRequest = ViewsRequest(method = method, args = args, consistency = consistency, minIndex = minIndex))
 }

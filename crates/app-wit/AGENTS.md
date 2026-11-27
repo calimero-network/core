@@ -4,11 +4,11 @@
 
 - **Crate**: `calimero-app-wit` (`publish = false`, prototype)
 - **Entry**: `src/lib.rs`; WIT in `wit/calimero-app.wit`, vendored WASI 0.2.12 in `wit/deps/`
-- **Spec**: `docs/specs/app-runtime-v0.14.md` section 4 is the authority
+- **Docs**: [What the host offers a cloud run](https://calimero-network.github.io/core/protocol/execution/#what-the-host-offers-a-cloud-run); the WIT in `wit/` is the authority
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.7` world: the spec's 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3), `xcall.batch` (0.5.4), `context.unit-of` (0.5.5), `context.visitor` and `context.grant-scope` (0.5.6) and `storage.put-checked`, `delete-checked` and `add-checked` (0.5.7), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine D44 interfaces accepted at install). Anything in neither list is refused.
+Holds the `calimero:app@0.5.7` world: 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3), `xcall.batch` (0.5.4), `context.unit-of` (0.5.5), `context.visitor` and `context.grant-scope` (0.5.6) and `storage.put-checked`, `delete-checked` and `add-checked` (0.5.7), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine WASI interfaces accepted at install and served by stubs that refuse). Anything in neither list is refused.
 
 ## The compute world
 
@@ -19,10 +19,10 @@ The app world imports `runs` (`start`, `cancel`: logged writes only) and not `jo
 It cannot be named `compute`, which is the world's name; the compute world does not import `runs`, so a run cannot start runs.
 The compute world imports no state, xcall, context, events, blobs, search, action or `wasi:http`, so a compute component cannot even ask for them: the install-time import check is the enforcement.
 
-## Beyond the spec's section 4
+## Interfaces the first world design did not have
 
-- `interface search` (views only): spec section 7 says full-text search is a host-maintained index queried from views but its world names no interface for it; this one is ours, pending the spec's next version.
-- `xcall.call` and `xcall.view` (synchronous xcalls): the spec's `xcall` has only `send`, the outbox. These wait for another app's answer in the same run (`docs/src/content/docs/protocol/xcall.mdx`, "Synchronous xcalls"); a node before them refuses a component that imports them (unknown import).
+- `interface search` (views only): the host keeps a full-text index from the app's state and answers queries from views.
+- `xcall.call` and `xcall.view` (synchronous xcalls): beside `send`, the outbox, these wait for another app's answer in the same run (`docs/src/content/docs/protocol/xcall.mdx`, "Synchronous xcalls"); a node before them refuses a component that imports them (unknown import).
 
 - `context.via` (0.5.2): for a call another app made as the person it serves, with their grant (`caller` is that person), the app it came through; see `docs/src/content/docs/protocol/xcall.mdx`, "As the person".
 - `xcall.batch` (0.5.4): a list of `request { kind: call | view, app, method, args }`, answered in order; the node runs them at once, each with the checks, count and key of the same `call`/`view` alone. The SDK sends every synchronous xcall through it; `call` and `view` stay for components built before.
@@ -35,7 +35,7 @@ The compute world imports no state, xcall, context, events, blobs, search, actio
 ## Rules
 
 - A patch bump is additive only: no existing type or function changes, so a component built against an older 0.5.z still links (the engine accepts `calimero:app/*` imports at any 0.5 patch up to the world's).
-- Change the WIT only together with the spec (or name the gap, as below); keep `allowed_imports()` in step with the world.
+- Change the WIT only together with the docs that describe it ([What the host offers a cloud run](https://calimero-network.github.io/core/protocol/execution/#what-the-host-offers-a-cloud-run)); keep `allowed_imports()` in step with the world.
 - `wit/deps/sockets` is vendored only because `wasi:cli` and `wasi:http` reference it; it is not imported by the world.
 
 ## Verify

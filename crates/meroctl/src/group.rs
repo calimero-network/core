@@ -253,7 +253,7 @@ pub async fn run(cmd: GroupCmd, env: &Env) -> eyre::Result<Value> {
                 .into_values()
                 .filter(|t| t.parent.as_deref() == Some(group.as_str()))
                 .collect();
-            json!({ "subgroups": below })
+            json!({ "subteams": below })
         }
         GroupCmd::Members(MembersCmd::List { namespace, group }) => {
             let team = orgs.team_get(&namespace, &group).await?;

@@ -8,7 +8,7 @@
 use std::io::{IsTerminal as _, Read as _, Write as _};
 use std::path::PathBuf;
 
-use calimero_client::types::{Deployer, Deployment, DeploymentOrgsResponse};
+use calimero_client::types::{Deployer, Deployment, DeploymentOrgs};
 use clap::{Subcommand, ValueEnum};
 use eyre::{bail, eyre};
 use serde_json::{json, Value};
@@ -19,7 +19,8 @@ use crate::env::{to_json, DevPasskey, Env};
 #[derive(Debug, Subcommand)]
 pub enum DeploymentCmd {
     /// The deployments this account manages: its own, and those of the
-    /// organizations where it holds `MANAGE_APPLICATION`.
+    /// organizations where it holds `MANAGE_APPLICATION`; and in `offered`,
+    /// those offered to it, waiting for `deployment accept`.
     #[command(alias = "ls")]
     List,
     /// One deployment, as anyone may read it: its name, its owner's kind and
@@ -29,7 +30,8 @@ pub enum DeploymentCmd {
         deployment: String,
     },
     /// Create a deployment, owned by this account or by an organization
-    /// where it holds `MANAGE_APPLICATION`. Approved with a passkey.
+    /// where it holds `MANAGE_APPLICATION` and which holds a recovery key
+    /// (`POST /orgs/{org}/recovery`). Approved with a passkey.
     Create {
         /// The name customers see.
         name: String,
@@ -43,6 +45,36 @@ pub enum DeploymentCmd {
     /// Approved with a passkey.
     #[command(alias = "rm")]
     Delete {
+        deployment: String,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
+    /// Offer the deployment to another owner, who accepts it within 7 days
+    /// (`deployment accept`); its offers, secret values and customers'
+    /// instances go with it. Approved with a passkey.
+    Transfer {
+        deployment: String,
+        /// The receiving owner: `account:<id>` or `org:<id>`.
+        #[arg(long, value_parser = parse_owner)]
+        to: Owner,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
+    /// Accept a deployment offered to this account (`--to account`) or to an
+    /// organization where it holds `MANAGE_APPLICATION` and which holds a
+    /// recovery key. Approved with a passkey.
+    Accept {
+        /// The deployment's id (`deployment list` shows those offered).
+        deployment: String,
+        /// The owner it is offered to: `account`, `account:<id>` or `org:<id>`.
+        #[arg(long, value_parser = parse_owner)]
+        to: Owner,
+        #[arg(long)]
+        dev_passkey: Option<PathBuf>,
+    },
+    /// Drop the waiting offer of a deployment, as its owner's manager or the
+    /// receiver's. Approved with a passkey.
+    CancelTransfer {
         deployment: String,
         #[arg(long)]
         dev_passkey: Option<PathBuf>,
@@ -130,7 +162,7 @@ pub enum UsageBy {
     Org,
 }
 
-/// Who owns a new deployment, as `--owner` names it.
+/// Who owns a new deployment, as `--owner` names it, or receives one, as `--to` does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Owner {
     /// The account the request runs as.
@@ -168,6 +200,17 @@ fn resolve<'d>(arg: &str, managed: &'d [Deployment]) -> eyre::Result<Option<&'d 
                 .join(", ")
         ),
     }
+}
+
+/// The deployer `owner` names, this account's own for [`Owner::Me`].
+async fn deployer(env: &Env, owner: Owner) -> eyre::Result<Deployer> {
+    Ok(match owner {
+        Owner::Me => Deployer::Account {
+            account: env.client.auth().me().await?.account_id,
+        },
+        Owner::Account(account) => Deployer::Account { account },
+        Owner::Org(org) => Deployer::Org { org },
+    })
 }
 
 /// The deployments this account manages.
@@ -253,7 +296,7 @@ impl Drop for NoEcho {
 }
 
 /// `deployment usage --by org --csv`: one row per customer organization.
-fn usage_csv(orgs: &DeploymentOrgsResponse) -> String {
+fn usage_csv(orgs: &DeploymentOrgs) -> String {
     let mut out = String::from(
         "org_id,name,instances,members,active_members_30d,releases,first_created_at\n",
     );
@@ -297,7 +340,7 @@ fn csv_field(s: &str) -> String {
 pub async fn run(cmd: DeploymentCmd, env: &Env) -> eyre::Result<Value> {
     let deployments = env.client.deployments();
     Ok(match cmd {
-        DeploymentCmd::List => json!({ "deployments": managed(env).await? }),
+        DeploymentCmd::List => to_json(&deployments.list().await?)?,
         DeploymentCmd::Get { deployment } => {
             // `GET /deployments/{id}` is public: without a session, the id.
             let id = if env.api_key.is_some() || env.home.session(&env.url).is_some() {
@@ -312,15 +355,42 @@ pub async fn run(cmd: DeploymentCmd, env: &Env) -> eyre::Result<Value> {
             owner,
             dev_passkey,
         } => {
-            let owner = match owner {
-                Owner::Me => Deployer::Account {
-                    account: env.client.auth().me().await?.account_id,
-                },
-                Owner::Account(account) => Deployer::Account { account },
-                Owner::Org(org) => Deployer::Org { org },
-            };
+            let owner = deployer(env, owner).await?;
             let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
             let out = deployments.create(&name, owner, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
+        }
+        DeploymentCmd::Transfer {
+            deployment,
+            to,
+            dev_passkey,
+        } => {
+            let id = id_of(env, &deployment).await?;
+            let to = deployer(env, to).await?;
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = deployments.transfer_offer(&id, to, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
+        }
+        DeploymentCmd::Accept {
+            deployment,
+            to,
+            dev_passkey,
+        } => {
+            let to = deployer(env, to).await?;
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = deployments.transfer_accept(&deployment, to, pk.get()).await;
+            pk.save()?;
+            to_json(&out?)?
+        }
+        DeploymentCmd::CancelTransfer {
+            deployment,
+            dev_passkey,
+        } => {
+            let id = id_of(env, &deployment).await?;
+            let mut pk = DevPasskey::load(dev_passkey.as_deref())?;
+            let out = deployments.transfer_cancel(&id, pk.get()).await;
             pk.save()?;
             to_json(&out?)?
         }
@@ -433,9 +503,7 @@ pub async fn run(cmd: DeploymentCmd, env: &Env) -> eyre::Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use calimero_client::types::{
-        DeploymentAppsItem, DeploymentOrgsResponseOrgsItem, DeploymentOrgsResponseOrgsItemAppsItem,
-    };
+    use calimero_client::types::{CustomerApp, DeploymentCustomer, DeploymentOffer};
     use serde_json::Map;
 
     use super::*;
@@ -448,14 +516,16 @@ mod tests {
             owner: Deployer::Org {
                 org: "acme".to_owned(),
             },
-            apps: vec![DeploymentAppsItem {
+            apps: vec![DeploymentOffer {
                 app: "notes".to_owned(),
                 package: "com.acme.notes".to_owned(),
                 version: "1.3.0".to_owned(),
-                ..DeploymentAppsItem::default()
+                ..DeploymentOffer::default()
             }],
             created_by: "a".to_owned(),
             created_at: "2026-11-01T00:00:00Z".to_owned(),
+            transfer: None,
+            transferred: None,
             extra: Map::new(),
         }
     }
@@ -500,22 +570,22 @@ mod tests {
     /// quoted, and one a spreadsheet would run as a formula is defused.
     #[test]
     fn usage_csv_has_a_row_per_customer_org() {
-        let orgs = DeploymentOrgsResponse {
+        let orgs = DeploymentOrgs {
             deployment: "d1".to_owned(),
             orgs: vec![
-                DeploymentOrgsResponseOrgsItem {
+                DeploymentCustomer {
                     org_id: "o1".to_owned(),
                     name: Some("Globex, \"Inc\"".to_owned()),
                     member_count: 14,
                     active_members30d: 9,
                     instances: 2,
                     apps: vec![
-                        DeploymentOrgsResponseOrgsItemAppsItem {
+                        CustomerApp {
                             app: "notes".to_owned(),
                             version: "1.3.0".to_owned(),
                             ..Default::default()
                         },
-                        DeploymentOrgsResponseOrgsItemAppsItem {
+                        CustomerApp {
                             app: "notes".to_owned(),
                             version: "1.4.0".to_owned(),
                             ..Default::default()
@@ -524,7 +594,7 @@ mod tests {
                     first_created_at: "2026-11-02T09:12:44Z".to_owned(),
                     ..Default::default()
                 },
-                DeploymentOrgsResponseOrgsItem {
+                DeploymentCustomer {
                     org_id: "o2".to_owned(),
                     name: Some("=HYPERLINK(\"x\")".to_owned()),
                     ..Default::default()

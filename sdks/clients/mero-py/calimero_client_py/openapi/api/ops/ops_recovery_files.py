@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.ops_recovery_files_response_200 import OpsRecoveryFilesResponse200
+from ...models.recovery_files import RecoveryFiles
 from ...types import UNSET, Unset
 from typing import cast
 from typing import Union
@@ -36,9 +36,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OpsRecoveryFilesResponse200]]:
+) -> Optional[Union[Error, RecoveryFiles]]:
     if response.status_code == 200:
-        response_200 = OpsRecoveryFilesResponse200.from_dict(response.json())
+        response_200 = RecoveryFiles.from_dict(response.json())
 
         return response_200
 
@@ -70,7 +70,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OpsRecoveryFilesResponse200]]:
+) -> Response[Union[Error, RecoveryFiles]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -83,7 +83,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     holder: Union[Unset, str] = UNSET,
-) -> Response[Union[Error, OpsRecoveryFilesResponse200]]:
+) -> Response[Union[Error, RecoveryFiles]]:
     r"""The recovery files a node reads
 
      In `--recover-from`, else `--recovery-dir`, of `holder` (`operator`, the default; `org:<id>`;
@@ -101,7 +101,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsRecoveryFilesResponse200]]
+        Response[Union[Error, RecoveryFiles]]
     """
 
     kwargs = _get_kwargs(
@@ -119,7 +119,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     holder: Union[Unset, str] = UNSET,
-) -> Optional[Union[Error, OpsRecoveryFilesResponse200]]:
+) -> Optional[Union[Error, RecoveryFiles]]:
     r"""The recovery files a node reads
 
      In `--recover-from`, else `--recovery-dir`, of `holder` (`operator`, the default; `org:<id>`;
@@ -137,7 +137,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsRecoveryFilesResponse200]
+        Union[Error, RecoveryFiles]
     """
 
     return sync_detailed(
@@ -150,7 +150,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     holder: Union[Unset, str] = UNSET,
-) -> Response[Union[Error, OpsRecoveryFilesResponse200]]:
+) -> Response[Union[Error, RecoveryFiles]]:
     r"""The recovery files a node reads
 
      In `--recover-from`, else `--recovery-dir`, of `holder` (`operator`, the default; `org:<id>`;
@@ -168,7 +168,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OpsRecoveryFilesResponse200]]
+        Response[Union[Error, RecoveryFiles]]
     """
 
     kwargs = _get_kwargs(
@@ -184,7 +184,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     holder: Union[Unset, str] = UNSET,
-) -> Optional[Union[Error, OpsRecoveryFilesResponse200]]:
+) -> Optional[Union[Error, RecoveryFiles]]:
     r"""The recovery files a node reads
 
      In `--recover-from`, else `--recovery-dir`, of `holder` (`operator`, the default; `org:<id>`;
@@ -202,7 +202,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OpsRecoveryFilesResponse200]
+        Union[Error, RecoveryFiles]
     """
 
     return (

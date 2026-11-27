@@ -51,6 +51,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8]) -> Vec<u8> {
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -77,19 +78,55 @@ fn mpk(package: &str, version: &str, wasm: &[u8]) -> Vec<u8> {
     tar.into_inner().unwrap().finish().unwrap()
 }
 
+/// The cluster's registry credential, as `--registry-url` carries it, and the
+/// `Authorization` it sends.
+const REGISTRY_USER: &str = "cluster:secret";
+const REGISTRY_AUTH: &str = "Basic Y2x1c3RlcjpzZWNyZXQ=";
+
+/// One fetch the registry was asked for: `package@version`, whether it carried the
+/// credential, and the account it named.
+type Asked = (String, bool, Option<String>);
+
 /// A registry serving `{base}/artifacts/{package}/{version}/{file}`, counting
-/// what it is asked for.
+/// what it is asked for. A public release is served to anyone; a private one
+/// only with the credential, to an account allowed it (as mdma's authorize does),
+/// and then again with the credential alone (another node's re-fetch).
 #[derive(Clone, Default)]
 struct Registry {
     files: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
     hits: Arc<Mutex<usize>>,
+    private: Arc<Mutex<BTreeMap<String, Vec<String>>>>,
+    authorized: Arc<Mutex<Vec<String>>>,
+    asked: Arc<Mutex<Vec<Asked>>>,
+    /// The status a private release answers a fetch without the credential (`404` when
+    /// unset), as a registry that tells "sign in" from "not here" does.
+    anonymous: Arc<Mutex<Option<u16>>>,
+    /// The `error` a fetch with the credential naming an account is refused `403` with,
+    /// for any package (as mdma answers an account not linked to a developer).
+    refuse_accounts: Arc<Mutex<Option<String>>>,
 }
 
 impl Registry {
+    /// Publishes `package@version`, its WASM tagged with the package (a custom section),
+    /// so no two packages share one and each node fetches each package's.
     fn publish(&self, package: &str, version: &str) {
-        let _prev = self.files.lock().unwrap().insert(
+        let mut wasm = kv_wasm();
+        wasm.extend([0, u8::try_from(1 + package.len()).unwrap()]);
+        wasm.push(u8::try_from(package.len()).unwrap());
+        wasm.extend_from_slice(package.as_bytes());
+        let _prev = self
+            .files
+            .lock()
+            .unwrap()
+            .insert(format!("{package}@{version}"), mpk(package, version, &wasm));
+    }
+
+    /// Publishes `package@version` as private, for `accounts` only.
+    fn publish_private(&self, package: &str, version: &str, accounts: &[&str]) {
+        self.publish(package, version);
+        let _prev = self.private.lock().unwrap().insert(
             format!("{package}@{version}"),
-            mpk(package, version, &kv_wasm()),
+            accounts.iter().map(|a| (*a).to_owned()).collect(),
         );
     }
 
@@ -97,24 +134,65 @@ impl Registry {
         *self.hits.lock().unwrap()
     }
 
+    fn asked(&self) -> Vec<Asked> {
+        self.asked.lock().unwrap().clone()
+    }
+
+    fn serves(&self, key: &str, credential: bool, account: Option<&str>) -> bool {
+        let Some(allowed) = self.private.lock().unwrap().get(key).cloned() else {
+            return true;
+        };
+        let mut authorized = self.authorized.lock().unwrap();
+        match account {
+            _ if !credential => false,
+            Some(a) if allowed.iter().any(|x| x == a) => {
+                authorized.push(key.to_owned());
+                true
+            }
+            Some(_) => false,
+            None => authorized.iter().any(|k| k == key),
+        }
+    }
+
+    /// Serves on 127.0.0.1; the URL carries the credential.
     async fn serve(&self) -> String {
         use axum::extract::Path;
-        use axum::http::StatusCode;
+        use axum::http::{HeaderMap, StatusCode};
         use axum::response::IntoResponse;
         let reg = self.clone();
         let app = axum::Router::new().route(
             "/artifacts/{package}/{version}/{file}",
             axum::routing::get(
-                move |Path((package, version, _file)): Path<(String, String, String)>| {
+                move |Path((package, version, _file)): Path<(String, String, String)>,
+                      headers: HeaderMap| {
                     let reg = reg.clone();
                     async move {
                         *reg.hits.lock().unwrap() += 1;
-                        match reg
-                            .files
+                        let key = format!("{package}@{version}");
+                        let credential = headers
+                            .get("authorization")
+                            .is_some_and(|v| v == REGISTRY_AUTH);
+                        let account = headers
+                            .get("x-calimero-install-account")
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_owned);
+                        reg.asked
                             .lock()
                             .unwrap()
-                            .get(&format!("{package}@{version}"))
-                        {
+                            .push((key.clone(), credential, account.clone()));
+                        let refusal = reg.refuse_accounts.lock().unwrap().clone();
+                        if let Some(error) = refusal.filter(|_| credential && account.is_some()) {
+                            let body = json!({ "error": error, "message": "link it" });
+                            return (StatusCode::FORBIDDEN, axum::Json(body)).into_response();
+                        }
+                        if !reg.serves(&key, credential, account.as_deref()) {
+                            let anonymous = *reg.anonymous.lock().unwrap();
+                            return match anonymous.filter(|_| !credential) {
+                                Some(code) => StatusCode::from_u16(code).unwrap().into_response(),
+                                None => StatusCode::NOT_FOUND.into_response(),
+                            };
+                        }
+                        match reg.files.lock().unwrap().get(&key) {
                             Some(b) => (StatusCode::OK, b.clone()).into_response(),
                             None => StatusCode::NOT_FOUND.into_response(),
                         }
@@ -125,7 +203,7 @@ impl Registry {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let _serving = tokio::spawn(async move { axum::serve(listener, app).await });
-        format!("http://{addr}/")
+        format!("http://{REGISTRY_USER}@{addr}/")
     }
 }
 
@@ -225,7 +303,7 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
     refused(
         &alice
             .packages()
-            .install("com.test.kv", "1.0.0")
+            .install("com.test.kv", "1.0.0", None)
             .await
             .unwrap_err(),
     );
@@ -233,7 +311,7 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
     refused(
         &alice
             .packages()
-            .upload(mpk("com.test.up", "1.0.0", &kv_wasm()))
+            .upload(mpk("com.test.up", "1.0.0", &kv_wasm()), None)
             .await
             .unwrap_err(),
     );
@@ -313,7 +391,7 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
 
     let _ok = alice
         .packages()
-        .install("com.test.kv", "1.0.0")
+        .install("com.test.kv", "1.0.0", None)
         .await
         .unwrap();
     let app = alice
@@ -400,7 +478,7 @@ async fn only_granted_accounts_install_on_a_granted_cluster() {
     refused(
         &alice
             .packages()
-            .install("com.test.kv", "1.2.0")
+            .install("com.test.kv", "1.2.0", None)
             .await
             .unwrap_err(),
     );
@@ -496,17 +574,18 @@ async fn an_open_cluster_installs_as_before_until_the_operator_grants_deployment
     let rules = alice.public().releases_public().await.map(wire).unwrap();
     assert_eq!(rules["governance"]["deployments"], "granted");
     // Every replica attests it once it has applied the change.
-    let mut proven = None;
-    for _ in 0..30 {
-        if let Ok(p) = alice.verify_app_cluster(&app).await {
-            if p.governance.deployments == Deployments::Granted {
-                proven = Some(p);
-                break;
+    crate::harness::poll::eventually(
+        crate::harness::poll::EVENTUALLY,
+        "the replicas attest granted deployments",
+        || async {
+            match alice.verify_app_cluster(&app).await {
+                Ok(p) if p.governance.deployments == Deployments::Granted => Ok(()),
+                Ok(p) => Err(format!("{:?}", p.governance.deployments)),
+                Err(e) => Err(e.to_string()),
             }
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    assert!(proven.is_some(), "the replicas attest granted deployments");
+        },
+    )
+    .await;
 }
 
 /// Where the cluster's owner grants deployers: the operator grants them until
@@ -639,5 +718,441 @@ async fn the_cluster_owner_grants_deployers_once_the_operator_names_it() {
             .await
             .map(|b| b.hash)
             .unwrap_err(),
+    );
+}
+
+/// On a shared, granted cluster an account of another org must not get org A's
+/// private package by installing it from the operator's registry: the registry
+/// serves it only to the account its publisher allowed (alice's), with the
+/// cluster's credential, and the release is used only in the org it was installed for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn another_orgs_account_cannot_install_a_private_package_from_the_registry() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| {
+        cfg.registry = Some(url.clone());
+        cfg.governance.deployments = Deployments::Granted;
+    })
+    .await;
+    let ops = ops(&c).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let alice_id = account_of(&alice).await;
+    registry.publish_private("com.acme.secret", "1.0.0", &[&alice_id]);
+    registry.publish_private("com.acme.secret2", "1.0.0", &[&alice_id]);
+    for who in [&alice, &bob] {
+        let _ok = ops_signed(
+            &ops,
+            "ops/deployers",
+            json!({ "deployer": { "account": account_of(who).await } }),
+        )
+        .await
+        .unwrap();
+    }
+    let _acme = alice.orgs().create("Acme", None, None).await.unwrap();
+    let _bobco = bob.orgs().create("Bobco", None, None).await.unwrap();
+    let mut alices_app = String::new();
+    for p in ["com.acme.secret", "com.acme.secret2"] {
+        let _ok = alice.packages().install(p, "1.0.0", None).await.unwrap();
+        alices_app = alice
+            .apps()
+            .create(typed(
+                json!({ "name": "a", "package": p, "version": "1.0.0" }),
+            ))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+    }
+
+    let hidden = |what: &str, e: calimero_client::Error| {
+        assert!(
+            matches!(
+                e,
+                calimero_client::Error::Api {
+                    status: 403 | 404,
+                    ..
+                }
+            ),
+            "{what}: {e}"
+        );
+    };
+    let p = bob.packages();
+    hidden("control get", p.get("com.acme.secret").await.unwrap_err());
+    hidden(
+        "control get 2",
+        p.get("com.acme.secret2").await.unwrap_err(),
+    );
+    hidden(
+        "control alice's app",
+        bob.apps().get(&alices_app).await.unwrap_err(),
+    );
+
+    let mut leaks = Vec::new();
+    match p.install("com.acme.secret", "1.0.0", None).await.map(wire) {
+        Ok(v) => leaks.push(format!("bob's install from the registry answered 200: {v}")),
+        Err(e) => hidden("bob's install", e),
+    }
+    match p.get("com.acme.secret").await.map(wire) {
+        Ok(v) => leaks.push(format!("bob get now 200: {v}")),
+        Err(e) => hidden("get after", e),
+    }
+    for (what, r) in [
+        (
+            "pipelines",
+            p.pipelines("com.acme.secret", "1.0.0").await.map(wire),
+        ),
+        (
+            "capabilities",
+            p.capabilities("com.acme.secret", "1.0.0", None)
+                .await
+                .map(wire),
+        ),
+    ] {
+        if let Ok(v) = r {
+            let v = v.to_string();
+            leaks.push(format!("bob {what} now 200: {}", &v[..v.len().min(200)]));
+        }
+    }
+    match bob
+        .apps()
+        .create(typed(
+            json!({ "name": "b", "package": "com.acme.secret", "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+    {
+        Ok(app) => {
+            let abi = bob
+                .apps()
+                .abi(app["appId"].as_str().unwrap())
+                .await
+                .map(wire);
+            let abi = format!("{abi:?}");
+            leaks.push(format!(
+                "bob created his own instance {app}; its ABI read: {}",
+                &abi[..abi.len().min(200)]
+            ));
+        }
+        Err(e) => hidden("bob create after install", e),
+    }
+    // Create alone, with no explicit install, on a package bob has not touched.
+    match bob
+        .apps()
+        .create(typed(
+            json!({ "name": "c", "package": "com.acme.secret2", "version": "1.0.0" }),
+        ))
+        .await
+        .map(wire)
+    {
+        Ok(app) => leaks.push(format!(
+            "bob's create with no install installed from the registry and answered 200: {app}"
+        )),
+        Err(e) => hidden("bob create without install", e),
+    }
+    hidden(
+        "alice's app stays unreadable",
+        bob.apps().get(&alices_app).await.unwrap_err(),
+    );
+    assert!(leaks.is_empty(), "{}", leaks.join("\n"));
+}
+
+/// A registry that answers a fetch without its credential `401` or `403` (sign in) is
+/// telling core the release is not public: the install goes on with the credential and
+/// records it private. Any other refusal stays an error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_anonymous_fetch_refused_as_unauthorized_goes_on_with_the_credential() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let _acme = alice.orgs().create("Acme", None, None).await.unwrap();
+    let _bobco = bob.orgs().create("Bobco", None, None).await.unwrap();
+    let alice_id = account_of(&alice).await;
+    for (code, version) in [(401, "1.0.0"), (403, "2.0.0")] {
+        *registry.anonymous.lock().unwrap() = Some(code);
+        registry.publish_private("com.acme.secret", version, &[&alice_id]);
+        let _ok = alice
+            .packages()
+            .install("com.acme.secret", version, None)
+            .await
+            .unwrap_or_else(|e| panic!("{code}: {e}"));
+    }
+    let listed = alice
+        .packages()
+        .get("com.acme.secret")
+        .await
+        .map(wire)
+        .unwrap();
+    assert_eq!(listed["versions"].as_array().unwrap().len(), 2, "{listed}");
+    let e = bob.packages().get("com.acme.secret").await.unwrap_err();
+    assert!(e.to_string().starts_with("404"), "private: {e}");
+
+    *registry.anonymous.lock().unwrap() = Some(500);
+    registry.publish_private("com.acme.secret", "3.0.0", &[&alice_id]);
+    let e = alice
+        .packages()
+        .install("com.acme.secret", "3.0.0", None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("503"), "{e}");
+}
+
+/// A registry refusing the install account as not linked to a Calimero Cloud developer
+/// (`403 account_not_linked`, for any package, so it says nothing of the package) answers
+/// `403 ACCOUNT_NOT_LINKED`, telling the person to link it; any other refusal is as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_registry_refusing_an_unlinked_account_says_to_link_it() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let _acme = alice.orgs().create("Acme", None, None).await.unwrap();
+    registry.publish_private("com.acme.secret", "1.0.0", &[]);
+    *registry.refuse_accounts.lock().unwrap() = Some("account_not_linked".to_owned());
+    for p in ["com.acme.secret", "com.nobody.unknown"] {
+        let e = alice
+            .packages()
+            .install(p, "1.0.0", None)
+            .await
+            .unwrap_err();
+        assert_eq!(e.code(), Some("ACCOUNT_NOT_LINKED"), "{p}: {e}");
+        assert!(e.to_string().starts_with("403"), "{p}: {e}");
+        assert!(e.to_string().contains("node accounts"), "{p}: {e}");
+    }
+    *registry.refuse_accounts.lock().unwrap() = Some("forbidden".to_owned());
+    let e = alice
+        .packages()
+        .install("com.acme.secret", "1.0.0", None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("503"), "another refusal: {e}");
+    *registry.refuse_accounts.lock().unwrap() = None;
+    let e = alice
+        .packages()
+        .install("com.nobody.unknown", "1.0.0", None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("404"), "{e}");
+    assert!(
+        !e.to_string().contains("linked"),
+        "a 404 is not about linking: {e}"
+    );
+}
+
+/// A release the log records is fetched again (by a node that runs it and lacks it)
+/// naming no account: a private one with the cluster's credential, as the registry
+/// serves only what an allowed account installed, and a public one with none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_is_fetched_again_with_the_credential_only_while_it_is_private() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let _acme = alice.orgs().create("Acme", None, None).await.unwrap();
+    let alice_id = account_of(&alice).await;
+    registry.publish_private("com.acme.secret", "1.0.0", &[&alice_id]);
+    registry.publish("com.test.public", "1.0.0");
+    // Each node runs the app from its own copy: the other two fetch it again.
+    let session = alice.session().await.unwrap();
+    for p in ["com.acme.secret", "com.test.public"] {
+        let _ok = alice.packages().install(p, "1.0.0", None).await.unwrap();
+        let app = alice
+            .apps()
+            .create(typed(
+                json!({ "name": "a", "package": p, "version": "1.0.0" }),
+            ))
+            .await
+            .unwrap()
+            .app_id;
+        for i in 0..3 {
+            let cl = c.client(i);
+            cl.use_session(session.clone()).await;
+            let _v = cl
+                .apps()
+                .view(
+                    &app,
+                    "get",
+                    Some(json!({ "key": "k" })),
+                    Some(calimero_client::types::ViewsRequestConsistency::Stale),
+                    Some(0),
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    let asked = |key: &str| -> Vec<(bool, Option<String>)> {
+        registry
+            .asked()
+            .into_iter()
+            .filter(|(k, _, _)| k == key)
+            .map(|(_, credential, account)| (credential, account))
+            .collect()
+    };
+    let private = asked("com.acme.secret@1.0.0");
+    assert_eq!(
+        private[..2],
+        [(false, None), (true, Some(alice_id.clone()))],
+        "the install: without the credential, then with it and the account"
+    );
+    assert!(
+        private.len() > 2 && private[2..].iter().all(|a| *a == (true, None)),
+        "{private:?}"
+    );
+    let public = asked("com.test.public@1.0.0");
+    assert!(
+        public.len() > 1 && public.iter().all(|a| *a == (false, None)),
+        "{public:?}"
+    );
+}
+
+/// `GET /packages` says each release's kind and names, of the organizations it was
+/// installed for, only those the reader is in; a catalog release is everyone's: public.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_release_shows_its_kind_and_only_the_readers_organizations() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let ops = ops(&c).await;
+    let (alice, mut a) = signed_up(&c, 0, "alice").await;
+    let (bob, _b) = signed_up(&c, 1, "bob").await;
+    let alice_id = account_of(&alice).await;
+    let org = |v: Value| v["orgId"].as_str().unwrap().to_owned();
+    let acme = org(alice
+        .orgs()
+        .create("Acme", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let beta = org(alice
+        .orgs()
+        .create("Beta", None, None)
+        .await
+        .map(wire)
+        .unwrap());
+    let token = alice
+        .orgs()
+        .invite_create(&beta, typed(json!({ "role": "member" })), Some(&mut a))
+        .await
+        .map(wire)
+        .unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _joined = bob.orgs().invite_redeem(&token).await.unwrap();
+    registry.publish_private("com.acme.secret", "1.0.0", &[&alice_id]);
+    registry.publish_private("com.acme.catalog", "1.0.0", &[&alice_id]);
+    registry.publish("com.test.public", "1.0.0");
+    for org in [&acme, &beta] {
+        let _ok = alice
+            .packages()
+            .install("com.acme.secret", "1.0.0", Some(org.as_str()))
+            .await
+            .unwrap();
+    }
+    for p in ["com.test.public", "com.acme.catalog"] {
+        let _ok = alice
+            .packages()
+            .install(p, "1.0.0", Some(acme.as_str()))
+            .await
+            .unwrap();
+    }
+    let _ok = ops_signed(
+        &ops,
+        "ops/packages/install",
+        json!({ "package": "com.acme.catalog", "version": "1.0.0" }),
+    )
+    .await
+    .unwrap();
+
+    let both = json!([{ "orgId": acme, "name": "Acme" }, { "orgId": beta, "name": "Beta" }]);
+    let mut both_sorted = both.as_array().unwrap().clone();
+    both_sorted.sort_by_key(|o| o["orgId"].as_str().unwrap().to_owned());
+    assert_eq!(
+        kind_of(&alice, "com.acme.secret").await,
+        (json!("private"), Value::Array(both_sorted))
+    );
+    assert_eq!(
+        kind_of(&bob, "com.acme.secret").await,
+        (json!("private"), json!([{ "orgId": beta, "name": "Beta" }])),
+        "never an organization bob is not in"
+    );
+    assert_eq!(
+        kind_of(&alice, "com.test.public").await,
+        (json!("public"), json!([]))
+    );
+    assert_eq!(
+        kind_of(&bob, "com.acme.catalog").await,
+        (json!("public"), json!([])),
+        "the operator's catalog is everyone's"
+    );
+}
+
+/// `package`'s first release as `who` reads it: its `visibility` and `orgs`.
+async fn kind_of(who: &Client, package: &str) -> (Value, Value) {
+    let v = who
+        .transport()
+        .json(Request::new(Method::GET, format!("packages/{package}")))
+        .await
+        .unwrap();
+    let r = &v["versions"][0];
+    (r["visibility"].clone(), r["orgs"].clone())
+}
+
+/// A release recorded public that the publisher later makes private is still fetched again:
+/// the anonymous fetch is refused, so it goes on with the credential (no account).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_public_release_made_private_later_is_still_fetched_again() {
+    let registry = Registry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(3, |cfg| cfg.registry = Some(url.clone())).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    registry.publish("com.test.public", "1.0.0");
+    let _ok = alice
+        .packages()
+        .install("com.test.public", "1.0.0", None)
+        .await
+        .unwrap();
+    for (code, flip) in [(404, true), (401, false), (403, false)] {
+        if flip {
+            registry
+                .private
+                .lock()
+                .unwrap()
+                .insert("com.test.public@1.0.0".into(), vec![]);
+            registry
+                .authorized
+                .lock()
+                .unwrap()
+                .push("com.test.public@1.0.0".into());
+        }
+        *registry.anonymous.lock().unwrap() = Some(code);
+        let node = &c.nodes[1].as_ref().unwrap().node;
+        let _caught_up = node.sys_fresh().await;
+        let v = node
+            .sys(|s| {
+                s.packages
+                    .get("com.test.public")?
+                    .versions
+                    .get("1.0.0")
+                    .cloned()
+            })
+            .unwrap();
+        let _mpk = node
+            .release_mpk("com.test.public", &v)
+            .await
+            .unwrap_or_else(|e| panic!("{code}: {e}"));
+    }
+    let asked: Vec<_> = registry
+        .asked()
+        .into_iter()
+        .filter(|(_, _, account)| account.is_none())
+        .map(|(_, credential, _)| credential)
+        .collect();
+    assert_eq!(
+        asked[1..],
+        [false, true, false, true, false, true],
+        "each re-fetch asks anonymously, then with the credential: {asked:?}"
     );
 }

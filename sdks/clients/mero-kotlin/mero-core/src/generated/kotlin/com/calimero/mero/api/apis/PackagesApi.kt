@@ -27,19 +27,20 @@ import java.io.IOException
 import okhttp3.Call
 import okhttp3.HttpUrl
 
-import com.calimero.mero.api.models.BundlePut200Response
+import com.calimero.mero.api.models.BundleStored
+import com.calimero.mero.api.models.CapabilityCard
 import com.calimero.mero.api.models.Error
-import com.calimero.mero.api.models.OpsPackageInstall200Response
+import com.calimero.mero.api.models.FrontendDigests
+import com.calimero.mero.api.models.OriginList
+import com.calimero.mero.api.models.OriginRemoved
 import com.calimero.mero.api.models.OriginsAddRequest
-import com.calimero.mero.api.models.OriginsList200Response
-import com.calimero.mero.api.models.OriginsRemove200Response
 import com.calimero.mero.api.models.OriginsRemoveRequest
 import com.calimero.mero.api.models.Package
-import com.calimero.mero.api.models.PackageCapabilities200Response
 import com.calimero.mero.api.models.PackageInstallRequest
-import com.calimero.mero.api.models.PackageList200Response
+import com.calimero.mero.api.models.PackageInstalled
+import com.calimero.mero.api.models.PackageList
 import com.calimero.mero.api.models.PackageOrigin
-import com.calimero.mero.api.models.PackagePipelines200ResponseValue
+import com.calimero.mero.api.models.ReleasePipeline
 import com.calimero.mero.api.models.Uninstalled
 
 import kotlinx.serialization.SerialName
@@ -75,7 +76,7 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Upload a raw component
      * A &#x60;calimero:app&#x60; component, 16 MiB at most; only on a node started with &#x60;--allow-unsigned-bundles&#x60; or &#x60;--dev&#x60;. A WASM core module (SDK 0.12) is refused &#x60;400 UNSUPPORTED_BUNDLE&#x60;.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param body the component
-     * @return BundlePut200Response
+     * @return BundleStored
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -84,11 +85,11 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun bundlePut(body: kotlin.ByteArray) : BundlePut200Response = withContext(Dispatchers.IO) {
+    suspend fun bundlePut(body: kotlin.ByteArray) : BundleStored = withContext(Dispatchers.IO) {
         val localVarResponse = bundlePutWithHttpInfo(body = body)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as BundlePut200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as BundleStored
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -107,16 +108,16 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * Upload a raw component
      * A &#x60;calimero:app&#x60; component, 16 MiB at most; only on a node started with &#x60;--allow-unsigned-bundles&#x60; or &#x60;--dev&#x60;. A WASM core module (SDK 0.12) is refused &#x60;400 UNSUPPORTED_BUNDLE&#x60;.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param body the component
-     * @return ApiResponse<BundlePut200Response?>
+     * @return ApiResponse<BundleStored?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun bundlePutWithHttpInfo(body: kotlin.ByteArray) : ApiResponse<BundlePut200Response?> = withContext(Dispatchers.IO) {
+    suspend fun bundlePutWithHttpInfo(body: kotlin.ByteArray) : ApiResponse<BundleStored?> = withContext(Dispatchers.IO) {
         val localVariableConfig = bundlePutRequestConfig(body = body)
 
-        return@withContext request<kotlin.ByteArray, BundlePut200Response>(
+        return@withContext request<kotlin.ByteArray, BundleStored>(
             localVariableConfig
         )
     }
@@ -225,7 +226,7 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * A package&#39;s frontend origins
      * The custom origins (and rp-ids) the package&#39;s manager registered for its frontend.  **Who:** signed in (a session or an API key).
      * @param `package` 
-     * @return OriginsList200Response
+     * @return OriginList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -234,11 +235,11 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun originsList(`package`: kotlin.String) : OriginsList200Response = withContext(Dispatchers.IO) {
+    suspend fun originsList(`package`: kotlin.String) : OriginList = withContext(Dispatchers.IO) {
         val localVarResponse = originsListWithHttpInfo(`package` = `package`)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OriginsList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OriginList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -257,16 +258,16 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * A package&#39;s frontend origins
      * The custom origins (and rp-ids) the package&#39;s manager registered for its frontend.  **Who:** signed in (a session or an API key).
      * @param `package` 
-     * @return ApiResponse<OriginsList200Response?>
+     * @return ApiResponse<OriginList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun originsListWithHttpInfo(`package`: kotlin.String) : ApiResponse<OriginsList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun originsListWithHttpInfo(`package`: kotlin.String) : ApiResponse<OriginList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = originsListRequestConfig(`package` = `package`)
 
-        return@withContext request<Unit, OriginsList200Response>(
+        return@withContext request<Unit, OriginList>(
             localVariableConfig
         )
     }
@@ -299,7 +300,7 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param `package` 
      * @param originsRemoveRequest 
-     * @return OriginsRemove200Response
+     * @return OriginRemoved
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -308,11 +309,11 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun originsRemove(`package`: kotlin.String, originsRemoveRequest: OriginsRemoveRequest) : OriginsRemove200Response = withContext(Dispatchers.IO) {
+    suspend fun originsRemove(`package`: kotlin.String, originsRemoveRequest: OriginsRemoveRequest) : OriginRemoved = withContext(Dispatchers.IO) {
         val localVarResponse = originsRemoveWithHttpInfo(`package` = `package`, originsRemoveRequest = originsRemoveRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OriginsRemove200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OriginRemoved
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -332,16 +333,16 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param `package` 
      * @param originsRemoveRequest 
-     * @return ApiResponse<OriginsRemove200Response?>
+     * @return ApiResponse<OriginRemoved?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun originsRemoveWithHttpInfo(`package`: kotlin.String, originsRemoveRequest: OriginsRemoveRequest) : ApiResponse<OriginsRemove200Response?> = withContext(Dispatchers.IO) {
+    suspend fun originsRemoveWithHttpInfo(`package`: kotlin.String, originsRemoveRequest: OriginsRemoveRequest) : ApiResponse<OriginRemoved?> = withContext(Dispatchers.IO) {
         val localVariableConfig = originsRemoveRequestConfig(`package` = `package`, originsRemoveRequest = originsRemoveRequest)
 
-        return@withContext request<OriginsRemoveRequest, OriginsRemove200Response>(
+        return@withContext request<OriginsRemoveRequest, OriginRemoved>(
             localVariableConfig
         )
     }
@@ -373,11 +374,11 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /packages/{package}/{version}/capabilities
      * A release&#39;s capabilities
-     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;destinations&#x60; is where an instance of it could send data, over the release and every app its &#x60;uses&#x60; would create with it (&#x60;members&#x60;, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both &#x60;null&#x60; while a release its &#x60;uses&#x60; would create is not installed here. &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads every release of it. &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
+     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;destinations&#x60; is where an instance of it could send data, over the release and every app its &#x60;uses&#x60; would create with it (&#x60;members&#x60;, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both &#x60;null&#x60; while a release its &#x60;uses&#x60; would create is not installed here. &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
      * @param `package` 
      * @param version 
      * @param service  (optional)
-     * @return PackageCapabilities200Response
+     * @return CapabilityCard
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -386,11 +387,11 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun packageCapabilities(`package`: kotlin.String, version: kotlin.String, service: kotlin.String? = null) : PackageCapabilities200Response = withContext(Dispatchers.IO) {
+    suspend fun packageCapabilities(`package`: kotlin.String, version: kotlin.String, service: kotlin.String? = null) : CapabilityCard = withContext(Dispatchers.IO) {
         val localVarResponse = packageCapabilitiesWithHttpInfo(`package` = `package`, version = version, service = service)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageCapabilities200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as CapabilityCard
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -407,20 +408,20 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * GET /packages/{package}/{version}/capabilities
      * A release&#39;s capabilities
-     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;destinations&#x60; is where an instance of it could send data, over the release and every app its &#x60;uses&#x60; would create with it (&#x60;members&#x60;, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both &#x60;null&#x60; while a release its &#x60;uses&#x60; would create is not installed here. &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads every release of it. &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
+     * What the release is and may do, read from its signed manifest and the ABI its service component embeds, before any app of it exists: &#x60;bundle&#x60; is the service WASM&#39;s hash, &#x60;outbound&#x60; the sorted prefixes it may call out to and &#x60;abi&#x60; the embedded &#x60;calimero:abi&#x60; verbatim (&#x60;null&#x60; when it embeds none). &#x60;destinations&#x60; is where an instance of it could send data, over the release and every app its &#x60;uses&#x60; would create with it (&#x60;members&#x60;, by path, each with its release, signer and own destinations), empty when no data leaves Calimero; both &#x60;null&#x60; while a release its &#x60;uses&#x60; would create is not installed here. &#x60;service&#x60; names the service whose card to read (default: the release&#39;s only one). A session bound to the package reads what its account does (every release of it recorded before releases were public or private). &#x60;404&#x60; for a release the caller may not see, &#x60;400 NO_SUCH_SERVICE&#x60; for an unknown service or no &#x60;service&#x60; on a release with several, &#x60;400 BAD_REQUEST&#x60; for an over-long &#x60;service&#x60;.  **Who:** signed in (a session or an API key).
      * @param `package` 
      * @param version 
      * @param service  (optional)
-     * @return ApiResponse<PackageCapabilities200Response?>
+     * @return ApiResponse<CapabilityCard?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun packageCapabilitiesWithHttpInfo(`package`: kotlin.String, version: kotlin.String, service: kotlin.String?) : ApiResponse<PackageCapabilities200Response?> = withContext(Dispatchers.IO) {
+    suspend fun packageCapabilitiesWithHttpInfo(`package`: kotlin.String, version: kotlin.String, service: kotlin.String?) : ApiResponse<CapabilityCard?> = withContext(Dispatchers.IO) {
         val localVariableConfig = packageCapabilitiesRequestConfig(`package` = `package`, version = version, service = service)
 
-        return@withContext request<Unit, PackageCapabilities200Response>(
+        return@withContext request<Unit, CapabilityCard>(
             localVariableConfig
         )
     }
@@ -450,6 +451,82 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
             query = localVariableQuery,
             headers = localVariableHeaders,
             requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /packages/{package}/{version}/frontend
+     * A release&#39;s frontend files
+     * Every file the node serves for the release&#39;s frontend (at &#x60;/{version}/{path}&#x60; on the package&#39;s origin), with its SHA-256 and size, and the entry. The node verified each against the publisher&#39;s signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. &#x60;404&#x60; for a release that ships no frontend or that the cluster does not hold.  **Who:** anyone.
+     * @param `package` 
+     * @param version 
+     * @return FrontendDigests
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun packageFrontend(`package`: kotlin.String, version: kotlin.String) : FrontendDigests = withContext(Dispatchers.IO) {
+        val localVarResponse = packageFrontendWithHttpInfo(`package` = `package`, version = version)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as FrontendDigests
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /packages/{package}/{version}/frontend
+     * A release&#39;s frontend files
+     * Every file the node serves for the release&#39;s frontend (at &#x60;/{version}/{path}&#x60; on the package&#39;s origin), with its SHA-256 and size, and the entry. The node verified each against the publisher&#39;s signature at install; a client that attested this node checks the page it was served against this list, so a TLS terminator or a certificate holder cannot swap the page unseen. Public, as the files are. &#x60;404&#x60; for a release that ships no frontend or that the cluster does not hold.  **Who:** anyone.
+     * @param `package` 
+     * @param version 
+     * @return ApiResponse<FrontendDigests?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun packageFrontendWithHttpInfo(`package`: kotlin.String, version: kotlin.String) : ApiResponse<FrontendDigests?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = packageFrontendRequestConfig(`package` = `package`, version = version)
+
+        return@withContext request<Unit, FrontendDigests>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation packageFrontend
+     *
+     * @param `package` 
+     * @param version 
+     * @return RequestConfig
+     */
+    fun packageFrontendRequestConfig(`package`: kotlin.String, version: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/packages/{package}/{version}/frontend".replace("{"+"package"+"}", encodeURIComponent(`package`.toString())).replace("{"+"version"+"}", encodeURIComponent(version.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = false,
             body = localVariableBody
         )
     }
@@ -530,9 +607,9 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /packages/install
      * Install a release from the registry
-     * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * For the organization &#x60;org&#x60; names (the caller a member, else &#x60;404&#x60;), else the caller&#39;s only one (&#x60;400 ORG_REQUIRED&#x60; in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller&#39;s account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. &#x60;404&#x60; when the registry serves it to neither; &#x60;403 ACCOUNT_NOT_LINKED&#x60; when the registry refuses the caller&#39;s account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param packageInstallRequest 
-     * @return OpsPackageInstall200Response
+     * @return PackageInstalled
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -541,11 +618,11 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun packageInstall(packageInstallRequest: PackageInstallRequest) : OpsPackageInstall200Response = withContext(Dispatchers.IO) {
+    suspend fun packageInstall(packageInstallRequest: PackageInstallRequest) : PackageInstalled = withContext(Dispatchers.IO) {
         val localVarResponse = packageInstallWithHttpInfo(packageInstallRequest = packageInstallRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPackageInstall200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageInstalled
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -562,18 +639,18 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /packages/install
      * Install a release from the registry
-     * **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * For the organization &#x60;org&#x60; names (the caller a member, else &#x60;404&#x60;), else the caller&#39;s only one (&#x60;400 ORG_REQUIRED&#x60; in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller&#39;s account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. &#x60;404&#x60; when the registry serves it to neither; &#x60;403 ACCOUNT_NOT_LINKED&#x60; when the registry refuses the caller&#39;s account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param packageInstallRequest 
-     * @return ApiResponse<OpsPackageInstall200Response?>
+     * @return ApiResponse<PackageInstalled?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun packageInstallWithHttpInfo(packageInstallRequest: PackageInstallRequest) : ApiResponse<OpsPackageInstall200Response?> = withContext(Dispatchers.IO) {
+    suspend fun packageInstallWithHttpInfo(packageInstallRequest: PackageInstallRequest) : ApiResponse<PackageInstalled?> = withContext(Dispatchers.IO) {
         val localVariableConfig = packageInstallRequestConfig(packageInstallRequest = packageInstallRequest)
 
-        return@withContext request<PackageInstallRequest, OpsPackageInstall200Response>(
+        return@withContext request<PackageInstallRequest, PackageInstalled>(
             localVariableConfig
         )
     }
@@ -605,7 +682,7 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /packages
      * Installed packages
      * Only the releases the caller may see.  **Who:** signed in (a session or an API key).
-     * @return PackageList200Response
+     * @return PackageList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -614,11 +691,11 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun packageList() : PackageList200Response = withContext(Dispatchers.IO) {
+    suspend fun packageList() : PackageList = withContext(Dispatchers.IO) {
         val localVarResponse = packageListWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -636,16 +713,16 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * GET /packages
      * Installed packages
      * Only the releases the caller may see.  **Who:** signed in (a session or an API key).
-     * @return ApiResponse<PackageList200Response?>
+     * @return ApiResponse<PackageList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun packageListWithHttpInfo() : ApiResponse<PackageList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun packageListWithHttpInfo() : ApiResponse<PackageList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = packageListRequestConfig()
 
-        return@withContext request<Unit, PackageList200Response>(
+        return@withContext request<Unit, PackageList>(
             localVariableConfig
         )
     }
@@ -677,7 +754,7 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * The pipelines the release registers, by name: &#x60;hash&#x60;, &#x60;worstCaseFuel&#x60; (a decimal string), the &#x60;modules&#x60; they pin and the canonical &#x60;pipeline&#x60;. &#x60;404&#x60; for a release the caller may not see.  **Who:** signed in (a session or an API key).
      * @param `package` 
      * @param version 
-     * @return kotlin.collections.Map<kotlin.String, PackagePipelines200ResponseValue>
+     * @return kotlin.collections.Map<kotlin.String, ReleasePipeline>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -686,11 +763,11 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun packagePipelines(`package`: kotlin.String, version: kotlin.String) : kotlin.collections.Map<kotlin.String, PackagePipelines200ResponseValue> = withContext(Dispatchers.IO) {
+    suspend fun packagePipelines(`package`: kotlin.String, version: kotlin.String) : kotlin.collections.Map<kotlin.String, ReleasePipeline> = withContext(Dispatchers.IO) {
         val localVarResponse = packagePipelinesWithHttpInfo(`package` = `package`, version = version)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlin.collections.Map<kotlin.String, PackagePipelines200ResponseValue>
+            ResponseType.Success -> (localVarResponse as Success<*>).data as kotlin.collections.Map<kotlin.String, ReleasePipeline>
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -710,16 +787,16 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * The pipelines the release registers, by name: &#x60;hash&#x60;, &#x60;worstCaseFuel&#x60; (a decimal string), the &#x60;modules&#x60; they pin and the canonical &#x60;pipeline&#x60;. &#x60;404&#x60; for a release the caller may not see.  **Who:** signed in (a session or an API key).
      * @param `package` 
      * @param version 
-     * @return ApiResponse<kotlin.collections.Map<kotlin.String, PackagePipelines200ResponseValue>?>
+     * @return ApiResponse<kotlin.collections.Map<kotlin.String, ReleasePipeline>?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun packagePipelinesWithHttpInfo(`package`: kotlin.String, version: kotlin.String) : ApiResponse<kotlin.collections.Map<kotlin.String, PackagePipelines200ResponseValue>?> = withContext(Dispatchers.IO) {
+    suspend fun packagePipelinesWithHttpInfo(`package`: kotlin.String, version: kotlin.String) : ApiResponse<kotlin.collections.Map<kotlin.String, ReleasePipeline>?> = withContext(Dispatchers.IO) {
         val localVariableConfig = packagePipelinesRequestConfig(`package` = `package`, version = version)
 
-        return@withContext request<Unit, kotlin.collections.Map<kotlin.String, PackagePipelines200ResponseValue>>(
+        return@withContext request<Unit, kotlin.collections.Map<kotlin.String, ReleasePipeline>>(
             localVariableConfig
         )
     }
@@ -823,9 +900,10 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /packages
      * Upload a signed release
-     * A signed &#x60;.mpk&#x60;, checked as an install from the registry is (signature, artifact digests, &#x60;minRuntimeVersion&#x60;, the package&#39;s pinned signer, every service compiles). Only with &#x60;--dev&#x60;; otherwise &#x60;403 UPLOADS_DISABLED&#x60;.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * A signed &#x60;.mpk&#x60;, checked as an install from the registry is (signature, artifact digests, &#x60;minRuntimeVersion&#x60;, the package&#39;s pinned signer, every service compiles). Only with &#x60;--dev&#x60;; otherwise &#x60;403 UPLOADS_DISABLED&#x60;. An upload is private to the organization &#x60;org&#x60; names (the caller a member, else &#x60;404&#x60;), else the caller&#39;s only one: &#x60;400 ORG_REQUIRED&#x60; in several; in none, it is private to the accounts that install it.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param body the &#x60;.mpk&#x60;
-     * @return OpsPackageInstall200Response
+     * @param org  (optional)
+     * @return PackageInstalled
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -834,11 +912,11 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun packageUpload(body: kotlin.ByteArray) : OpsPackageInstall200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = packageUploadWithHttpInfo(body = body)
+    suspend fun packageUpload(body: kotlin.ByteArray, org: kotlin.String? = null) : PackageInstalled = withContext(Dispatchers.IO) {
+        val localVarResponse = packageUploadWithHttpInfo(body = body, org = org)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OpsPackageInstall200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageInstalled
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -855,18 +933,19 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
     /**
      * POST /packages
      * Upload a signed release
-     * A signed &#x60;.mpk&#x60;, checked as an install from the registry is (signature, artifact digests, &#x60;minRuntimeVersion&#x60;, the package&#39;s pinned signer, every service compiles). Only with &#x60;--dev&#x60;; otherwise &#x60;403 UPLOADS_DISABLED&#x60;.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
+     * A signed &#x60;.mpk&#x60;, checked as an install from the registry is (signature, artifact digests, &#x60;minRuntimeVersion&#x60;, the package&#39;s pinned signer, every service compiles). Only with &#x60;--dev&#x60;; otherwise &#x60;403 UPLOADS_DISABLED&#x60;. An upload is private to the organization &#x60;org&#x60; names (the caller a member, else &#x60;404&#x60;), else the caller&#39;s only one: &#x60;400 ORG_REQUIRED&#x60; in several; in none, it is private to the accounts that install it.  **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
      * @param body the &#x60;.mpk&#x60;
-     * @return ApiResponse<OpsPackageInstall200Response?>
+     * @param org  (optional)
+     * @return ApiResponse<PackageInstalled?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun packageUploadWithHttpInfo(body: kotlin.ByteArray) : ApiResponse<OpsPackageInstall200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = packageUploadRequestConfig(body = body)
+    suspend fun packageUploadWithHttpInfo(body: kotlin.ByteArray, org: kotlin.String?) : ApiResponse<PackageInstalled?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = packageUploadRequestConfig(body = body, org = org)
 
-        return@withContext request<kotlin.ByteArray, OpsPackageInstall200Response>(
+        return@withContext request<kotlin.ByteArray, PackageInstalled>(
             localVariableConfig
         )
     }
@@ -875,11 +954,17 @@ open class PackagesApi(basePath: kotlin.String = defaultBasePath, client: Call.F
      * To obtain the request config of the operation packageUpload
      *
      * @param body the &#x60;.mpk&#x60;
+     * @param org  (optional)
      * @return RequestConfig
      */
-    fun packageUploadRequestConfig(body: kotlin.ByteArray) : RequestConfig<kotlin.ByteArray> {
+    fun packageUploadRequestConfig(body: kotlin.ByteArray, org: kotlin.String?) : RequestConfig<kotlin.ByteArray> {
         val localVariableBody = body
-        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableQuery: MultiValueMap = mutableMapOf<kotlin.String, kotlin.collections.List<kotlin.String>>()
+            .apply {
+                if (org != null) {
+                    put("org", listOf(org.toString()))
+                }
+            }
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/octet-stream"
         localVariableHeaders["Accept"] = "application/json"

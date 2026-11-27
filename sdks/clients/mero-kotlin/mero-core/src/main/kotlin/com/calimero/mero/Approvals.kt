@@ -1,7 +1,6 @@
 package com.calimero.mero
 
-import com.calimero.mero.api.models.ConsentPageResult200Response
-import com.calimero.mero.api.models.ConsentPageResult200ResponseOutcome
+import com.calimero.mero.api.models.ConsentResultOutcome
 import com.calimero.mero.tee.compareReleaseVersions
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
@@ -13,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.net.URLEncoder
+import com.calimero.mero.api.models.ConsentResult as ConsentResultAnswer
 import com.calimero.mero.api.models.OrgRole as ApiOrgRole
 import com.calimero.mero.api.models.TeamRole as ApiTeamRole
 
@@ -781,17 +781,17 @@ data class ConsentResult(
 
     companion object {
         /** The facade's answer (`client.consent.pageResult(request = id)`) as a [ConsentResult], its generated `outcome` typed by kind. */
-        fun from(answer: ConsentPageResult200Response): ConsentResult =
+        fun from(answer: ConsentResultAnswer): ConsentResult =
             ConsentResult(
                 answer.requestId,
                 answer.kind.value,
                 answer.status.value,
                 answer.decidedAt,
-                if (answer.status == ConsentPageResult200Response.Status.APPROVED) ConsentOutcome.of(answer.kind.value, answer.outcome?.toJson()) else null,
+                if (answer.status == ConsentResultAnswer.Status.APPROVED) ConsentOutcome.of(answer.kind.value, answer.outcome?.toJson()) else null,
             )
 
         /** The generated `outcome`'s fields that are present, as the node sent them. */
-        private fun ConsentPageResult200ResponseOutcome.toJson(): JsonObject =
+        private fun ConsentResultOutcome.toJson(): JsonObject =
             buildJsonObject {
                 orgId?.let { put("orgId", it) }
                 token?.let { put("token", it) }

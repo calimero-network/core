@@ -40,7 +40,8 @@ publisher's key, and every artifact in the archive is listed with its digest.
 - **Pipelines** (`pipelines/*.yaml`) are compiled and checked at install
   against the release's compute methods and the modules of other packages a
   step names (`module: <package>[@<version>]`, pinned to the release resolved
-  then); any error is `400 BAD_PIPELINE` with every problem listed. `GET
+  then: one the installer may use that is public or the operator's, its own
+  signer's, or private to every organization a private release is for); any error is `400 BAD_PIPELINE` with every problem listed. `GET
   /packages/{package}/{version}/pipelines` answers them ([Pipeline
   runs](/protocol/compute-actions/#pipeline-runs)).
 
@@ -60,7 +61,7 @@ publisher's key, and every artifact in the archive is listed with its digest.
   steps={[
     { from: 0, to: 0, label: 'meroctl app build; meroctl app pack (sign)' },
     { from: 0, to: 1, label: 'publish package@version (.mpk)' },
-    { from: 2, to: 3, label: 'POST /packages/install { package, version }' },
+    { from: 2, to: 3, label: 'POST /packages/install { package, version, org? }' },
     { from: 3, to: 1, label: 'fetch the .mpk (--registry-url)' },
     { from: 3, to: 3, label: 'verify: signature, digests, min runtime, signer pin, WASM' },
     { from: 3, to: 4, label: 'InstallPackage { .mpk hash, services, outbound }' },
@@ -81,10 +82,10 @@ instead; a production node refuses uploads (`403 UPLOADS_DISABLED`).
 
 There are two ways in:
 
-- `POST /packages/install { package, version }` fetches `package@version` from
+- `POST /packages/install { package, version, org? }` fetches `package@version` from
   the operator's registry (`--registry-url`, `calimero-app-downloader`'s
   `HttpRegistry`).
-- `POST /packages` takes an uploaded `.mpk`, on a development cluster only.
+- `POST /packages?org=` takes an uploaded `.mpk`, on a development cluster only.
 
 Before the system log records anything (`InstallPackage`), the node that took
 the request verifies the release (`Node::verify_release`):
@@ -98,7 +99,9 @@ the request verifies the release (`Node::verify_release`):
    needs](/protocol/upgrades/#the-runtime-a-release-needs)).
 3. The package's **pinned signer**: the first release of a package pins its
    publisher key (`did:key`); a release signed by any other key is refused.
-4. Each service's WASM compiles.
+4. Each service's WASM compiles, imports nothing outside the `calimero:app`
+   world ([What the host offers](/protocol/execution/#what-the-host-offers-a-cloud-run)),
+   and carries an ABI of a supported `abiVersion`; otherwise `400 BAD_BUNDLE`.
 5. A registry install got the package and version it asked for.
 6. No WASM it ships (a service or a compute component) ships in a release of
    another package signed by another key (`409`): a WASM belongs to one
@@ -151,22 +154,36 @@ to: `(package, signer)`.
   release also ships stays, recorded under that release. Only whoever installed
   the package's first release (an account, or the operator) may uninstall, and
   never a release a deployment offers.
+  It takes only the releases it may use: one it may not answers as a missing
+  version, and with none named, the others stay.
+  The same holds for registering the package's origins: a first installer does it
+  only while a release of the package is theirs to use.
 
 ## Who sees a release
 
 Many organizations may share one cluster, and what one of them installed is
-not another's to list or run. A release is visible (`SystemState::sees_release`) to:
+not another's to list or run.
+An account installs a release for an organization it is a member of: the one it names (`org`), else its only one; an account in several must name one.
+Below the cluster version that brings `Feature::PrivateReleases` an install names no organization, as before, so a rolling upgrade breaks no install.
+The release is public when the registry serves it to anyone (fetched without the cluster's registry credential), and private otherwise: a private registry package (fetched with the credential and the installing account, `x-calimero-install-account`), or an upload.
+A release is visible, which is the right to use it (`SystemState::sees_release`), to:
 
-- whoever installed it: the account recorded as `installedBy`, or one that
-  installed the same release again later (`installers`);
 - every account, for a release the operator installed (`/ops/packages`): the
   cluster's own catalog, which the operator upgrades apps to;
-- an account that shares an organization with an account that installed it;
-- an account that reaches an app running one of its services (so a member of
-  an app always sees the release it runs);
-- a session opened on the package's own frontend, for every release of that
-  package (the frontend is public by name, and it creates instances of it);
+- every account, for a public release;
+- a member of an organization a private release was installed for (an installer
+  only while such a member), each install for another organization adding it;
+- the accounts that installed a private release installed for no organization
+  (an account in none installs for none), until an install for an organization
+  adds one; an account in none installing again a release already private to some
+  organization is refused `404` before anything is recorded, as the registry
+  answers an account it does not serve;
 - the operator, for the releases it installed; it sees no account's releases.
+
+A session opened on the package's own frontend sees what its account sees, the display name and author of the package's newest release included; a sign-up there names the package by its id unless that release is public, the operator's, or recorded before `visibility`.
+A release recorded before releases were public or private keeps the earlier rule: whoever installed it, an account sharing an organization with an installer, an account that reaches an app running it, and a session on the package's frontend.
+Reaching an instance reads the release it runs (its name and version, `SystemState::reads_release`), never uses it, nor reads another release that shares its WASM.
+An instance whose record names no release (made by its WASM's hash) is told, to one who only reaches it, a release that reader may use, else a public or catalog one that ships its WASM, never a private one.
 
 For anyone else the release is not installed. `GET /packages` and
 `GET /packages/{p}` list only the releases the caller sees (a package with
@@ -175,17 +192,24 @@ upgrading an app from it resolves as for a missing release: without a version,
 the newest release the caller sees; with one, the release is installed from
 the registry first, which makes a registry release the caller's too, and
 answers what a missing release answers when the registry lacks it (an upload).
-Naming its WASM by hash answers as an unknown bundle, and approving outbound
-hosts for a package with no release the caller sees answers `404`. An
-organization's upgrade run moves an app only to a release its upgrader sees;
-the operator's, to one it installed or the app's owner sees.
+Naming its WASM by hash answers as an unknown bundle. Approving outbound hosts
+takes the prefixes of the newest release the caller reads (a newer private
+release of another organization neither blocks it nor shows), and answers `404`
+when it reads none, on the API and the consent page; the page's requesting app
+name and author and the frontend origins it may return to come from that release
+too. An
+upgrade run, whoever starts it, moves an app only to a release the app's owner
+sees, or that the app's deployment still offers; the operator's run also to one
+it installed. From the cluster version that brings `Feature::PrivateReleases`,
+applying the move judges it again (`RELEASE_NOT_USABLE`), so no node moves an
+app onto a release its owner may not use.
 
 Records from before `installers` existed read with none; every release has
 always recorded `installedBy`, so each is visible by the rules above from the
 first start of this version.
 
 :::caution[What stays shared]
-Package names are one namespace per cluster: installing a release of a name
+Package names are shared by the whole cluster: installing a release of a name
 another publisher's key pinned is refused with that key named, so the name's
 existence shows. A frontend is served to anyone who asks for its origin (a
 page loads before anyone signs in), so a package's frontend, its releases'
@@ -215,7 +239,10 @@ prefixes, and have no pinned signer.
 The node reads the ABI a component embeds (its `calimero:abi` section) for what
 it acts on: which methods are views and confirm methods, whom each method admits
 (accounts, API keys, other apps, the system), its timers, and the tables search
-indexes. A method the ABI does not name is refused (default-deny).
+indexes. A method the ABI does not name is refused (default-deny). These facts
+are trusted because they are part of the component's bytes, which a release's
+publisher signs, so an operator cannot mark a method public or a view a
+write ([App interface](/build/app-abi/)).
 
 ## Frontends
 
@@ -243,10 +270,35 @@ uses `localhost`.
   not offer this one, is a `404`.
 - Only `GET` and `HEAD` of files. An unknown label under D is a `404`, never a
   node route. Responses carry a fixed content security policy with the cluster's
-  API origins and the attestation mirror (`https://cloud.calimero.network`, where
-  the page's client gets the release's signed measurements and Intel's
-  collateral; both are signed, so the mirror is trusted with nothing) added to
-  `connect-src`.
+  API origins and the attestation mirror (`https://cloud.calimero.network`, or
+  `https://staging.cloud.calimero.network` for a page under staging's apps
+  domain, as mero-js picks it; where the page's client gets the release's
+  signed measurements and Intel's collateral; both are signed, so the mirror is
+  trusted with nothing) added to `connect-src`.
+
+`GET /packages/{package}/{version}/frontend` (anyone, over the sealed channel
+like every route) answers the release's entry and every file with its SHA-256
+and size, by the path it is served at. The node computed them from the files it
+verified against the publisher's signature. A client that attested the node
+checks the page it was served against this list, so whoever terminates TLS or
+holds a certificate for the origin cannot swap the page unseen: mero-tee's
+frontend verifier extension does this in the browser ([Levels of frontend
+trust](#levels-of-frontend-trust)).
+
+### Levels of frontend trust
+
+A page decrypts and shows what the signed-in person reads, and checks the
+node's attestation in its own JavaScript, so the person trusts whoever served
+it:
+
+| Level | Where the page comes from | Who could serve another page | For |
+| --- | --- | --- | --- |
+| Debug | A static host (Vercel) or any branch build | That host, whoever can push to the branch or its dependencies, anyone with a certificate for its name | Demos and debugging, never data that matters |
+| Production | The node (`--apps-domain`), from the release's signed `.mpk`; TLS ends in the TD on Calimero Cloud | Whoever can get a WebPKI certificate for the name (the operator, through its DNS zone) | Every customer-facing app |
+| Full | Production, with the frontend verifier extension checking every file against this attested node's list | Nobody without the attested node's key or the publisher's | People who must not have to trust TLS, DNS or the operator |
+
+The extension blocks a changed file before the page runs it in Firefox, and
+detects it after loading in Chrome, whose extensions cannot read a response.
 
 A session signed in on a frontend is bound to its package; what it may call,
 and how it asks for the rest, is in [Sessions & authority](/protocol/sessions-and-authority/).
@@ -269,8 +321,6 @@ admits it, and a passkey ceremony from it opens a session bound to the package.
 A cluster label made for another cluster answers `404`.
 
 ### Deployment hosts
-
-The front does not route these yet; cluster hosts are what it routes.
 
 Every deployment has a host of its own too, `{dlabel}.D`, where the dlabel is
 52 lowercase base32 characters (unpadded, alphabet `a`–`z`, `2`–`7`) of
@@ -309,9 +359,46 @@ serves it (every path above, the same content security policy, `/.well-known/cal
 before any node route. Unlike the package's host, it is a registered origin: a
 passkey ceremony there runs under the domain's own rp-id, never the
 cluster's, and opens a session bound to the package that names the origin;
-removing it ends the site and those sessions together. TLS for the name ends
-inside the TD with a certificate Calimero Cloud orders for the node's attested
-key; the end-to-end design is `docs/specs/custom-domains.md`.
+removing it ends the site and those sessions together, as does uninstalling
+the package's last release.
+
+- **Which requests.** A `Host` of the name alone, or with port 443, names
+  `https://{name}`; on a `--dev` node a `localhost` name with its port names
+  `http://{name}:{port}` (`app_host::served_origin_of`). Another port, a name
+  under D, or a node's own API host is never a served site, so the request
+  reaches the node's routes.
+- **What is refused.** Only on a node with `--apps-domain` (`400 NOT_SERVING`);
+  never a name under D or under the cluster's rp-id; 4 per package and 64 per
+  cluster (`MAX_SERVED_ORIGINS_PER_PACKAGE`, `MAX_SERVED_ORIGINS`). Adding one
+  needs every replica, voter and learner on a release that reads the flag
+  (`409 CLUSTER_NOT_UPGRADED`): an older node would drop `served` and hold the
+  origin unserved, not serving the site but still admitting its ceremonies. The
+  API and `SystemState::add_package_origin` judge the same rules, so a command
+  any node proposes is judged alike on every node. The full list is in
+  [Registered origins](/protocol/identities/#registered-origins).
+- **Certificates.** merod holds none: TLS for the name ends in front of it, as
+  for D. `GET /ops/served-origins` lists every served origin's host by its
+  package's label, never the package's name, for whatever orders the
+  certificates and routes the name ([The operator](/protocol/operator/)).
+- **One cluster's record.** Each cluster's log holds its own origins, so the
+  same origin may be registered on another cluster; which cluster a browser
+  reaches is decided by the name's DNS and the front, not by either log.
+
+**Why a flag on a registered origin.** Everything a custom domain needs once
+the bytes arrive (who may add and remove it, ceremonies under its rp-id, CORS,
+binding sessions to the package and ending them on removal) is a registered
+origin's already. A separate record would duplicate all of it, and the same
+name could then be held twice, by two packages or under two rp-ids. One map
+keyed by origin gives one answer to who holds `https://kv.example.com`, so a
+held origin keeps its `served` and its rp-id: changing either is refused
+(`409 ORIGIN_TAKEN` for `served`; remove it first). The consent names `served: true` so that a
+consent to the plain origin, signed by a client that never knew the flag,
+cannot be replayed to make the name served.
+
+A custom domain's sessions are only as safe as its DNS: whoever controls the
+name can serve their own page there and use its passkeys, though only for
+that package. On the package's host, that trust rests on the apps domain's
+DNS alone.
 
 **Why its own origin.** An app's page is third-party code. Served from the
 cluster's own origin, it could reach anything the signed-in account can. On its
@@ -324,3 +411,236 @@ sessions](/protocol/identities/#package-bound-sessions)). Its step-ups come
 only from its own origin. What it may not do itself, such as approving an
 upgrade or creating an organization, it asks the node's
 [consent page](/protocol/consent-page/) for.
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src` unless another crate is named.
+The design and its reasons are above; a module's own detail is in its `//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Packages
+
+Code: `packages.rs`, `system::PackageRecord`.
+
+- `POST /packages` (uploads) needs `Config::allow_package_uploads`, on with `--dev`.
+- `minRuntimeVersion` is compared with `CALIMERO_RELEASE_VERSION`, set by `build.rs`.
+- `Node::release_wasm` fetches a release this node does not hold: from the registry for a registry release, never a peer; from a peer for an upload.
+- `POST /packages/install { package, version, org? }` and `POST /packages?org=` pick the organization with `Node::install_org` and `api::apps::only_org` (`404` for a non-member's, `400 ORG_REQUIRED`).
+  `PackageVersion::orgs` gains it, and `InstallPackage` refuses a non-member's (`NOT_AN_ORG_MEMBER`); below `Feature::PrivateReleases`, `record_release` drops it.
+- Uninstall answers a release the actor may not use as missing (`api::packages::refuse_unusable`; `UninstallPackage` from `Feature::PrivateReleases`), and `manages_package` holds origins to the same rule.
+
+#### Public and private releases
+
+`PackageVersion::visibility` (`Feature::PrivateReleases`) comes from `Node::fetch_for_install`:
+
+1. Without the registry URL's credential (userinfo): served is public; `401` or `403` (`RegistryStatus`) goes on to step 2; any other failure is `503`.
+2. With the credential and `INSTALL_ACCOUNT_HEADER` (none for the operator): private.
+   A `403` with `error: account_not_linked` is `403 ACCOUNT_NOT_LINKED`, which says to link the account in Calimero Cloud (`refused_as_not_linked`).
+
+- An account in no organization records none (`orgs` empty; `installed_by_any`); an install again its installer could not then use is `404` (`not_for_this_account`) and records nothing.
+- A reinstall the registry serves to anyone makes a release public, never private again.
+- `release_mpk` fetches a public release without the credential, then once more with it on `404`, `401` or `403`; the recorded hash pins what comes back.
+
+#### Compiling
+
+Every compile (each service's component and compute component, and a raw `POST /bundles`) goes through the node's one `compile::Compiler` (`Node::compile`) on the blocking pool.
+
+| Limit | Value | On breach |
+| --- | --- | --- |
+| `MAX_CONCURRENT_COMPILES` | 1 at a time | — |
+| `MAX_QUEUED_COMPILES`, `COMPILE_WAIT` | 4 waiting, 10 s each | `503 BUSY` |
+| `COMPILE_TIMEOUT` | 60 s | `422 COMPILE_TIMEOUT`, the service in `details`; the slot is held until the thread returns |
+| `MAX_COMPONENT_BYTES` | 47 MiB unpacked (a blob) | `413 TOO_LARGE` before compiling, since it could not reach another node |
+
+A component app's first-use prepare (`Node::prepare_bytes`) stays outside the compiler, off the workers through `spawn_blocking`.
+
+#### Compute components and compute-only packages
+
+- A compute component is prepared on `Node::compute_engine` only.
+- A compute-only release has `PackageVersion::components = ComputeOnly`, empty `services`, and `compute[""]` holding the hash.
+- It needs `require_upgraded_nodes` (`409 CLUSTER_NOT_UPGRADED`): an older node drops `components` and would apply it as an app's release.
+- App-level lookups read `PackageVersion::app_parts`, so a compute-only app's `bundle` and `compute_bundle` are both the compute hash.
+- Its app has `AppRecord::components = ComputeOnly`; `AppRecord::require_app_component` refuses a call, view, intent, init or tick (`422 NO_APP_COMPONENT`).
+- An upgrade between compute-only releases only moves the directory record; one that adds or drops the app component is `409 COMPONENTS_CHANGED`.
+- `PackageVersion::compute` maps service to hash; its `BundleRecord` has `PackageRef::compute = true`, so `resolve_release`, `CreateApp` and `UpgradeApp` never treat it as a service.
+- `release_facts` reads a compute-only release's ABI from its compute component, as `GET /apps/{app}/abi` does.
+
+#### Pipelines
+
+Code: `packages/pipelines.rs`.
+
+Install compiles each pipeline (`calimero_pipeline::compile`) against an `Env`:
+
+- `self`: the package's compute methods and caps, the default module for a step;
+- one module per other package a step names, resolved by `Node::resolve_modules` (newest when unversioned) to a release that ships one compute component, else `UNKNOWN_MODULE`;
+  the release must be one `SystemState::may_pin` allows;
+- the cluster's pool memory ceilings.
+
+Errors are `400 BAD_PIPELINE` with `details: [{file, path, code, message}]`, including `NO_COMPUTE` and `DUPLICATE_NAME`.
+A named service declaring pipelines is `422 PIPELINES_NEED_ONE_SERVICE`.
+`PackageVersion::pipelines` maps name to `PipelineRef { hash, worstCaseFuel, modules }`, each module a `ModulePin { package, version, compute }`.
+`InstallPackage` applies only while every pinned release is installed, and uninstalling a pinned one is `409 MODULE_IN_USE` (`SystemState::module_pinned`).
+The canonical JSON is a blob under its hash; `Node::pipeline_json(hash)` reads it, else recompiles from the `.mpk`.
+A release with pipelines also needs `409 CLUSTER_NOT_UPGRADED` cleared.
+`may_pin` judges the release as the install leaves it, and an install again resolves its existing pins; `InstallPackage` judges `may_pin_all` again from `Feature::PrivateReleases`.
+
+#### Release reads
+
+- `GET /packages/{package}/{version}/pipelines` answers `{ name: { hash, worstCaseFuel, modules, pipeline } }` (`meroctl package pipelines`).
+- `GET /packages/{package}/{version}/capabilities` answers the release's card before any app of it exists, to whoever sees the release.
+  A session bound to the package sees what its account does, and every release only for a record from before `visibility` (`SystemState::sees_release_from`).
+  It is read through `consent_page::release_capabilities`; its first eight keys match `consent_page::diff::side`, and `abi` is the embedded `calimero:abi` verbatim.
+  `?service=` picks the service; an unknown name, or none on a multi-service release, is `400 NO_SUCH_SERVICE` (`packages::no_such_service`).
+  A name over `MAX_SERVICE_QUERY_BYTES` is `400 BAD_REQUEST`, checked first.
+
+### An instance's release
+
+Code: `AppRecord::release`, a `system::PackageRef`.
+
+`AppRecord::release` is set at create and by every `UpgradeApp`, which checks that the release ships the bundle (`SystemState::release_ships`).
+Releases may share a WASM, so `bundle` alone does not say which release runs, and moving to a release with the same WASM is an ordinary upgrade.
+An org run writes such an `UpgradeApp` without running anything on the app's group.
+
+- `Node::release_of_app` and `report::release_of_app` read it, as does `GET /apps`.
+- A record without it (older, or a raw upload) falls back to the only release shipping its bundle (`SystemState::running_release`), and to none when several do.
+- The apply-side `SystemState::governing` still takes the bundle's first recorded release for such a record.
+- `UpgradeRecord::from_release` and `to_release` name both ends of an upgrade.
+- Create and upgrade carry the compute hash of the release they name (`resolve_release_parts`); apply checks the pair with `SystemState::ships_compute`.
+- By bundle hash alone, `SystemState::compute_of` resolves the compute part; `400 AMBIGUOUS_COMPUTE` when releases differ, `compute: false` when none ships one.
+- `ComponentCmd::Init` and `Upgrade` carry `compute_bundle` into `ComponentHead::compute_bundle`, so a run pins what the group runs, not the system record.
+- A release's parts are charged at their own sizes (`PackageVersion::part_sizes`); an older release counts the whole `.mpk` per part.
+
+#### Who sees a release
+
+`SystemState::sees_release` is the rule above; a release recorded before `visibility` keeps the earlier one (`sees_release_from`).
+
+- Reading an instance's release (`report::release_of_app`) is `SystemState::reads_release`, by the package and version the app's record names.
+- A route (`src/api`, `src/consent_page`) reads a release a client names only through `release_used`, `releases_used`, `package_used`, `newest_used`, `newest_read` and `release_offered_to`.
+  The gate `crates/node/tests/it/release_lookups.rs` fails on any other read of `packages`, `versions` or `bundles` there, unless `READS_ALLOWED` names the line and why.
+- `GET /packages[/{p}]` shows each release's kind (`PackageVersion::visibility_shown`; a catalog release is public) and, of a private one's `orgs`, only the reader's (`SystemState::release_orgs_of`).
+- For anyone else, `resolve_release` treats the release as missing and upgrade runs skip it (`api::upgrades::upgrade_release`).
+- `sees_bundle` hides its WASM; a raw bundle's uploader still names it, and a release's first installer counts only beside a release recorded before `visibility`.
+- Outbound approval picks the newest release the caller reads with `PackageRecord::latest_where`; `SetOutboundApproval` judges it again at apply from `Feature::PrivateReleases`.
+- An app team (`ScopeApps`, `MoveApp`, `createOrg`'s) is named after the newest release its maker may use (`latest_where`), else `no such package`, and `createOrg` offers no app team.
+- A sign-up's package name is `passkeys::app_name`.
+
+### Deployments
+
+Code: `SystemState::deployments`, `system::Deployment`, `Offer`, `api/deployments.rs`.
+
+- Managers are whoever `acts_for` the owner (a `Deployer`); create and offer also need `may_deploy` where deployments are granted.
+- `CreateDeployment`'s id is `system::deployment_id` of the consent's nonce.
+- Bounds: `MAX_DEPLOYMENTS_PER_OWNER`, `MAX_DEPLOYMENTS`, `MAX_APPS_PER_DEPLOYMENT`; names `deployment_name_fits`, app names and ids `deployment_segment_fits`.
+- `POST /apps { deployment, ... }` resolves through `api::offered_bundle`; `CreateApp` checks the offer again (`offers_bundle`).
+- An offer serves a create or an upgrade only while someone who `acts_for` the owner may use its release (`SystemState::offer_serves`), else `400 NOT_OFFERED`; instances made before keep running.
+- `upgrade_app` resolves a deployment instance's target with `api::apps::offered_bundle`; `node::outside_deployment` answers `409 OUTSIDE_DEPLOYMENT`.
+- At apply, `SystemState::within_deployment` judges `UpgradeApp` when its `in_deployment` flag is set (`Feature::UpgradeInDeployment`, `in_deployment_rule`) or `SystemState::cluster_brings` the rule.
+  Organization, publisher, operator and unit runs judge the same; from `Feature::PrivateReleases` only an offer that still serves counts, as in an automatic update (`auto_update_allows`).
+- The consent page's `upgrade` and `upgradeUnit` take `toVersion` as optional (`UpgradeSubject::to_version`) and resolve it in `consent_page::requested_release`.
+  Another instance still names it (`400 VERSION_REQUIRED`).
+- `UninstallPackage` refuses an offered release (`offered`).
+- An organization owner holds a recovery key (`system::RECOVERY_KEY_REQUIRED`, `Feature::DeploymentNeedsRecovery`), judged in `api/deployments.rs` and `api/recovery.rs` before the passkey and again in `system/deployments.rs`.
+- A transfer is `OfferDeployment`, `AcceptDeployment` and `CancelDeploymentTransfer` (`Feature::DeploymentTransfer`), keeping one `PendingTransfer` on `Deployment::transfer`.
+  `hands_over` decides who may offer (`NOT_HANDING_OVER`); an acceptance past `TRANSFER_TTL_SECS` is `TRANSFER_LAPSED`, and `Deployment::transferred` records the hand-over.
+- Until a person approves an update of an instance after the hand-over (`AppRecord::owner_seen_at`), `SystemState::handed_over_unseen` keeps updates from applying on their own.
+
+### Deployment secrets
+
+Code: `SystemState::deployment_secrets` (deployment id → name → `component::InstanceSecret`); `api/deployments.rs`: `deployment_secrets`, `deployment_secret_set`, `deployment_secret_clear`.
+
+- `SetDeploymentSecret` and `ClearDeploymentSecret`; `authorize` recomputes the fingerprint from the value the entry carries, so no node swaps it.
+- Refused: `system::UNDECLARED_SECRET`.
+- Bounds: `component::MAX_SECRET_VALUE_BYTES` (shared with instance secrets), `MAX_SECRETS_PER_DEPLOYMENT`, `MAX_DEPLOYMENT_SECRETS`.
+- Gates: `Feature::DeploymentSecrets` and, for names reached through `uses`, `Feature::DeploymentUsedSecrets`.
+- The API sets `SetDeploymentSecret { used: true }` only when no offered release declares the name; apply then checks `SystemState::deployment_uses_declare` over `used_releases`.
+  From `Feature::PrivateReleases`, a used release counts only if someone acting for the owner may use it (`offer_serves`) or the offered package's signer signs it (`same_signer`).
+- `InstallPackage` records `uses` (`system::ReleaseUse`) only once the feature is active (`record_release` drops it before); reinstalling the same `.mpk` fills it in.
+- `GET` adds `declaredBy` (`deployment_declarers`).
+- Lookup at run time: `Node::outbound_for` → `component::run_secrets`.
+  The deployment's value comes from `SystemState::deployment_secrets_of` on this node's system state, not the app's log, and only where `SystemState::deployment_covers`.
+- The gate attaches a value where `PackageVersion::secrets` binds it: one host and one header or body field each (a hard cutover in 1.0.0-rc.37).
+- `SecretValue`'s `Debug` hides the value, and `apply`'s answers never carry it.
+
+### Instance secrets
+
+Code: `api/apps.rs`: `app_secrets`, `app_secret_set`, `app_secret_clear`; `component.rs`: `ComponentCmd::SecretSet`/`SecretClear`, `InstanceSecret`, `rows::CSECRET`.
+
+- The owner, or whoever manages the organization's apps, sets a value with a step-up over `{ name, fingerprint }`.
+- The host commands `__secret_set` and `__secret_clear` write one hidden row on the replicas (`AppMachine::instance_secrets`) that no host function reads.
+- A call's or tick's run reads it with the state it sees (`RunExtras::secrets`); an action reads it on the leader.
+- `outbound_for` hands it to the gate as `calimero_outbound::OwnSecrets`.
+- `GET` answers through the leader's reserved view `__secrets`: fingerprints, never values.
+- Set and clear need `require_upgraded_nodes`.
+
+### Units
+
+Code: `api/apps.rs`: `create_instance`, `unit_members`; `api/upgrades.rs`: `app_upgrade_unit`.
+
+#### Creating and deleting
+
+- `create_instance` creates each `mode: create` reference first, at most `MAX_UNIT_DEPTH` deep.
+- `unit_members` picks the newest installed release in range that the creator may use (`sees_release`), that the instance's own signer published, or, for a deployment instance, that `offer_serves` allows.
+  Otherwise it is `409 USES_NOT_INSTALLED`, answered as for a package not installed.
+- The member's create runs exactly that release (`CreateAppBody::unit_release`, `serde(skip)`); a unit's preview (`egress::release_unit`) and upgrade (`unit_plan`, `egress::update`) pick by the same rule.
+- It records them in `AppRecord::links` (`Feature::AppLinks`) and passes their ids as `links` in `initArgs` when `init` takes them; a client's own `links` there is refused.
+- A failure after a member was made leaves it in place.
+- With `Feature::WholeUnits`, members of a deployment instance carry its deployment, and their `CreateApp` names `unit_offer`, checked at apply in place of the member's own release.
+  `CreateAppBody::unit_offer` is `serde(skip)`: only the node sets it.
+- `DELETE /apps/{app}` of an instance deletes its unit (`SystemState::unit_of`, over `links` transitively) and answers it in `members`.
+  `DeleteApp { members }` must match at apply (`UNIT_NOT_AS_NAMED`), and the actor must be allowed to delete each one.
+- A member (`unit_parent`) deleted alone is `409 UNIT_MEMBER` at the API and `UNIT_MEMBER` at apply.
+- The API sends `members` once the cluster version brings the feature, or for an instance with members (else `409 FEATURE_NOT_ACTIVE`).
+- A member finds its instance with `env::unit_of` (WIT `context.unit-of`; `SysDirectory::unit_of`), derived from the system state, so nothing new is stored.
+
+#### Upgrading a unit
+
+- `POST /apps/{app}/upgrade-unit` starts a run whose consent (`org:<org> / __upgrade_unit / { app, package, version, targets }`) names each member's release (`UpgradeRun::targets`, `RunTarget`, `Feature::UnitUpgrade`).
+- Apply derives the apps from `links` (`upgrade_run_apps`); `run_may_move` and `UpgradeApp { run }` judge each by `UpgradeRun::target_of`.
+- A member upgraded alone outside its instance's range is `409 OUTSIDE_UNIT_RANGE` (`refuse_off_unit_range`).
+- `unit_plan` reads nothing of a target its account may not use: before any member, target or passkey it answers as `resolve_release` answers a missing release.
+  For a deployment instance, anything but its offer that still serves is `409 OUTSIDE_DEPLOYMENT`.
+- The consent page's `upgradeUnit` (`unit_upgrade_request`) builds one model from `api::unit_plan` and each app's sheet; members skip the bound session's `within`.
+  `Action::UpgradeUnit` is stale when a bundle or the targets moved, and `act` runs `api::upgrade_unit`.
+
+#### Attached apps
+
+- An `attach` reference is held in `AppRecord::attached`, apart from `links`, so unit upgrades and deletes never touch it.
+- `SystemCmd::LinkApp { app_id, name, target }` (`Feature::AttachApp`; consent `<app> / __link / { name, target }`, `system::link_app_args`) sets it; `target: null` detaches.
+- Apply requires: whoever manages both apps, the same organization, a name (`calimero_bundle::is_use_name`) that is not a unit member's, and at most `MAX_ATTACHED`.
+- `PUT|DELETE /apps/{app}/links/{name}` (`app_link`, `app_unlink`) also need an `attach` reference of the running release (`release_uses`; `409 NOT_AN_ATTACH_REFERENCE`) and an app of that package (`409 WRONG_PACKAGE`).
+  An app outside the range is attached and answered `inRange: false`.
+- `GET /apps/{app}/links` lists each reference (`link_row`).
+- `remove_app` detaches a deleted app everywhere.
+- The upgrade sheet's `attachedOutOfRange` comes from `attached_outside`.
+- Runs read links with `env::linked` (`SysDirectory::linked`: `links`, then `attached`).
+
+### App frontends
+
+Code: `app_host.rs`.
+
+- Files come from `Node::release_mpk`, verified before a byte is served; opened ones are cached, and so is a release shipping none.
+- `FrontendCache::get_or_load` runs one load per release and at most `FRONTEND_LOADS` at once.
+- `/app/{app}/` of a record without `AppRecord::release` goes to the newest release shipping its WASM, by `compare_versions`.
+- `/d/{deployment}/` is looked up again on fresh state when nothing matches.
+- Every redirect keeps the request's query, after any `deployment` it adds, so `/?invite=...` reaches the page.
+- The mirror in `connect-src` is `attestation_mirror(host)`: `STAGING_ATTESTATION_MIRROR` under `STAGING_APPS_DOMAIN`, `ATTESTATION_MIRROR` on any other host, copies of mero-js's `CLOUD_ENVIRONMENTS` kept equal by `the_mirrors_match_mero_js`.
+- Cluster hosts are `cluster_label(config.cluster, package)`; deployment hosts are `deployment_label(id)`, served as an `app_host::Site`.
+
+#### Package-bound sessions
+
+- The session's package is `SessionClaims::app`, carried by refresh.
+- `Principal::within` keeps it to that package's apps: gate, app reads and writes, listings.
+- `unbound` and `holder` refuse it everything the design lists, plus redeeming invites, an app's delete and its access.
+- The exception is its own package's teams (`Principal::within_team`, `OwnTeam`, `Org::package_of_team`):
+  - `team_create` under one;
+  - `team_update` of a team below the app team, never the app team itself, with a move only within;
+  - `team_set_member` and `team_remove_member` on any of them;
+  - `team_delete` below the app team when every app in its subtree is the package's;
+  - `app_access` of a package app between two such teams.
+- Step-ups are over one of the package's apps, or `org:{org}` for `BOUND_TEAM_STEP_UPS` (`__set_team_member`, `__remove_team_member`, `__delete_team`); `step_up` judges `within_team` again.
+
+### Smaller rules
+
+- **Init**: `initArgs` is kept on the `AppRecord`; a failed init answers `422 INIT_FAILED` (`AppState::init_error`).
+- **Typed ids** (accounts, apps, organizations, teams, upgrade runs, API keys) are base64url that never starts with `-` (`api::typed_id`), which meroctl would read as a flag.
+- **Context ids**: an app answers to `hex(SHA-256(app_id))` wherever the API takes an app id (`Node::canonical_app_id`); a component reads its id with `env::app_id`.
+- **Inspection**: `GET /apps/{app}/storage`, `GET /apps/{app}/abi`, `GET /auth/usage` (with `developerFuelToday` and `developerWritesToday`), `GET /orgs/{org}/usage` (admins) and `GET /apps/{app}/usage` (owner and org admins; see [Execution](/protocol/execution/)).

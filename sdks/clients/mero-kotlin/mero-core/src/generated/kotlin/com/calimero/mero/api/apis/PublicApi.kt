@@ -28,11 +28,11 @@ import okhttp3.Call
 import okhttp3.HttpUrl
 
 import com.calimero.mero.api.models.AttestationDoc
+import com.calimero.mero.api.models.ClusterReleases
 import com.calimero.mero.api.models.Error
-import com.calimero.mero.api.models.Health200Response
-import com.calimero.mero.api.models.PublisherBinding200Response
-import com.calimero.mero.api.models.ReleasesPublic200Response
-import com.calimero.mero.api.models.RestoreRecoverHolder200Response
+import com.calimero.mero.api.models.Health
+import com.calimero.mero.api.models.HolderRecovered
+import com.calimero.mero.api.models.PublisherBinding
 import com.calimero.mero.api.models.RestoreRecoverHolderRequest
 
 import kotlinx.serialization.SerialName
@@ -179,7 +179,7 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      * GET /health
      * Node health
      * In the clear. The node&#39;s id, the system group&#39;s leader (&#x60;null&#x60;: none known), its &#x60;merod&#x60; release, the newest cluster version it supports (&#x60;clusterVersion&#x60;) and the cluster&#39;s rollback epoch (&#x60;null&#x60; on a node without a rollback counter).  **Who:** anyone.
-     * @return Health200Response
+     * @return Health
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -188,11 +188,11 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun health() : Health200Response = withContext(Dispatchers.IO) {
+    suspend fun health() : Health = withContext(Dispatchers.IO) {
         val localVarResponse = healthWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as Health200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as Health
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -210,16 +210,16 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      * GET /health
      * Node health
      * In the clear. The node&#39;s id, the system group&#39;s leader (&#x60;null&#x60;: none known), its &#x60;merod&#x60; release, the newest cluster version it supports (&#x60;clusterVersion&#x60;) and the cluster&#39;s rollback epoch (&#x60;null&#x60; on a node without a rollback counter).  **Who:** anyone.
-     * @return ApiResponse<Health200Response?>
+     * @return ApiResponse<Health?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun healthWithHttpInfo() : ApiResponse<Health200Response?> = withContext(Dispatchers.IO) {
+    suspend fun healthWithHttpInfo() : ApiResponse<Health?> = withContext(Dispatchers.IO) {
         val localVariableConfig = healthRequestConfig()
 
-        return@withContext request<Unit, Health200Response>(
+        return@withContext request<Unit, Health>(
             localVariableConfig
         )
     }
@@ -250,7 +250,7 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      * Whether a signing key is bound
      * Whether a package signing key (&#x60;did:key&#x60;) is bound to an organization on this cluster (&#x60;bound&#x60;, never which), and its binding generation (&#x60;0&#x60;: never bound).  **Who:** signed in (a session or an API key).
      * @param signer 
-     * @return PublisherBinding200Response
+     * @return PublisherBinding
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -259,11 +259,11 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun publisherBinding(signer: kotlin.String) : PublisherBinding200Response = withContext(Dispatchers.IO) {
+    suspend fun publisherBinding(signer: kotlin.String) : PublisherBinding = withContext(Dispatchers.IO) {
         val localVarResponse = publisherBindingWithHttpInfo(signer = signer)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as PublisherBinding200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PublisherBinding
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -282,16 +282,16 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      * Whether a signing key is bound
      * Whether a package signing key (&#x60;did:key&#x60;) is bound to an organization on this cluster (&#x60;bound&#x60;, never which), and its binding generation (&#x60;0&#x60;: never bound).  **Who:** signed in (a session or an API key).
      * @param signer 
-     * @return ApiResponse<PublisherBinding200Response?>
+     * @return ApiResponse<PublisherBinding?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun publisherBindingWithHttpInfo(signer: kotlin.String) : ApiResponse<PublisherBinding200Response?> = withContext(Dispatchers.IO) {
+    suspend fun publisherBindingWithHttpInfo(signer: kotlin.String) : ApiResponse<PublisherBinding?> = withContext(Dispatchers.IO) {
         val localVariableConfig = publisherBindingRequestConfig(signer = signer)
 
-        return@withContext request<Unit, PublisherBinding200Response>(
+        return@withContext request<Unit, PublisherBinding>(
             localVariableConfig
         )
     }
@@ -322,7 +322,7 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      * GET /releases
      * The cluster&#39;s releases
      * The cluster&#39;s governance and the deadlines set on mero-tee releases, oldest release first: after &#x60;after&#x60; (RFC 3339; &#x60;afterSecs&#x60; Unix seconds) a scope that has not approved that release (or a newer one) starts no new work.  **Who:** anyone.
-     * @return ReleasesPublic200Response
+     * @return ClusterReleases
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -331,11 +331,11 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun releasesPublic() : ReleasesPublic200Response = withContext(Dispatchers.IO) {
+    suspend fun releasesPublic() : ClusterReleases = withContext(Dispatchers.IO) {
         val localVarResponse = releasesPublicWithHttpInfo()
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as ReleasesPublic200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as ClusterReleases
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -353,16 +353,16 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      * GET /releases
      * The cluster&#39;s releases
      * The cluster&#39;s governance and the deadlines set on mero-tee releases, oldest release first: after &#x60;after&#x60; (RFC 3339; &#x60;afterSecs&#x60; Unix seconds) a scope that has not approved that release (or a newer one) starts no new work.  **Who:** anyone.
-     * @return ApiResponse<ReleasesPublic200Response?>
+     * @return ApiResponse<ClusterReleases?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun releasesPublicWithHttpInfo() : ApiResponse<ReleasesPublic200Response?> = withContext(Dispatchers.IO) {
+    suspend fun releasesPublicWithHttpInfo() : ApiResponse<ClusterReleases?> = withContext(Dispatchers.IO) {
         val localVariableConfig = releasesPublicRequestConfig()
 
-        return@withContext request<Unit, ReleasesPublic200Response>(
+        return@withContext request<Unit, ClusterReleases>(
             localVariableConfig
         )
     }
@@ -391,9 +391,9 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
     /**
      * POST /recover/holder
      * Bring an organization&#39;s or account&#39;s apps back from its recovery files
-     * Sent by the holder&#39;s own device, over the sealed channel: its newest &#x60;holder&#x60; file (&#x60;slice&#x60;), each app&#39;s file and the code files, in the receiving node&#39;s &#x60;--recovery-dir&#x60; (or &#x60;--recover-from&#x60;) under &#x60;org-&lt;id&gt;/&#x60; or &#x60;account-&lt;id&gt;/&#x60;, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator&#39;s signature over &#x60;cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }&#x60; (&#x60;428&#x60; first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers &#x60;409 APP_RESTORING&#x60; until its replicas hold it. People sign in again with the passkeys they had.  **Who:** anyone. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
+     * Sent by the holder&#39;s own device, over the sealed channel: its newest &#x60;holder&#x60; file (&#x60;slice&#x60;), each app&#39;s file and the code files, in the receiving node&#39;s &#x60;--recovery-dir&#x60; (or &#x60;--recover-from&#x60;) under &#x60;org-&lt;id&gt;/&#x60; or &#x60;account-&lt;id&gt;/&#x60;, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator&#39;s signature over &#x60;cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }&#x60; (&#x60;428&#x60; first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers &#x60;409 APP_RESTORING&#x60; until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its &#x60;lineage&#x60; (taken again from its release where the record lost it), and is refused &#x60;409 OUTSIDE_LINEAGE&#x60; where its package here has another publisher.  **Who:** anyone. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param restoreRecoverHolderRequest 
-     * @return RestoreRecoverHolder200Response
+     * @return HolderRecovered
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -402,11 +402,11 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun restoreRecoverHolder(restoreRecoverHolderRequest: RestoreRecoverHolderRequest) : RestoreRecoverHolder200Response = withContext(Dispatchers.IO) {
+    suspend fun restoreRecoverHolder(restoreRecoverHolderRequest: RestoreRecoverHolderRequest) : HolderRecovered = withContext(Dispatchers.IO) {
         val localVarResponse = restoreRecoverHolderWithHttpInfo(restoreRecoverHolderRequest = restoreRecoverHolderRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as RestoreRecoverHolder200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as HolderRecovered
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -423,18 +423,18 @@ open class PublicApi(basePath: kotlin.String = defaultBasePath, client: Call.Fac
     /**
      * POST /recover/holder
      * Bring an organization&#39;s or account&#39;s apps back from its recovery files
-     * Sent by the holder&#39;s own device, over the sealed channel: its newest &#x60;holder&#x60; file (&#x60;slice&#x60;), each app&#39;s file and the code files, in the receiving node&#39;s &#x60;--recovery-dir&#x60; (or &#x60;--recover-from&#x60;) under &#x60;org-&lt;id&gt;/&#x60; or &#x60;account-&lt;id&gt;/&#x60;, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator&#39;s signature over &#x60;cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }&#x60; (&#x60;428&#x60; first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers &#x60;409 APP_RESTORING&#x60; until its replicas hold it. People sign in again with the passkeys they had.  **Who:** anyone. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
+     * Sent by the holder&#39;s own device, over the sealed channel: its newest &#x60;holder&#x60; file (&#x60;slice&#x60;), each app&#39;s file and the code files, in the receiving node&#39;s &#x60;--recovery-dir&#x60; (or &#x60;--recover-from&#x60;) under &#x60;org-&lt;id&gt;/&#x60; or &#x60;account-&lt;id&gt;/&#x60;, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator&#39;s signature over &#x60;cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }&#x60; (&#x60;428&#x60; first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers &#x60;409 APP_RESTORING&#x60; until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its &#x60;lineage&#x60; (taken again from its release where the record lost it), and is refused &#x60;409 OUTSIDE_LINEAGE&#x60; where its package here has another publisher.  **Who:** anyone. **Operator signature:** answers &#x60;428 OPERATOR_SIGNATURE_REQUIRED&#x60; first; send it again with &#x60;operatorProof&#x60;, the operator key&#39;s signature over &#x60;details.message&#x60; and its &#x60;nonce&#x60;.
      * @param restoreRecoverHolderRequest 
-     * @return ApiResponse<RestoreRecoverHolder200Response?>
+     * @return ApiResponse<HolderRecovered?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun restoreRecoverHolderWithHttpInfo(restoreRecoverHolderRequest: RestoreRecoverHolderRequest) : ApiResponse<RestoreRecoverHolder200Response?> = withContext(Dispatchers.IO) {
+    suspend fun restoreRecoverHolderWithHttpInfo(restoreRecoverHolderRequest: RestoreRecoverHolderRequest) : ApiResponse<HolderRecovered?> = withContext(Dispatchers.IO) {
         val localVariableConfig = restoreRecoverHolderRequestConfig(restoreRecoverHolderRequest = restoreRecoverHolderRequest)
 
-        return@withContext request<RestoreRecoverHolderRequest, RestoreRecoverHolder200Response>(
+        return@withContext request<RestoreRecoverHolderRequest, HolderRecovered>(
             localVariableConfig
         )
     }

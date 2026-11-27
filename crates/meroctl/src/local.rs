@@ -63,8 +63,8 @@ pub struct ClusterArgs {
     /// published on 127.0.0.1).
     #[arg(long, default_value_t = default_image())]
     pub image: String,
-    /// The package registry the cluster installs from, so `meroctl app install
-    /// PACKAGE@VERSION` works on it (empty: none; `app install --path` still does).
+    /// The package registry the cluster installs from, so `meroctl package install
+    /// PACKAGE@VERSION` works on it (empty: none; `package install --path` still does).
     #[arg(long, env = "MEROD_REGISTRY_URL", default_value = DEFAULT_REGISTRY)]
     pub registry_url: String,
 }
@@ -722,7 +722,7 @@ impl Deploy {
             Ok(std::fs::write(&w, built.app.component)?)
         })
         .await??;
-        let answer = crate::app::install_file(env, &self.wasm).await?;
+        let answer = crate::app::install_file(env, &self.wasm, None).await?;
         let bundle = answer["bundle"].as_str().unwrap_or_default().to_owned();
         eprintln!("• uploaded bundle {bundle}");
         if let Some(f) = &self.frontend {
@@ -885,7 +885,7 @@ mod tests {
         assert_eq!(plan(&cluster(&[]), &native).unwrap().0, 2);
     }
 
-    // `meroctl app install PACKAGE@VERSION` on a fresh `local up` answered
+    // `meroctl package install PACKAGE@VERSION` on a fresh `local up` answered
     // `400 NO_REGISTRY`: the cluster was started without a registry.
     #[test]
     fn the_cluster_installs_from_the_public_registry_unless_told_otherwise() {

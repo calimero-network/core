@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use eyre::bail;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Client, StatusCode, Url};
 use tracing::info;
 use url::Host;
@@ -16,6 +17,7 @@ const TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300); 
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15); // connect timeout for an artifact fetch
 /// Maximum size of a fetched application artifact; bounds memory against a hostile or lying `Content-Length`.
 const MAX_ARTIFACT_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_REFUSAL_BYTES: u64 = 16 * 1024; // a refusal's body, read only for its JSON `error`
 
 /// The one artifact client. An artifact lives at its coordinates on the one
 /// configured registry, so a redirect is refused rather than followed to
@@ -63,11 +65,35 @@ fn is_local_or_private_v4(ip: Ipv4Addr) -> bool {
     ip.is_loopback() || ip.is_private() || ip.is_link_local()
 }
 
+/// A registry answer that is neither the artifact nor `404`, as its status.
+#[derive(Debug)]
+pub struct RegistryStatus {
+    pub status: StatusCode,
+    pub url: Url,
+    /// The `error` of a JSON body `{ "error": ... }`, when the registry sent one.
+    pub error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct Refusal {
+    error: String,
+}
+
+impl std::fmt::Display for RegistryStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let url = calimero_primitives::utils::loggable_url(&self.url);
+        write!(f, "registry returned HTTP {} for {url}", self.status)
+    }
+}
+
+impl std::error::Error for RegistryStatus {}
+
 /// The node's own configured registry, addressed by `package@version`.
 #[derive(Clone, Debug)]
 pub struct HttpRegistry {
     base: Url,
     client: Client,
+    headers: HeaderMap,
 }
 
 impl HttpRegistry {
@@ -89,7 +115,16 @@ impl HttpRegistry {
         Ok(Self {
             base,
             client: registry_client()?,
+            headers: HeaderMap::new(),
         })
+    }
+
+    /// Sends `name: value` with every fetch.
+    pub fn with_header(mut self, name: &'static str, value: &str) -> eyre::Result<Self> {
+        let _prev = self
+            .headers
+            .insert(HeaderName::from_static(name), HeaderValue::from_str(value)?);
+        Ok(self)
     }
 }
 
@@ -117,13 +152,24 @@ impl AppSource for HttpRegistry {
 
         // No host guard beyond the plain-http check in `new`: `url` is this node's own
         // configured base, which is routinely private or air-gapped.
-        let response = self.client.get(url.clone()).send().await?;
+        let response = self
+            .client
+            .get(url.clone())
+            .headers(self.headers.clone())
+            .send()
+            .await?;
         if response.status() == StatusCode::NOT_FOUND {
             // Not published here yet, which the caller retries - not a fault.
             return Ok(None);
         }
         if !response.status().is_success() {
-            bail!("registry returned HTTP {} for {url}", response.status());
+            let status = response.status();
+            let error = read_body_capped(response, MAX_REFUSAL_BYTES)
+                .await
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Refusal>(&b).ok())
+                .map(|r| r.error);
+            return Err(RegistryStatus { status, url, error }.into());
         }
         let bytes = read_body_capped(response, MAX_ARTIFACT_BYTES).await?;
         Ok(Some(bytes.into()))

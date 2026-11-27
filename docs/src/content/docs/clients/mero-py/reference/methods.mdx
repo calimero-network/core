@@ -30,7 +30,7 @@ Generated from core's `docs/public/openapi.json`.
 | --- | --- | --- |
 | `abi(app)` | `GET /apps/{app}/abi` | An app's ABI |
 | `access(app, grants)` | `POST /apps/{app}/access` | Set who may reach an app |
-| `approve_upgrade(app, version, unit=…, confirm=None)` | `POST /apps/{app}/upgrade-approvals` | Approve a red update first, for a second approver to apply. **passkey**. *Refusals:* `409 APPROVAL_PENDING`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 NOT_INSTALLED`, `409 ONE_APPROVAL`, `409 OUTSIDE_DEPLOYMENT` |
+| `approve_upgrade(app, version, unit=…, confirm=None)` | `POST /apps/{app}/upgrade-approvals` | Approve a red update first, for a second approver to apply. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 APPROVAL_PENDING`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 NOT_INSTALLED`, `409 ONE_APPROVAL`, `409 OUTSIDE_DEPLOYMENT` |
 | `attestation(app, nonce)` | `GET /apps/{app}/attestation` | Every replica's receipt-key attestation |
 | `blob_delete(app, id)` | `DELETE /apps/{app}/blobs/{id}` | Forget a blob |
 | `blob_download(app, id, grant=…)` | `GET /apps/{app}/blobs/{id}` | Download a blob |
@@ -38,9 +38,9 @@ Generated from core's `docs/public/openapi.json`.
 | `blob_list(app)` | `GET /apps/{app}/blobs` | List an app's blobs |
 | `blob_revoke(app, id)` | `POST /apps/{app}/blobs/{id}/revoke` | Invalidate a blob's grants |
 | `blob_upload(app, sealed=…, body, content_type='application/octet-stream')` | `POST /apps/{app}/blobs` | Upload a blob. *Refusals:* `400 USE_FILES_API`, `429 QUOTA_EXCEEDED` |
-| `call(app, method, args=…, idempotency_key=…, confirm=None)` | `POST /apps/{app}/intents` | Call a method. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_IDEMPOTENCY_KEY`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 TIMEOUT` |
-| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, grants=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 ACCESS_REMOVED`, `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
-| `delegate(app, target, confirm=None)` | `PUT /apps/{app}/delegations/{target}` | Let an app call another as you. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NOTHING_TO_DELEGATE` |
+| `call(app, method, args=…, idempotency_key=…, confirm=None)` | `POST /apps/{app}/intents` | Call a method. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_IDEMPOTENCY_KEY`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 TIMEOUT` |
+| `create(name=…, bundle=…, package=…, version=…, service=…, org=…, new_org=…, grants=…, init_args=…, metadata=…, deployment=…)` | `POST /apps` | Create an app instance. *Refusals:* `400 ACCESS_REMOVED`, `400 AMBIGUOUS_COMPUTE`, `400 NOT_OFFERED`, `400 NO_SUCH_SERVICE`, `400 ORG_INSTANCE`, `400 ORG_REQUIRED`, `400 STANDALONE_INSTANCE`, `400 VERSION_REQUIRED`, `403 ACCOUNT_NOT_LINKED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_ORGANIZATION`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 INIT_FAILED`, `429 QUOTA_EXCEEDED` |
+| `delegate(app, target, confirm=None)` | `PUT /apps/{app}/delegations/{target}` | Let an app call another as you. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 NOTHING_TO_DELEGATE` |
 | `delegations(app)` | `GET /apps/{app}/delegations` | What you let an app do as you |
 | `delete(app)` | `DELETE /apps/{app}` | Delete an app. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 UNIT_MEMBER` |
 | `egress(app)` | `GET /apps/{app}/egress` | Where an app's unit may send data |
@@ -50,16 +50,20 @@ Generated from core's `docs/public/openapi.json`.
 | `files_list(app)` | `GET /apps/{app}/files` | List an app's sealed files |
 | `files_upload(app, body)` | `POST /apps/{app}/files` | Upload a sealed file. *Refusals:* `429 QUOTA_EXCEEDED` |
 | `get(app)` | `GET /apps/{app}` | One app |
-| `invite_create(app, ttl_secs=…, uses=…, scope=…, confirm=None)` | `POST /apps/{app}/invites` | Invite someone to an instance. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
+| `invite_create(app, ttl_secs=…, uses=…, scope=…, confirm=None)` | `POST /apps/{app}/invites` | Invite someone to an instance. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
 | `invite_list(app)` | `GET /apps/{app}/invites` | An instance's invites |
-| `invite_revoke(app, key, confirm=None)` | `DELETE /apps/{app}/invites/{key}` | Revoke an instance invite. **passkey** |
-| `link(app, name, body_app, confirm=None)` | `PUT /apps/{app}/links/{name}` | Attach an app to one of an app's references. **passkey**. *Refusals:* `400 NOT_ATTACHABLE`, `409 FEATURE_NOT_ACTIVE`, `409 NOT_AN_ATTACH_REFERENCE`, `409 WRONG_PACKAGE` |
+| `invite_revoke(app, key, confirm=None)` | `DELETE /apps/{app}/invites/{key}` | Revoke an instance invite. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `link(app, name, body_app, confirm=None)` | `PUT /apps/{app}/links/{name}` | Attach an app to one of an app's references. **passkey**. *Refusals:* `400 NOT_ATTACHABLE`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 NOT_AN_ATTACH_REFERENCE`, `409 WRONG_PACKAGE` |
 | `links(app)` | `GET /apps/{app}/links` | List an app's links to the apps its release uses |
 | `list(package=…, bundle=…)` | `GET /apps` | Apps the caller reaches |
 | `metadata(app, metadata)` | `POST /apps/{app}/metadata` | Set an app's metadata |
-| `method(app, method, args=…, idempotency_key=…, consistency=…, min_index=…, confirm=None)` | `POST /apps/{app}/methods/{method}` | Call a method by its path. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_IDEMPOTENCY_KEY`, `400 RESERVED_METHOD`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 NOT_CAUGHT_UP`, `503 TIMEOUT` |
-| `move(app, to_org, bring_members=…, confirm=None)` | `POST /apps/{app}/move` | Move an app to another organization. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
+| `method(app, method, args=…, idempotency_key=…, consistency=…, min_index=…, confirm=None)` | `POST /apps/{app}/methods/{method}` | Call a method by its path. **passkey** (the method is a `confirm` method of the app's ABI). *Refusals:* `400 RESERVED_IDEMPOTENCY_KEY`, `400 RESERVED_METHOD`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 RELEASE_DEADLINE`, `413 ARGS_TOO_LARGE`, `422 APP_ERROR`, `422 TRAP`, `429 QUOTA_EXCEEDED`, `503 NOT_CAUGHT_UP`, `503 TIMEOUT` |
+| `move(app, to_org, bring_members=…, confirm=None)` | `POST /apps/{app}/move` | Move an app to another organization. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
 | `openapi(app)` | `GET /apps/{app}/openapi.json` | An app's OpenAPI document. *Refusals:* `410 UNSUPPORTED_ENGINE`, `422 BAD_ABI` |
+| `origin_add(app, origin, rp_id=…, confirm=None)` | `POST /apps/{app}/origins` | Register a web origin for an instance. **passkey**. *Refusals:* `400 BAD_ORIGIN`, `400 BAD_RP_ID`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 ORIGIN_TAKEN`, `429 QUOTA_EXCEEDED` |
+| `origin_remove(app, origin, confirm=None)` | `DELETE /apps/{app}/origins` | Remove an instance's web origin. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
+| `origins(app)` | `GET /apps/{app}/origins` | An instance's web origins |
+| `outbound_log(app)` | `GET /apps/{app}/outbound-log` | An app's outbound requests |
 | `pipeline_receipt_receipt(app, run, version=…)` | `GET /apps/{app}/pipeline-runs/{run}/receipt` | A pipeline run's receipt. *Refusals:* `400 BAD_VERSION`, `409 RUN_NOT_ENDED` |
 | `pipelines_cancel(app, run)` | `POST /apps/{app}/pipeline-runs/{run}/cancel` | Cancel a pipeline run |
 | `pipelines_estimate_run(app, name, inputs=…, counts=…, params=…)` | `POST /apps/{app}/pipelines/{name}/estimate` | Estimate a pipeline run. *Refusals:* `400 BAD_INPUTS`, `400 BAD_PARAMS`, `404 NO_SUCH_PIPELINE` |
@@ -69,28 +73,28 @@ Generated from core's `docs/public/openapi.json`.
 | `pipelines_start(app, name, inputs=…, params=…, max_cost=…)` | `POST /apps/{app}/pipelines/{name}/runs` | Start a pipeline run. *Refusals:* `400 BAD_INPUTS`, `400 BAD_MAX_COST`, `400 BAD_PARAMS`, `404 NO_SUCH_PIPELINE`, `409 CLUSTER_NOT_UPGRADED`, `409 NO_PRICE_TABLE`, `410 OUTPUT_EXPIRED`, `422 PIPELINES_NEED_ONE_SERVICE`, `429 TOO_MANY_PIPELINE_RUNS` |
 | `pipelines_validate(source, package=…, version=…)` | `POST /pipelines/validate` | Validate a pipeline. *Refusals:* `400 BAD_RELEASE` |
 | `policy(app)` | `GET /apps/{app}/upgrade-policy` | The update policy an app follows |
-| `policy_set(app, policy=…, confirm=None)` | `POST /apps/{app}/upgrade-policy` | Set an app's own update policy. **passkey**. *Refusals:* `400 BAD_UPGRADE_POLICY`, `409 FEATURE_NOT_ACTIVE` |
+| `policy_set(app, policy=…, confirm=None)` | `POST /apps/{app}/upgrade-policy` | Set an app's own update policy. **passkey**. *Refusals:* `400 BAD_UPGRADE_POLICY`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
 | `presence_get(app)` | `GET /apps/{app}/presence` | Who is present |
 | `presence_publish(app, seq, state=…)` | `POST /apps/{app}/presence` | Publish presence. *Refusals:* `400 BAD_STATE` |
-| `public_link_create(app, label=…, expires_at=…, rate_per_minute=…, confirm=None)` | `POST /apps/{app}/public-links` | Make a public link of an instance. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 PUBLIC_LINKS_OFF`, `429 QUOTA_EXCEEDED` |
+| `public_link_create(app, label=…, expires_at=…, rate_per_minute=…, confirm=None)` | `POST /apps/{app}/public-links` | Make a public link of an instance. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 PUBLIC_LINKS_OFF`, `429 QUOTA_EXCEEDED` |
 | `public_link_list(app)` | `GET /apps/{app}/public-links` | An instance's public links |
-| `public_link_revoke(app, link, confirm=None)` | `DELETE /apps/{app}/public-links/{link}` | Revoke a public link. **passkey** |
+| `public_link_revoke(app, link, confirm=None)` | `DELETE /apps/{app}/public-links/{link}` | Revoke a public link. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `run(app, run)` | `GET /apps/{app}/runs/{run}` | One compute run |
 | `run_logs(app, run)` | `GET /apps/{app}/runs/{run}/logs` | A compute run's attempt logs |
 | `runs(app, limit=…, before=…)` | `GET /apps/{app}/runs` | An app's compute runs. *Refusals:* `400 BAD_CURSOR`, `400 BAD_LIMIT` |
-| `secret_clear(app, name, confirm=None)` | `DELETE /apps/{app}/secrets/{name}` | Remove an app's own value of a secret. **passkey**. *Refusals:* `409 CLUSTER_NOT_UPGRADED` |
-| `secret_set(app, name, value, confirm=None)` | `PUT /apps/{app}/secrets/{name}` | Set an app's own value of a declared secret. **passkey**. *Refusals:* `400 BAD_SECRET`, `409 CLUSTER_NOT_UPGRADED`, `409 CONFLICT` |
+| `secret_clear(app, name, confirm=None)` | `DELETE /apps/{app}/secrets/{name}` | Remove an app's own value of a secret. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 CLUSTER_NOT_UPGRADED` |
+| `secret_set(app, name, value, confirm=None)` | `PUT /apps/{app}/secrets/{name}` | Set an app's own value of a declared secret. **passkey**. *Refusals:* `400 BAD_SECRET`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 CLUSTER_NOT_UPGRADED`, `409 CONFLICT` |
 | `secrets(app)` | `GET /apps/{app}/secrets` | The secrets an app's release declares |
-| `set_egress(app, egress, confirm=None)` | `POST /apps/{app}/egress` | Turn one app's egress off or on. **passkey**. *Refusals:* `403 CONSENT_PAGE_REQUIRED` |
+| `set_egress(app, egress, confirm=None)` | `POST /apps/{app}/egress` | Turn one app's egress off or on. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 CONSENT_PAGE_REQUIRED`, `403 SIGN_COUNT_REPLAYED` |
 | `storage(app)` | `GET /apps/{app}/storage` | What an app stores |
-| `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey** |
+| `transfer(app, to, confirm=None)` | `POST /apps/{app}/transfer` | Hand an app to another account. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `undelegate(app, target)` | `DELETE /apps/{app}/delegations/{target}` | Take back what an app may do on another as you. *Refusals:* `404 NOT_DELEGATED`, `409 FEATURE_NOT_ACTIVE` |
-| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_RELEASE_GONE`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
+| `undo(app, confirm=None)` | `POST /apps/{app}/undo` | Undo an app's last upgrade. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 NO_RESTORE_POINT`, `409 OUTSIDE_LINEAGE`, `409 RESTORE_POINT_UNAVAILABLE`, `409 UNDO_NOT_AS_NAMED`, `409 UNDO_RELEASE_GONE`, `409 UNDO_STALE`, `409 UNDO_WINDOW_PASSED`, `409 UPGRADE_PENDING` |
 | `undo_view(app)` | `GET /apps/{app}/undo` | The upgrade an app may undo |
-| `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
+| `unlink(app, name, confirm=None)` | `DELETE /apps/{app}/links/{name}` | Detach an app attached to an app. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `404 NOT_ATTACHED`, `409 FEATURE_NOT_ACTIVE` |
 | `update(app)` | `GET /apps/{app}/update` | Whether an update is available for an app |
-| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
-| `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 USES_NOT_INSTALLED` |
+| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, confirm=None)` | `POST /apps/{app}/upgrade` | Upgrade an app instance. **passkey**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `400 BAD_BUNDLE`, `400 VERSION_REQUIRED`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 LINEAGE_OLDER_RELEASE`, `409 OUTSIDE_DEPLOYMENT`, `409 OUTSIDE_LINEAGE`, `409 OUTSIDE_UNIT_RANGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
+| `upgrade_unit(app, version, confirm=None)` | `POST /apps/{app}/upgrade-unit` | Upgrade an app and the apps it created, in one consent. **passkey**. *Refusals:* `400 NOT_A_UNIT`, `400 NO_REGISTRY`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 CONFLICT`, `409 FEATURE_NOT_ACTIVE`, `409 OUTSIDE_DEPLOYMENT`, `409 USES_NOT_INSTALLED` |
 | `upload_abort(app, upload)` | `DELETE /apps/{app}/files/uploads/{upload}` | Abort an upload |
 | `upload_begin(app, size)` | `POST /apps/{app}/files/uploads` | Begin a file upload. *Refusals:* `429 QUOTA_EXCEEDED` |
 | `upload_complete(app, upload)` | `POST /apps/{app}/files/uploads/{upload}/complete` | Commit an upload. *Refusals:* `409 UPLOAD_INCOMPLETE` |
@@ -108,32 +112,32 @@ Generated from core's `docs/public/openapi.json`.
 | `account_backup_key()` | `GET /auth/backup-key` | The account's backup key |
 | `account_proof_prove(nonce, audience)` | `POST /auth/account-proof` | Prove the account to another party. *Refusals:* `400 BAD_AUDIENCE`, `400 BAD_NONCE` |
 | `account_recovery_begin(code)` | `POST /auth/recovery/begin` | Start an account recovery |
-| `account_recovery_cancel(confirm=None)` | `POST /auth/recovery/cancel` | Cancel an account recovery. **passkey** |
-| `account_recovery_finish(account_id=…, confirm=None)` | `POST /auth/recovery/finish` | Finish an account recovery. **passkey**. *Refusals:* `409 RECOVERY_NOT_READY` |
+| `account_recovery_cancel(confirm=None)` | `POST /auth/recovery/cancel` | Cancel an account recovery. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `account_recovery_finish(account_id=…, confirm=None)` | `POST /auth/recovery/finish` | Finish an account recovery. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 RECOVERY_NOT_READY` |
 | `account_recovery_start(challenge_id, code, registration)` | `POST /auth/recovery/start` | Spend the recovery code. *Refusals:* `400 BAD_REGISTRATION`, `409 RECOVERY_PENDING` |
-| `account_set_backup_key(public_key, confirm=None)` | `POST /auth/backup-key` | Set the account's backup key. **passkey**. *Refusals:* `400 BAD_BACKUP_KEY`, `409 FEATURE_NOT_ACTIVE` |
+| `account_set_backup_key(public_key, confirm=None)` | `POST /auth/backup-key` | Set the account's backup key. **passkey**. *Refusals:* `400 BAD_BACKUP_KEY`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
 | `activity_list(after=…)` | `GET /auth/activity` | What the account's passkeys did |
 | `alias_delete(alias)` | `DELETE /auth/aliases/{alias}` | Remove an alias |
 | `alias_get(alias)` | `GET /auth/aliases/{alias}` | Resolve an alias |
 | `alias_list()` | `GET /auth/aliases` | The account's aliases |
 | `alias_set(alias, app)` | `PUT /auth/aliases/{alias}` | Set an alias |
-| `apikey_create(label=…, apps=…, methods=…, read_only=…, allow_confirm=…, ttl_secs=…, upgrades=…, then=…, confirm=None)` | `POST /auth/apikeys` | Make an API key. **passkey**. *Refusals:* `400 BAD_FOLLOW_UP`, `400 BAD_UPGRADE_KEY`, `400 RESERVED_METHOD`, `409 FEATURE_NOT_ACTIVE`, `413 ARGS_TOO_LARGE`, `422 FOLLOW_UP_FAILED`, `429 QUOTA_EXCEEDED` |
+| `apikey_create(label=…, apps=…, methods=…, read_only=…, allow_confirm=…, ttl_secs=…, upgrades=…, then=…, confirm=None)` | `POST /auth/apikeys` | Make an API key. **passkey**. *Refusals:* `400 BAD_FOLLOW_UP`, `400 BAD_UPGRADE_KEY`, `400 RESERVED_METHOD`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `413 ARGS_TOO_LARGE`, `422 FOLLOW_UP_FAILED`, `429 QUOTA_EXCEEDED` |
 | `apikey_list()` | `GET /auth/apikeys` | The account's API keys |
-| `apikey_revoke(key, confirm=None)` | `DELETE /auth/apikeys/{key}` | Revoke an API key. **passkey** |
-| `login_begin(origin=…)` | `POST /auth/passkey/login/begin` | Start a sign-in |
-| `login_finish(challenge_id, assertion)` | `POST /auth/passkey/login/finish` | Finish a sign-in. *Refusals:* `401 PASSKEY_UNKNOWN_HERE` |
+| `apikey_revoke(key, confirm=None)` | `DELETE /auth/apikeys/{key}` | Revoke an API key. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `login_begin(origin=…, holder_key=…)` | `POST /auth/passkey/login/begin` | Start a sign-in. *Refusals:* `400 BAD_HOLDER_KEY`, `409 FEATURE_NOT_ACTIVE` |
+| `login_finish(challenge_id, assertion)` | `POST /auth/passkey/login/finish` | Finish a sign-in. *Refusals:* `401 PASSKEY_UNKNOWN_HERE`, `403 SIGN_COUNT_REPLAYED` |
 | `logout()` | `POST /auth/logout` | End this session |
 | `logout_all()` | `POST /auth/logout-all` | End every session of the account |
 | `me()` | `GET /auth/me` | The caller's account |
 | `passkey_add_begin()` | `POST /auth/passkeys/add/begin` | Start adding a passkey |
-| `passkey_add_finish(challenge_id, registration, confirm=None)` | `POST /auth/passkeys/add/finish` | Finish adding a passkey. **passkey**. *Refusals:* `400 BAD_REGISTRATION` |
+| `passkey_add_finish(challenge_id, registration, confirm=None)` | `POST /auth/passkeys/add/finish` | Finish adding a passkey. **passkey**. *Refusals:* `400 BAD_REGISTRATION`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `passkey_label(cred, label)` | `POST /auth/passkeys/{cred}` | Name a passkey |
-| `passkey_remove(cred, confirm=None)` | `DELETE /auth/passkeys/{cred}` | Remove a passkey. **passkey** |
-| `recovery_create(confirm=None)` | `POST /auth/recovery` | Make a recovery code. **passkey** |
-| `recovery_remove(confirm=None)` | `DELETE /auth/recovery` | Remove the recovery code. **passkey** |
-| `refresh(refresh_token)` | `POST /auth/refresh` | Refresh a session |
+| `passkey_remove(cred, confirm=None)` | `DELETE /auth/passkeys/{cred}` | Remove a passkey. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `recovery_create(confirm=None)` | `POST /auth/recovery` | Make a recovery code. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `recovery_remove(confirm=None)` | `DELETE /auth/recovery` | Remove the recovery code. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `refresh(refresh_token, holder_proof=…)` | `POST /auth/refresh` | Refresh a session. *Refusals:* `401 BAD_HOLDER_PROOF`, `401 HOLDER_PROOF_REQUIRED` |
 | `register_begin(name=…, origin=…, invite=…)` | `POST /auth/passkey/register/begin` | Start a sign-up. *Refusals:* `403 SIGN_UP_REFUSED` |
-| `register_finish(challenge_id, registration, invite=…, confirm=None)` | `POST /auth/passkey/register/finish` | Finish a sign-up. **passkey**. *Refusals:* `400 BAD_REGISTRATION`, `401 PASSKEY_UNKNOWN_HERE`, `403 SIGN_UP_REFUSED` |
+| `register_finish(challenge_id, registration, invite=…, holder_key=…, confirm=None)` | `POST /auth/passkey/register/finish` | Finish a sign-up. **passkey**. *Refusals:* `400 BAD_HOLDER_KEY`, `400 BAD_REGISTRATION`, `401 PASSKEY_UNKNOWN_HERE`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `403 SIGN_UP_REFUSED`, `409 FEATURE_NOT_ACTIVE` |
 | `session_revoke(session)` | `DELETE /auth/sessions/{session}` | End one session |
 | `sessions_list()` | `GET /auth/sessions` | The account's live sessions |
 | `usage()` | `GET /auth/usage` | The account's usage against its quotas |
@@ -149,24 +153,27 @@ Generated from core's `docs/public/openapi.json`.
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `create(name, owner, confirm=None)` | `POST /deployments` | Create a deployment. **passkey** |
-| `delete(id, confirm=None)` | `DELETE /deployments/{id}` | Delete a deployment. **passkey** |
-| `deployer_grant(deployer, until=…, confirm=None)` | `POST /deployers` | Grant a deployer. **passkey** |
+| `create(name, owner, confirm=None)` | `POST /deployments` | Create a deployment. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 RECOVERY_KEY_REQUIRED` |
+| `delete(id, confirm=None)` | `DELETE /deployments/{id}` | Delete a deployment. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `deployer_grant(deployer, until=…, confirm=None)` | `POST /deployers` | Grant a deployer. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `deployer_list()` | `GET /deployers` | The deployers |
-| `deployer_revoke(key, confirm=None)` | `DELETE /deployers/{key}` | Revoke a deployer. **passkey** |
+| `deployer_revoke(key, confirm=None)` | `DELETE /deployers/{key}` | Revoke a deployer. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `get(id)` | `GET /deployments/{id}` | One deployment |
 | `list()` | `GET /deployments` | Deployments |
-| `offer(id, app, package, version, confirm=None)` | `POST /deployments/{id}/apps` | Offer a release in a deployment. **passkey** |
+| `offer(id, app, package, version, confirm=None)` | `POST /deployments/{id}/apps` | Offer a release in a deployment. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `orgs(id)` | `GET /deployments/{id}/orgs` | The organizations a deployment serves |
-| `secret_clear(id, name, confirm=None)` | `DELETE /deployments/{id}/secrets/{name}` | Remove a deployment's value of a secret. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
-| `secret_set(id, name, value, confirm=None)` | `PUT /deployments/{id}/secrets/{name}` | Set a deployment's value of a secret. **passkey**. *Refusals:* `400 BAD_SECRET`, `404 UNDECLARED_SECRET`, `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
+| `secret_clear(id, name, confirm=None)` | `DELETE /deployments/{id}/secrets/{name}` | Remove a deployment's value of a secret. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
+| `secret_set(id, name, value, confirm=None)` | `PUT /deployments/{id}/secrets/{name}` | Set a deployment's value of a secret. **passkey**. *Refusals:* `400 BAD_SECRET`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `404 UNDECLARED_SECRET`, `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
 | `secrets(id)` | `GET /deployments/{id}/secrets` | A deployment's secrets |
-| `sign_up_invite_create(uses=…, ttl_secs=…, confirm=None)` | `POST /sign-up/invites` | Issue a cluster sign-up invite. **passkey** |
+| `sign_up_invite_create(uses=…, ttl_secs=…, confirm=None)` | `POST /sign-up/invites` | Issue a cluster sign-up invite. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `sign_up_invite_list()` | `GET /sign-up/invites` | Cluster sign-up invites |
-| `sign_up_invite_revoke(key, confirm=None)` | `DELETE /sign-up/invites/{key}` | Withdraw a cluster sign-up invite. **passkey** |
+| `sign_up_invite_revoke(key, confirm=None)` | `DELETE /sign-up/invites/{key}` | Withdraw a cluster sign-up invite. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `sign_up_public()` | `GET /sign-up` | The sign-up policy |
-| `sign_up_set(policy, confirm=None)` | `POST /sign-up` | Set the sign-up policy. **passkey** |
-| `withdraw(id, app, confirm=None)` | `DELETE /deployments/{id}/apps/{app}` | Withdraw an offer. **passkey** |
+| `sign_up_set(policy, confirm=None)` | `POST /sign-up` | Set the sign-up policy. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `transfer_accept(id, to, confirm=None)` | `POST /deployments/{id}/transfer/accept` | Accept a deployment offered to an owner. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 DEPLOY_NOT_GRANTED`, `403 SIGN_COUNT_REPLAYED`, `404 NO_TRANSFER`, `409 FEATURE_NOT_ACTIVE`, `409 OFFERS_NOT_USABLE`, `409 RECOVERY_KEY_REQUIRED`, `409 TRANSFER_LAPSED`, `409 TRANSFER_STALE`, `429 QUOTA_EXCEEDED` |
+| `transfer_cancel(id, confirm=None)` | `DELETE /deployments/{id}/transfer` | Cancel the offer of a deployment. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `404 NO_TRANSFER`, `409 FEATURE_NOT_ACTIVE` |
+| `transfer_offer(id, to, confirm=None)` | `POST /deployments/{id}/transfer` | Offer a deployment to another owner. **passkey**. *Refusals:* `400 SAME_OWNER`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE`, `409 TRANSFER_PENDING` |
+| `withdraw(id, app, confirm=None)` | `DELETE /deployments/{id}/apps/{app}` | Withdraw an offer. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 
 ## `client.ops`
 
@@ -186,10 +193,10 @@ Generated from core's `docs/public/openapi.json`.
 | `org_upgrade(org, package, version, team=…, cascade=…, migrate=…, operator_proof=None)` | `POST /ops/orgs/{org}/upgrade` | An operator's upgrade run. **operator** |
 | `orgs(after=…, limit=…)` | `GET /ops/orgs` | Each organization's approved releases |
 | `outbound(package, prefixes=…, replace=…, operator_proof=None)` | `POST /ops/outbound` | Approve outbound prefixes. **operator** |
-| `package_install(package, version)` | `POST /ops/packages/install` | Install a release from the registry as the operator. *Refusals:* `400 BAD_BUNDLE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
+| `package_install(package, version)` | `POST /ops/packages/install` | Install a release from the registry as the operator. *Refusals:* `400 BAD_BUNDLE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `429 TOO_MANY_COMPILES`, `503 BUSY` |
 | `package_list()` | `GET /ops/packages` | The releases the operator installed |
 | `package_uninstall(package)` | `DELETE /ops/packages/{package}` | Uninstall what the operator installed |
-| `package_upload(body)` | `POST /ops/packages` | Install an uploaded release as the operator. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
+| `package_upload(body)` | `POST /ops/packages` | Install an uploaded release as the operator. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `429 TOO_MANY_COMPILES`, `503 BUSY` |
 | `package_version_uninstall(package, version)` | `DELETE /ops/packages/{package}/{version}` | Uninstall one operator-installed version |
 | `placement()` | `GET /ops/placement` | Where every app's replicas are |
 | `pools_get()` | `GET /ops/pools` | Compute pools |
@@ -197,7 +204,7 @@ Generated from core's `docs/public/openapi.json`.
 | `prices_get()` | `GET /ops/prices` | The price table |
 | `prices_set(table, operator_proof=None)` | `POST /ops/prices` | Set the price table. **operator**. *Refusals:* `400 BAD_PRICES`, `409 PRICE_VERSION`, `409 UPGRADE_PENDING` |
 | `quotas_get()` | `GET /ops/quotas` | The quotas |
-| `quotas_set(org=…, orgs=…, max_apps_per_account=…, max_bundle_bytes_per_account=…, max_api_keys_per_account=…, max_orgs_per_account=…, max_accounts=…, max_file_bytes_per_org=…, max_concurrent_runs_per_org=…, compute_fuel_per_org=…, max_fuel_per_developer_per_day=…, max_concurrent_runs=…, compute_fuel=…, max_file_bytes=…, operator_proof=None)` | `POST /ops/quotas` | Change quotas. **operator**. *Refusals:* `400 UNKNOWN_QUOTA`, `409 UPGRADE_PENDING` |
+| `quotas_set(org=…, orgs=…, max_apps_per_account=…, max_bundle_bytes_per_account=…, max_api_keys_per_account=…, max_orgs_per_account=…, max_accounts=…, max_file_bytes_per_org=…, max_concurrent_runs_per_org=…, compute_fuel_per_org=…, max_fuel_per_developer_per_day=…, max_teams_per_org=…, max_metadata_bytes_per_org=…, max_metadata_bytes_per_account=…, max_concurrent_runs=…, compute_fuel=…, max_file_bytes=…, operator_proof=None)` | `POST /ops/quotas` | Change quotas. **operator**. *Refusals:* `400 UNKNOWN_QUOTA`, `409 UPGRADE_PENDING` |
 | `receipt_key(id)` | `GET /ops/nodes/{id}/receipt-key` | A node's receipt key |
 | `recover(system, code=…)` | `POST /ops/recover` | Found the cluster again from its recovery disk. *Refusals:* `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 TOO_MANY_FILES`, `400 UNATTESTED_RECOVERY_FILE`, `409 NOT_RECOVERING`, `409 OLD_CLUSTER_ANSWERS`, `409 OTHER_DEPLOYMENT` |
 | `recovery_files(holder=…)` | `GET /ops/recovery-files` | The recovery files a node reads. *Refusals:* `409 NO_BACKUP_DIR` |
@@ -206,7 +213,7 @@ Generated from core's `docs/public/openapi.json`.
 | `release_deadline(version, after=…, operator_proof=None)` | `POST /ops/releases/{version}/deadline` | Set a release deadline. **operator** |
 | `release_deadline_lift(version, operator_proof=None)` | `DELETE /ops/releases/{version}/deadline` | Lift a release deadline. **operator** |
 | `remove_node(id, operator_proof=None)` | `DELETE /ops/nodes/{id}` | Remove a node. **operator**. *Refusals:* `400 LAST_NODE` |
-| `restore(app, backup=…, recovery=…, operator_proof=None)` | `POST /ops/apps/{app}/restore` | Restore an app from its sealed backup. **operator**. *Refusals:* `400 BAD_BACKUP`, `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 UNATTESTED_RECOVERY_FILE`, `404 BACKUP_NOT_FOUND`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE`, `409 MOVE_IN_PROGRESS`, `409 NO_BACKUP_DIR`, `409 RECOVERY_SEGMENTS_MISSING`, `409 UNKNOWN_BACKUP_FORMAT`, `409 UPGRADE_PENDING` |
+| `restore(app, backup=…, recovery=…, operator_proof=None)` | `POST /ops/apps/{app}/restore` | Restore an app from its sealed backup. **operator**. *Refusals:* `400 BAD_BACKUP`, `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 UNATTESTED_RECOVERY_FILE`, `404 BACKUP_NOT_FOUND`, `409 BACKUP_FROM_NEWER_RELEASE`, `409 BUNDLE_GONE`, `409 LINEAGE_OLDER_RELEASE`, `409 MOVE_IN_PROGRESS`, `409 NO_BACKUP_DIR`, `409 OUTSIDE_LINEAGE`, `409 RECOVERY_SEGMENTS_MISSING`, `409 UNKNOWN_BACKUP_FORMAT`, `409 UPGRADE_PENDING` |
 | `served()` | `GET /ops/served-origins` | Custom domains to serve |
 | `set_backup_key(public_key, operator_proof=None)` | `POST /ops/backup-key` | Set the operator's backup key. **operator**. *Refusals:* `400 BAD_BACKUP_KEY`, `409 FEATURE_NOT_ACTIVE` |
 | `set_replicas(app, replicas, operator_proof=None)` | `POST /ops/apps/{app}/replicas` | Move an app's replicas. **operator**. *Refusals:* `400 DUPLICATE_REPLICA`, `400 JOB_NODE`, `400 TOO_FEW`, `400 UNKNOWN_NODE`, `409 MOVE_IN_PROGRESS`, `409 RUNTIME_TOO_OLD` |
@@ -216,55 +223,55 @@ Generated from core's `docs/public/openapi.json`.
 | `sign_up_invite_revoke_post(key, operator_proof=None)` | `POST /ops/sign-up/invites/{key}/revoke` | Withdraw a cluster sign-up invite (POST). **operator** |
 | `sign_up_set(policy, operator_proof=None)` | `POST /ops/sign-up` | Set the sign-up policy. **operator** |
 | `status()` | `GET /ops/status` | The node and the cluster |
-| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, operator_proof=None)` | `POST /ops/apps/{app}/upgrade` | Upgrade an app as the operator. **operator**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `409 NOT_INSTALLED`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
+| `upgrade(app, bundle=…, package=…, version=…, service=…, migrate=…, operator_proof=None)` | `POST /ops/apps/{app}/upgrade` | Upgrade an app as the operator. **operator**. *Refusals:* `400 AMBIGUOUS_COMPUTE`, `409 LINEAGE_OLDER_RELEASE`, `409 NOT_INSTALLED`, `409 OUTSIDE_LINEAGE`, `409 RELEASE_DEADLINE`, `409 RUNTIME_TOO_OLD`, `422 UPGRADE_FAILED` |
 
 ## `client.orgs`
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `all_apps(org, account, all_apps, confirm=None)` | `POST /orgs/{org}/all-apps` | Give a member every app added later. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
+| `all_apps(org, account, all_apps, confirm=None)` | `POST /orgs/{org}/all-apps` | Give a member every app added later. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
 | `app_team_list(org)` | `GET /orgs/{org}/app-teams` | The organization's app teams |
-| `app_teams_scope(org, apps=…, shared=…, confirm=None)` | `POST /orgs/{org}/app-teams` | Give apps app teams, or open or close one. **passkey**. *Refusals:* `400 TOO_MANY_PACKAGES`, `409 FEATURE_NOT_ACTIVE` |
+| `app_teams_scope(org, apps=…, shared=…, confirm=None)` | `POST /orgs/{org}/app-teams` | Give apps app teams, or open or close one. **passkey**. *Refusals:* `400 TOO_MANY_PACKAGES`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
 | `apps(org, after=…, limit=…)` | `GET /orgs/{org}/apps` | The organization's apps |
 | `backup_key(org)` | `GET /orgs/{org}/backup-key` | The organization's backup key |
-| `capabilities(org, account=…, team=…, capabilities, confirm=None)` | `POST /orgs/{org}/capabilities` | Set capabilities. **passkey** |
+| `capabilities(org, account=…, team=…, capabilities, confirm=None)` | `POST /orgs/{org}/capabilities` | Set capabilities. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `create(name, recovery_key=…, capabilities=…)` | `POST /orgs` | Create an organization. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `409 FEATURE_NOT_ACTIVE`, `429 QUOTA_EXCEEDED` |
-| `delete(org, confirm=None)` | `DELETE /orgs/{org}` | Delete an organization. **passkey** |
-| `egress(org, egress, confirm=None)` | `POST /orgs/{org}/egress` | Turn the organization's egress off or on. **passkey**. *Refusals:* `403 CONSENT_PAGE_REQUIRED` |
-| `get(org)` | `GET /orgs/{org}` | One organization |
-| `invite_create(org, role, teams=…, ttl_secs=…, uses=…, all_apps=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/invites` | Make an invite. **passkey**. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `403 CANNOT_GRANT_UNHELD`, `409 FEATURE_NOT_ACTIVE` |
+| `delete(org, confirm=None)` | `DELETE /orgs/{org}` | Delete an organization. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `egress(org, egress, confirm=None)` | `POST /orgs/{org}/egress` | Turn the organization's egress off or on. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 CONSENT_PAGE_REQUIRED`, `403 SIGN_COUNT_REPLAYED` |
+| `get(org, limit=…, teams_after=…, members_after=…)` | `GET /orgs/{org}` | One organization |
+| `invite_create(org, role, teams=…, ttl_secs=…, uses=…, all_apps=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/invites` | Make an invite. **passkey**. *Refusals:* `400 UNKNOWN_CAPABILITIES`, `403 ASSERTION_REFUSED`, `403 CANNOT_GRANT_UNHELD`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
 | `invite_list(org)` | `GET /orgs/{org}/invites` | The organization's invites |
 | `invite_redeem(token)` | `POST /invites/{token}/redeem` | Join with an invite. *Refusals:* `409 GUESTS_NOT_ALLOWED` |
-| `invite_revoke(org, key, confirm=None)` | `DELETE /orgs/{org}/invites/{key}` | Revoke an invite. **passkey** |
+| `invite_revoke(org, key, confirm=None)` | `DELETE /orgs/{org}/invites/{key}` | Revoke an invite. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `member_metadata(org, account, metadata)` | `POST /orgs/{org}/members/{account}/metadata` | Set a member's metadata |
-| `member_remove_teams(org, account, teams, confirm=None)` | `DELETE /orgs/{org}/members/{account}/teams` | Remove a member from several teams, or leave them. **passkey**. *Refusals:* `400 BAD_TEAMS`, `409 FEATURE_NOT_ACTIVE` |
-| `member_set_teams(org, account, teams, confirm=None)` | `POST /orgs/{org}/members/{account}/teams` | Set a member's rows in several teams. **passkey**. *Refusals:* `400 BAD_TEAMS`, `409 FEATURE_NOT_ACTIVE` |
+| `member_remove_teams(org, account, teams, confirm=None)` | `DELETE /orgs/{org}/members/{account}/teams` | Remove a member from several teams, or leave them. **passkey**. *Refusals:* `400 BAD_TEAMS`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
+| `member_set_teams(org, account, teams, confirm=None)` | `POST /orgs/{org}/members/{account}/teams` | Set a member's rows in several teams. **passkey**. *Refusals:* `400 BAD_TEAMS`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
 | `members(org, detail=…)` | `GET /orgs/{org}/members` | Members' lockout risk |
 | `metadata(org, metadata)` | `POST /orgs/{org}/metadata` | Set an organization's metadata |
-| `outbound_approval(org, package, prefixes=…, replace=…, confirm=None)` | `POST /orgs/{org}/outbound` | Approve outbound prefixes for the organization's apps. **passkey** |
+| `outbound_approval(org, package, prefixes=…, replace=…, confirm=None)` | `POST /orgs/{org}/outbound` | Approve outbound prefixes for the organization's apps. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `policy(org)` | `GET /orgs/{org}/upgrade-policy` | The organization's update policy |
-| `policy_set(org, policy=…, confirm=None)` | `POST /orgs/{org}/upgrade-policy` | Set the organization's update policy. **passkey**. *Refusals:* `400 BAD_UPGRADE_POLICY`, `409 FEATURE_NOT_ACTIVE` |
-| `publisher(org, signer_id, public_key, signature, confirm=None)` | `POST /orgs/{org}/publishers` | Bind a package signing key. **passkey** |
-| `publisher_upgrade(org, package, version, migrate=…, confirm=None)` | `POST /orgs/{org}/packages/{package}/upgrade` | Upgrade every instance of a publisher's package. **passkey** |
-| `recovery_cancel(org, confirm=None)` | `POST /orgs/{org}/recovery/cancel` | Cancel an organization recovery. **passkey** |
-| `recovery_finish(org, confirm=None)` | `POST /orgs/{org}/recovery/finish` | Finish an organization recovery. **passkey**. *Refusals:* `409 RECOVERY_NOT_READY` |
-| `recovery_set(org, public_key=…, confirm=None)` | `POST /orgs/{org}/recovery` | Set the organization's recovery key. **passkey**. *Refusals:* `400 BAD_RECOVERY_KEY` |
+| `policy_set(org, policy=…, confirm=None)` | `POST /orgs/{org}/upgrade-policy` | Set the organization's update policy. **passkey**. *Refusals:* `400 BAD_UPGRADE_POLICY`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
+| `publisher(org, signer_id, public_key, signature, confirm=None)` | `POST /orgs/{org}/publishers` | Bind a package signing key. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `publisher_upgrade(org, package, version, migrate=…, confirm=None)` | `POST /orgs/{org}/packages/{package}/upgrade` | Upgrade every instance of a publisher's package. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `recovery_cancel(org, confirm=None)` | `POST /orgs/{org}/recovery/cancel` | Cancel an organization recovery. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `recovery_finish(org, confirm=None)` | `POST /orgs/{org}/recovery/finish` | Finish an organization recovery. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 RECOVERY_NOT_READY` |
+| `recovery_set(org, public_key=…, confirm=None)` | `POST /orgs/{org}/recovery` | Set the organization's recovery key. **passkey**. *Refusals:* `400 BAD_RECOVERY_KEY`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 RECOVERY_KEY_REQUIRED` |
 | `recovery_start(org, nonce, signature)` | `POST /orgs/{org}/recovery/start` | Start an organization recovery. *Refusals:* `403 WRONG_RECOVERY_KEY`, `409 RECOVERY_PENDING` |
-| `release_approval(org, version, approved=…, confirm=None)` | `POST /orgs/{org}/releases` | Approve a mero-tee release for the organization's apps. **passkey** |
-| `remove_member(org, account, confirm=None)` | `DELETE /orgs/{org}/members/{account}` | Remove a member, or leave. **passkey** |
-| `rename(org, name, confirm=None)` | `POST /orgs/{org}/name` | Rename an organization. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
-| `set_backup_key(org, public_key, confirm=None)` | `POST /orgs/{org}/backup-key` | Set the organization's backup key. **passkey**. *Refusals:* `400 BAD_BACKUP_KEY`, `409 FEATURE_NOT_ACTIVE` |
-| `set_member(org, account, role, confirm=None)` | `POST /orgs/{org}/members` | Set a member's role. **passkey** |
-| `settings(org, allow_guests=…, allow_public_links=…, confirm=None)` | `POST /orgs/{org}/settings` | Change the organization's settings. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
+| `release_approval(org, version, approved=…, confirm=None)` | `POST /orgs/{org}/releases` | Approve a mero-tee release for the organization's apps. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `remove_member(org, account, confirm=None)` | `DELETE /orgs/{org}/members/{account}` | Remove a member, or leave. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `rename(org, name, confirm=None)` | `POST /orgs/{org}/name` | Rename an organization. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
+| `set_backup_key(org, public_key, confirm=None)` | `POST /orgs/{org}/backup-key` | Set the organization's backup key. **passkey**. *Refusals:* `400 BAD_BACKUP_KEY`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
+| `set_member(org, account, role, confirm=None)` | `POST /orgs/{org}/members` | Set a member's role. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `settings(org, allow_guests=…, allow_public_links=…, confirm=None)` | `POST /orgs/{org}/settings` | Change the organization's settings. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
 | `team_create(org, name, parent=…, join)` | `POST /orgs/{org}/teams` | Create a team |
-| `team_delete(org, team, keep_apps=…, confirm=None)` | `DELETE /orgs/{org}/teams/{team}` | Delete a team. **passkey**. *Refusals:* `409 FEATURE_NOT_ACTIVE` |
+| `team_delete(org, team, keep_apps=…, confirm=None)` | `DELETE /orgs/{org}/teams/{team}` | Delete a team. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `409 FEATURE_NOT_ACTIVE` |
 | `team_get(org, team)` | `GET /orgs/{org}/teams/{team}` | One team |
-| `team_remove_member(org, team, account, confirm=None)` | `DELETE /orgs/{org}/teams/{team}/members/{account}` | Remove a team member, or leave. **passkey** |
-| `team_set_member(org, team, account, lead=…, role=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/teams/{team}/members` | Add or change a team member. **passkey** |
+| `team_remove_member(org, team, account, confirm=None)` | `DELETE /orgs/{org}/teams/{team}/members/{account}` | Remove a team member, or leave. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `team_set_member(org, team, account, lead=…, role=…, capabilities=…, confirm=None)` | `POST /orgs/{org}/teams/{team}/members` | Add or change a team member. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `team_update(org, team, name=…, join=…, parent=…, metadata=…)` | `POST /orgs/{org}/teams/{team}` | Update a team |
 | `updates(org, after=…)` | `GET /orgs/{org}/updates` | Updates waiting across an organization's apps |
-| `upgrade(org, package, version, team=…, cascade=…, migrate=…, confirm=None)` | `POST /orgs/{org}/upgrade` | Start an upgrade run. **passkey** |
-| `upgrade_retry(org, run, confirm=None, operator_proof=None)` | `POST /orgs/{org}/upgrades/{run}/retry` | Retry an upgrade run's failed apps. **passkey**, **operator** |
+| `upgrade(org, package, version, team=…, cascade=…, migrate=…, confirm=None)` | `POST /orgs/{org}/upgrade` | Start an upgrade run. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
+| `upgrade_retry(org, run, confirm=None, operator_proof=None)` | `POST /orgs/{org}/upgrades/{run}/retry` | Retry an upgrade run's failed apps. **passkey**, **operator**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `upgrade_status(org, run)` | `GET /orgs/{org}/upgrades/{run}` | An upgrade run's progress |
 | `usage(org)` | `GET /orgs/{org}/usage` | An organization's usage |
 
@@ -272,17 +279,18 @@ Generated from core's `docs/public/openapi.json`.
 
 | Method | Route | What it does |
 | --- | --- | --- |
-| `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `429 QUOTA_EXCEEDED`, `503 BUSY` |
+| `bundle_put(body)` | `POST /bundles` | Upload a raw component. *Refusals:* `400 BAD_BUNDLE`, `400 UNSUPPORTED_BUNDLE`, `422 COMPILE_TIMEOUT`, `429 QUOTA_EXCEEDED`, `429 TOO_MANY_COMPILES`, `503 BUSY` |
 | `capabilities(package, version, service=…)` | `GET /packages/{package}/{version}/capabilities` | A release's capabilities. *Refusals:* `400 NO_SUCH_SERVICE` |
+| `frontend(package, version)` | `GET /packages/{package}/{version}/frontend` | A release's frontend files |
 | `get(package)` | `GET /packages/{package}` | One package |
-| `install(package, version)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
+| `install(package, version, org=…)` | `POST /packages/install` | Install a release from the registry. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 NO_REGISTRY`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 ACCOUNT_NOT_LINKED`, `403 DEPLOY_NOT_GRANTED`, `422 COMPILE_TIMEOUT`, `429 TOO_MANY_COMPILES`, `503 BUSY` |
 | `list()` | `GET /packages` | Installed packages |
-| `origins_add(package, origin, rp_id=…, served=…, confirm=None)` | `POST /package-origins/{package}` | Register a frontend origin. **passkey**. *Refusals:* `400 BAD_RP_ID`, `429 QUOTA_EXCEEDED` |
+| `origins_add(package, origin, rp_id=…, served=…, confirm=None)` | `POST /package-origins/{package}` | Register a frontend origin. **passkey**. *Refusals:* `400 BAD_RP_ID`, `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED`, `429 QUOTA_EXCEEDED` |
 | `origins_list(package)` | `GET /package-origins/{package}` | A package's frontend origins |
-| `origins_remove(package, origin, confirm=None)` | `DELETE /package-origins/{package}` | Remove a frontend origin. **passkey** |
+| `origins_remove(package, origin, confirm=None)` | `DELETE /package-origins/{package}` | Remove a frontend origin. **passkey**. *Refusals:* `403 ASSERTION_REFUSED`, `403 SIGN_COUNT_REPLAYED` |
 | `pipelines(package, version)` | `GET /packages/{package}/{version}/pipelines` | A release's pipelines |
 | `uninstall(package)` | `DELETE /packages/{package}` | Uninstall a package |
-| `upload(body)` | `POST /packages` | Upload a signed release. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `403 UPLOADS_DISABLED`, `422 COMPILE_TIMEOUT`, `503 BUSY` |
+| `upload(org=…, body)` | `POST /packages` | Upload a signed release. *Refusals:* `400 BAD_BUNDLE`, `400 BAD_PACKAGE`, `400 COMPUTE_ABI_MISMATCH`, `400 ORG_REQUIRED`, `400 UNSUPPORTED_BUNDLE`, `403 DEPLOY_NOT_GRANTED`, `403 UPLOADS_DISABLED`, `422 COMPILE_TIMEOUT`, `429 TOO_MANY_COMPILES`, `503 BUSY` |
 | `version_uninstall(package, version)` | `DELETE /packages/{package}/{version}` | Uninstall one version |
 
 ## `client.public`
@@ -293,4 +301,4 @@ Generated from core's `docs/public/openapi.json`.
 | `health()` | `GET /health` | Node health |
 | `publisher_binding(signer)` | `GET /publishers/{signer}` | Whether a signing key is bound |
 | `releases_public()` | `GET /releases` | The cluster's releases |
-| `restore_recover_holder(holder, slice_, apps=…, code=…, operator_proof=None)` | `POST /recover/holder` | Bring an organization's or account's apps back from its recovery files. **operator**. *Refusals:* `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 TOO_MANY_FILES`, `400 UNATTESTED_RECOVERY_FILE`, `409 FEATURE_NOT_ACTIVE`, `409 NO_BACKUP_DIR`, `409 RECOVERY_SEGMENTS_MISSING` |
+| `restore_recover_holder(holder, slice_, apps=…, code=…, operator_proof=None)` | `POST /recover/holder` | Bring an organization's or account's apps back from its recovery files. **operator**. *Refusals:* `400 BAD_RECOVERY_FILE`, `400 BAD_RECOVERY_KEY`, `400 NOT_A_REPLICA_NODE`, `400 TOO_MANY_FILES`, `400 UNATTESTED_RECOVERY_FILE`, `409 FEATURE_NOT_ACTIVE`, `409 NO_BACKUP_DIR`, `409 OUTSIDE_LINEAGE`, `409 RECOVERY_SEGMENTS_MISSING` |

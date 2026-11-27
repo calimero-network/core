@@ -129,6 +129,16 @@ pub(crate) struct OutboundApprovalBody {
     pub(crate) confirm: Option<ConfirmBody>,
 }
 
+/// The release whose prefixes an outbound approval of `package` by `account` covers, shown
+/// on the consent page and approved by the route alike: the newest one the account reads.
+pub(crate) fn outbound_release<'s>(
+    s: &'s crate::system::SystemState,
+    package: &str,
+    account: &str,
+) -> Option<&'s crate::system::PackageVersion> {
+    s.newest_read(package, account, false)
+}
+
 /// Approve URL prefixes a package's publisher may call out to from the apps
 /// of `scope`, with a passkey assertion over the exact change. The owner
 /// decides, never the operator: the operator only bounds the hosts.
@@ -139,14 +149,10 @@ pub(crate) async fn set_outbound_approval(
     body: OutboundApprovalBody,
 ) -> ApiResult {
     let account = p.account()?;
-    // A package none of whose releases the caller may see is not installed
-    // for them: answered before the passkey ceremony, as a missing one.
+    // Apply approves the prefixes of the newest release the caller reads: with none, it is
+    // answered before the passkey, as for a package that is not installed.
     node.sys_fresh_from(p.sys_index).await;
-    if !node.sys(|s| {
-        s.packages
-            .get(&body.package)
-            .is_some_and(|pkg| s.visible_versions(pkg, &account).next().is_some())
-    }) {
+    if node.sys(|s| outbound_release(s, &body.package, &account).is_none()) {
         return Err(ApiError::not_found("no such package"));
     }
     let subject = match &scope {
@@ -421,14 +427,20 @@ async fn set_release_deadline(
 /// sealed channel, so from an attested node): the governance, and each
 /// release's end-of-new-work deadline. Users see the rules before they rely
 /// on them.
-async fn releases_public(State(node): State<Arc<Node>>) -> ApiResult {
+async fn releases_public(State(node): State<Arc<Node>>) -> ApiResult<Json<ClusterReleases>> {
     node.sys_fresh().await;
-    Ok(Json(node.sys(|s| {
-        json!({
-            "governance": s.governance(),
-            "deadlines": s.deadlines_json(),
-        })
+    Ok(Json(node.sys(|s| ClusterReleases {
+        governance: s.governance(),
+        deadlines: s.deadlines_json(),
     })))
+}
+
+/// `GET /releases`: the cluster's governance and the deadlines set on mero-tee releases,
+/// oldest release first.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ClusterReleases {
+    governance: crate::system::Governance,
+    deadlines: Vec<crate::system::VersionDeadline>,
 }
 
 #[derive(Deserialize)]

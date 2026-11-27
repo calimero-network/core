@@ -116,6 +116,17 @@ detail.
 
    `pack` checks each against the node's own rules before signing.
 
+   `lineage`, from `[package.metadata.calimero]` only, pins the
+   release's instances: with `lineage = "pinned"`, an instance created from it
+   moves only to later releases of the same package, signed by the same key,
+   whoever upgrades it, the operator included
+   ([Pinned instances](/protocol/upgrades/#pinned-instances)). Absent means
+   `free`. A pinning release names a semver version, and a node installs one
+   only from cluster version 1.0.0-rc.39. A release signed with the development
+   key pins its instances to a key everyone holds; only a node that takes
+   development releases (`--allow-unsigned-bundles`) installs one, so such a pin
+   is for local testing only.
+
    One more comes only from the crate's `[package.metadata.calimero]`:
 
    - `uses`: the other apps the release calls, by the name its code knows each by.
@@ -147,8 +158,12 @@ detail.
 
      Creating an instance of a release with `create` references first creates
      each of them: in the same organization, by the same owner, from the release
-     its lock pinned (else the newest installed one inside its range; a package
-     with none answers `409 USES_NOT_INSTALLED`), named `<instance>.<name>`. The
+     its lock pinned (else the newest installed one inside its range), among the
+     installed releases the creator may use, those signed by the same key as
+     the instance's own package, and, for an instance from a deployment, those
+     the same deployment offers; a package with none answers
+     `409 USES_NOT_INSTALLED`, as for a package that is not installed at all,
+     named `<instance>.<name>`. The
      instance's record names them (`links`), the create answers them, and an
      `init` that takes a `links` parameter is told their ids:
 
@@ -161,9 +176,9 @@ detail.
      `attach` references are never created.
 
      The instance and its members are one unit. An instance created from a
-     deployment's offer gives each member the same deployment, though the
-     deployment offers only the instance's release (its offer covers the
-     unit): every member's usage is billed to the deployment's developer, and
+     deployment's offer gives each member the same deployment, which need not
+     offer the member's release when the same key signed it (the instance's
+     offer covers the unit): every member's usage is billed to the deployment's developer, and
      the deployment's secret values fill what the member's own release
      declares, as they do the instance's. Deleting the
      instance deletes every member with it, down to the members' own members
@@ -254,9 +269,14 @@ detail.
    checks it against the package's own compute methods and the cluster's pools:
    the module is `self` (or left out) or another installed package by its exact
    name, optionally pinned (`module: com.acme.pdf@0.1.0`; without a version, the
-   newest release the installer sees). That package must ship a compute component;
-   its methods and caps are the ones the step is checked against, a module the
-   installer cannot see or that has none is `UNKNOWN_MODULE`, and the release
+   newest release the installer may pin). That package must ship a compute component;
+   its methods and caps are the ones the step is checked against. A module is pinned
+   only from a release the installer may use that is public or the operator's, signed
+   by the package's own signer, or, for a release installed private, private to every
+   organization the release is for; anything else, or a module with no compute
+   component, is `UNKNOWN_MODULE`. An install of the same release again (for another
+   organization, or public) keeps its pins and is refused the same way when a pin no
+   longer meets that rule, so it never widens who runs a private module. The release
    keeps running the module release it was installed against until the pipeline's
    own package is released again. The module's package cannot be uninstalled while
    such a release exists (`409 MODULE_IN_USE`). The step's files, payer and usage
@@ -264,7 +284,7 @@ detail.
    declares, and each step's limits may only lower the method's caps. A problem
    is `400 BAD_PIPELINE` with `details`, a list of `{file, path, code, message}`
    for every error. A release with pipelines installs only once every node runs
-   this release (`409 CLUSTER_NOT_UPGRADED`). `meroctl app pipelines PACKAGE`
+   this release (`409 CLUSTER_NOT_UPGRADED`). `meroctl package pipelines PACKAGE`
    prints what a version registered.
 
 4. **Install it.**
@@ -282,7 +302,7 @@ detail.
    upload:
 
    ```bash
-   meroctl app install --path dist/com.example.my-app-1.0.0.mpk
+   meroctl package install --path dist/com.example.my-app-1.0.0.mpk
    meroctl instance create --name my-app --package com.example.my-app --alias my-app
    ```
 
@@ -290,11 +310,44 @@ detail.
    every artifact's digest, `minRuntimeVersion`, the package's pinned signer
    (the first release's), and that each component prepares and imports only
    what the `calimero:app` world offers. Installing is what *produces* an
-   application: the manifest's `package` and `signerId` fix the application id.
+   installed package: the manifest's `package` and `signerId` fix its identity.
    A WASM that a release of another signer's package already ships is refused
    (`409`).
 
 </Steps>
+
+## Connectors
+
+A connector is a crate an app compiles in to reach one external service, such as
+`calimero-connector-nearai` for NEAR AI Cloud.
+It declares the prefixes it sends under and the credentials it needs in its own `Cargo.toml`, in the shape an app's `outbound` and `secrets` take ([Outbound requests](/build/guides/outbound/#secrets)):
+
+```toml
+[package.metadata.calimero.connector]
+outbound = ["https://cloud-api.near.ai/v1/chat/completions"]
+
+[package.metadata.calimero.connector.secrets.NEAR_AI_API_KEY]
+host = "cloud-api.near.ai"
+paths = ["/v1/chat/completions"]
+header = "authorization"
+format = "Bearer {}"
+description = "NEAR AI Cloud API key"
+required = true
+```
+
+An app that depends on it opts in by name:
+
+```toml
+[package.metadata.calimero]
+connectors = ["calimero-connector-nearai"]
+```
+
+`meroctl app pack DIR` finds each listed name among the crate's normal dependencies for `wasm32-wasip2` (`cargo metadata`) and adds its `outbound` prefixes and `secrets` to the app's own, printing each one it adds and the crate it came from.
+The signed manifest carries them as if the app had written them, so a node and the consent page see an ordinary release.
+`pack` refuses a listed name that is not such a dependency, a dependency with no `connector` table, and a secret two declarations (the app and a connector, or two connectors) bind differently; the same binding twice is kept once.
+A dependency the app does not list adds nothing, whatever it declares.
+The merged secrets are then checked as the app's own are.
+How to use one from an action, and how to write one, is in [Connectors](/build/guides/connectors/).
 
 ## Check a release before you ship it
 
@@ -355,16 +408,16 @@ judge.
 
 ## The signer key is the update authority
 
-For a bundle, the application id is derived from the `package` **and** the
-`signerId` together — not from the bytecode. That makes the application id
+For a bundle, the package's identity is its `package` **and** its
+`signerId` together — not the bytecode. That makes the identity
 **version-stable**: a new release signed by the *same* key under the *same*
-package keeps the same application id and is recognized as an upgrade of the
+package keeps the same identity and is recognized as an upgrade of the
 existing app.
 
 The corollary is the rule to remember: **a new signed version must use the same
-signer key.** Sign a new release with a different key and the node computes a
-different application id — it is a *different application*, not an upgrade, and
-existing contexts will not pick it up. Treat the signing key as the long-lived
+signer key.** Sign a new release with a different key and the node sees a
+different identity — it is a *different package*, not an upgrade, and
+existing instances will not pick it up. Treat the signing key as the long-lived
 identity of your app and guard it accordingly.
 
 <Aside type="note" title="Every install path requires a signature">
@@ -391,8 +444,8 @@ documented in [Upgrades & migration](/protocol/upgrades/).
     href="/protocol/upgrades/"
   />
   <LinkCard
-    title="Applications (protocol)"
-    description="How a signed bundle becomes an application with a version-stable id."
+    title="Packages & frontends (protocol)"
+    description="How a signed bundle becomes an installed package with a version-stable identity."
     href="/protocol/applications/"
   />
 </CardGrid>

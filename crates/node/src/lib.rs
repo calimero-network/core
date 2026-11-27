@@ -3,7 +3,10 @@
 //! One process inside a TDX VM. It hosts the cluster's system group and the
 //! app groups placed on it, runs app calls on each group's leader, and serves
 //! clients only through the sealed channel bound into its attestation.
-//! See `docs/` (Calimero Confidential Cloud architecture) for the design.
+//!
+//! Spec: [Protocol overview](https://calimero-network.github.io/core/protocol/overview/),
+//! [Architecture](https://calimero-network.github.io/core/contribute/architecture/).
+//! Crate guide: [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,6 +26,7 @@ pub mod component;
 pub mod consent_page;
 mod egress;
 pub mod error;
+pub mod event_streams;
 pub mod files;
 pub mod idempotency;
 pub mod inspect;
@@ -243,7 +247,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
-    // Timer ticks (D34) of the component apps this node leads.
+    // Timer ticks of the component apps this node leads.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();
     drop(tokio::spawn(async move {
@@ -276,7 +280,7 @@ pub async fn run(config: Config) -> eyre::Result<Running> {
         }
     }));
 
-    // What the peers' replicas used today, for the fuel cap (D76, D78), every
+    // What the peers' replicas used today, for the fuel cap, every
     // `USAGE_REFRESH` while a cap is set: the cap never asks a peer during a call.
     let weak = Arc::downgrade(&node);
     let stop = shutdown.clone();

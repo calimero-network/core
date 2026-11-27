@@ -7,6 +7,10 @@
 //! node runs WASM on the leader) use [`Group::propose`], which serializes
 //! proposals per group; the machine refuses, at apply, a command built on
 //! stale state, so an append needs no leadership round first.
+//!
+//! Spec: [Replication](https://calimero-network.github.io/core/protocol/replication/),
+//! [Storage](https://calimero-network.github.io/core/protocol/storage/).
+//! Crate guide: [`crates/log/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/log/AGENTS.md).
 
 #![allow(
     clippy::result_large_err,
@@ -52,8 +56,27 @@ pub struct Config {
     pub heartbeat_ms: u64,
     pub election_min_ms: u64,
     pub election_max_ms: u64,
-    /// Build a snapshot after this many applied entries.
+    /// Build a snapshot after this many applied entries. When
+    /// [`Config::snapshot_scale_bytes`] is `None` this is the fixed cadence
+    /// (openraft's `LogsSinceLast`); when it is `Some`, this is the cadence for
+    /// a state small enough to fit one scale unit, and the engine widens it in
+    /// proportion to a larger state.
     pub snapshot_every: u64,
+    /// Make the snapshot cadence size-aware (off by default, `None`). A full
+    /// snapshot re-seals the whole state, so building one every
+    /// [`Config::snapshot_every`] entries whatever the state's size makes a
+    /// large app re-seal hundreds of MB for a few MB of new log — write
+    /// amplification that competes with the write path. When set, a group
+    /// snapshots every `snapshot_every * clamp(state_bytes / scale, 1,
+    /// MAX_SNAPSHOT_SCALE)` applied entries, where `state_bytes` is the size of
+    /// its last snapshot file: a state within one `scale` keeps the base
+    /// cadence, a `k`-unit state snapshots every `k` intervals (capped at
+    /// [`MAX_SNAPSHOT_SCALE`]), so the re-seal stays a bounded fraction of the
+    /// bytes written. The engine drives these builds itself, since openraft 0.9
+    /// offers only `LogsSinceLast(n)` and `Never`. The trade is a longer log
+    /// between snapshots (more to replay for a catch-up, more log on disk);
+    /// leave it `None` to keep the fixed cadence unchanged.
+    pub snapshot_scale_bytes: Option<u64>,
 }
 
 impl Default for Config {
@@ -63,9 +86,16 @@ impl Default for Config {
             election_min_ms: 1200,
             election_max_ms: 2400,
             snapshot_every: 1000,
+            snapshot_scale_bytes: None,
         }
     }
 }
+
+/// The most [`Config::snapshot_every`] is multiplied by for a large state: a
+/// state this many `snapshot_scale_bytes` units or larger snapshots at this
+/// multiple of the base cadence and no wider, so the log between snapshots
+/// (and a new replica's replay) stays bounded however large the state grows.
+pub const MAX_SNAPSHOT_SCALE: u64 = 64;
 
 /// Why a proposal or a strong read did not complete.
 #[derive(Debug, thiserror::Error)]
@@ -158,7 +188,7 @@ pub struct Proposed {
 }
 
 /// A snapshot of a group's Raft status.
-#[derive(Clone, Debug, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Status {
     pub group: GroupId,
     pub leader: Option<NodeId>,
@@ -172,11 +202,11 @@ pub struct Status {
     /// the group restarts it from the disk ([`RESTART_FIRST`]). Not
     /// serialized, nor `restarts`: the node's API answers a status in the
     /// shape clients know, and reports these as metrics.
-    #[serde(skip_serializing)]
+    #[serde(skip)]
     pub stopped: Option<String>,
     /// How many times this node tried to restart the group's core since the
     /// group started here (a try that re-applies the failing batch fails too).
-    #[serde(skip_serializing)]
+    #[serde(skip)]
     pub restarts: u64,
 }
 
@@ -213,6 +243,12 @@ trait RpcTarget: Send + Sync {
     /// (`enable_heartbeat: false`), so every group's go out together and
     /// those to one peer join one batch.
     fn tick(&self) -> BoxFuture<()>;
+    /// The size-aware snapshot check ([`snapshot_supervisor`]): if this node
+    /// leads the group and it has applied enough entries past its last snapshot
+    /// for the state's size (`snapshot_every * clamp(state_bytes / scale, 1,
+    /// MAX_SNAPSHOT_SCALE)`), trigger a build. A follower, a stopped core or a
+    /// group without the entries does nothing.
+    fn snapshot_if_due(&self, every: u64, scale: u64) -> BoxFuture<()>;
 }
 
 /// One Raft group on this node.
@@ -393,7 +429,7 @@ impl<M: Machine> Group<M> {
     /// it answers `NotLeader` with the current leader (the caller forwards, as an
     /// append from a deposed node would make it), and never builds with a term
     /// it does not lead: ids made from another node's term could collide with that
-    /// leader's (D52).
+    /// leader's, since a component's unique ids are `term.seq.n`.
     async fn led_term(&self) -> Result<Leadership, WriteError> {
         {
             let m = self.raft().metrics();
@@ -512,7 +548,7 @@ impl<M: Machine> Group<M> {
     /// admitted the proposal found, with no leadership round of its own: the
     /// term comes from the same check `propose` makes. Before its first
     /// proposal in a term this node has applied its whole log
-    /// ([`Self::catch_up`]), so the builder sees every entry this node
+    /// (`Self::catch_up`), so the builder sees every entry this node
     /// appended in that term, whatever commit index it had saved.
     pub async fn propose_led<F>(&self, mut build: F) -> Result<Proposed, WriteError>
     where
@@ -621,7 +657,7 @@ impl<M: Machine> Group<M> {
     }
 
     /// Read this node's applied state. While an apply commits (its batch may wait
-    /// for the disk), this waits off the async workers ([`machine::read_applied`]).
+    /// for the disk), this waits off the async workers (`machine::read_applied`).
     pub fn read_local<R>(&self, f: impl FnOnce(&M, u64) -> R) -> R {
         let st =
             machine::read_applied(&self.shared).unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -775,7 +811,7 @@ impl<M: Machine> Group<M> {
 
     /// Replace this group's state with a backup: the snapshot file `path`
     /// this cluster wrote for group `from` as snapshot `snapshot_id`
-    /// ([`machine::replace_state`]). Refused unless this node is the group's
+    /// (`machine::replace_state`). Refused unless this node is the group's
     /// only voter and leads it, since every other replica would keep the state
     /// before: the caller then appends an entry, builds a snapshot
     /// ([`Self::snapshot_through`]) and purges the log up to it
@@ -913,6 +949,34 @@ impl<M: Machine> RpcTarget for Group<M> {
         })
     }
 
+    fn snapshot_if_due(&self, every: u64, scale: u64) -> BoxFuture<()> {
+        let status = self.status();
+        // Only the leader builds; a stopped core would answer an error.
+        if !status.is_leader || status.stopped.is_some() {
+            return Box::pin(std::future::ready(()));
+        }
+        // The last snapshot's covered index and the size of its file stand in
+        // for the state's size (a disk machine streams its snapshot from
+        // RocksDB, never holding it in memory, so the file is the cheapest size
+        // we have). No snapshot yet: `since` is every applied entry and the
+        // state counts as under one scale unit, so the first build lands at the
+        // base cadence, as `LogsSinceLast(every)` would.
+        let (at, bytes) = match machine::current_snapshot_file(&self.reopen.db, self.id) {
+            Ok(Some((at, _, path))) => (at, std::fs::metadata(&path).map_or(0, |m| m.len())),
+            Ok(None) => (0, 0),
+            Err(_) => (0, 0),
+        };
+        if !snapshot_due(status.applied, at, bytes, every, scale) {
+            return Box::pin(std::future::ready(()));
+        }
+        let raft = self.raft();
+        Box::pin(async move {
+            // openraft serializes builds and ignores a trigger while one runs,
+            // so a few extra triggers before a build records its file are no-ops.
+            let _ = raft.trigger().snapshot().await;
+        })
+    }
+
     fn drop_data(&self) -> eyre::Result<()> {
         // openraft does not wait for a snapshot build when its core shuts
         // down. Under both locks no build is between its check and its write
@@ -1011,10 +1075,17 @@ pub struct Engine {
     node: NodeId,
     db: Arc<Db>,
     batcher: Arc<Batcher>,
+    /// Shared with [`Batcher`] and the [`heartbeat_ticker`]: the ticker marks
+    /// each firing so its idle burst coalesces, while a read-index confirm
+    /// between ticks is sent at once.
+    pacing: Arc<network::HeartbeatPacing>,
     config: Config,
     groups: Arc<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
     /// Whether the heartbeat ticker ([`heartbeat_ticker`]) runs.
     ticking: AtomicBool,
+    /// Whether the size-aware snapshot supervisor ([`snapshot_supervisor`])
+    /// runs; spawned only when [`Config::snapshot_scale_bytes`] is set.
+    snapshotting: AtomicBool,
     factory: RwLock<Option<GroupFactory>>,
     removals: Removals,
 }
@@ -1074,7 +1145,7 @@ impl Drop for Removal {
 impl Engine {
     /// Open the node's database under `dir`, sealed under `key`.
     ///
-    /// The store's format is settled first ([`format`]): a store in any format
+    /// The store's format is settled first ([`mod@format`]): a store in any format
     /// but [`STORE_FORMAT`] is refused.
     pub fn open(
         node: NodeId,
@@ -1091,13 +1162,16 @@ impl Engine {
             ))
         })?;
         machine::clean_snapshot_dir(&db)?;
+        let pacing = Arc::new(network::HeartbeatPacing::new());
         Ok(Arc::new(Self {
             node,
             db,
-            batcher: Arc::new(Batcher::new(transport)),
+            batcher: Arc::new(Batcher::new(transport, Arc::clone(&pacing))),
+            pacing,
             config,
             groups: Arc::new(RwLock::new(HashMap::new())),
             ticking: AtomicBool::new(false),
+            snapshotting: AtomicBool::new(false),
             factory: RwLock::new(None),
             removals: Removals::default(),
         }))
@@ -1219,7 +1293,13 @@ impl Engine {
             heartbeat_interval: self.config.heartbeat_ms,
             election_timeout_min: self.config.election_min_ms,
             election_timeout_max: self.config.election_max_ms,
-            snapshot_policy: openraft::SnapshotPolicy::LogsSinceLast(self.config.snapshot_every),
+            // With a size-aware cadence the engine triggers builds itself
+            // (`snapshot_supervisor`), so openraft's own policy is `Never`.
+            snapshot_policy: if self.config.snapshot_scale_bytes.is_some() {
+                openraft::SnapshotPolicy::Never
+            } else {
+                openraft::SnapshotPolicy::LogsSinceLast(self.config.snapshot_every)
+            },
             max_in_snapshot_log_to_keep: 100,
             // Snapshot chunks travel as JSON RPC bodies: keep each well under
             // the node's body limit and give it time to arrive.
@@ -1254,8 +1334,18 @@ impl Engine {
         if !self.ticking.swap(true, Ordering::AcqRel) {
             drop(tokio::spawn(heartbeat_ticker(
                 Arc::downgrade(&self.groups),
+                Arc::clone(&self.pacing),
                 Duration::from_millis(self.config.heartbeat_ms),
             )));
+        }
+        if let Some(scale) = self.config.snapshot_scale_bytes {
+            if !self.snapshotting.swap(true, Ordering::AcqRel) {
+                drop(tokio::spawn(snapshot_supervisor(
+                    Arc::downgrade(&self.groups),
+                    self.config.snapshot_every,
+                    scale,
+                )));
+            }
         }
         let group = Arc::new(Group {
             id,
@@ -1440,9 +1530,60 @@ impl Engine {
 /// ([`network::Batcher`]). Ends with the engine.
 async fn heartbeat_ticker(
     groups: Weak<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
+    pacing: Arc<network::HeartbeatPacing>,
     every: Duration,
 ) {
     let mut tick = tokio::time::interval(every);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        let _at = tick.tick().await;
+        let Some(groups) = groups.upgrade() else {
+            return;
+        };
+        // Mark the firing so the batcher coalesces the heartbeats these ticks
+        // trigger; a read-index confirm between ticks is sent at once.
+        pacing.mark_tick();
+        let targets: Vec<_> = groups
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        drop(groups);
+        for t in targets {
+            t.tick().await;
+        }
+    }
+}
+
+/// Whether a group that has applied up to `applied`, whose last snapshot
+/// covered `snapshot_at` and whose state sealed to `bytes`, should snapshot
+/// now: the base cadence `every` widened in proportion to the state's size over
+/// `scale` (`clamp(bytes / scale, 1, MAX_SNAPSHOT_SCALE)` intervals). `bytes`
+/// and `snapshot_at` are 0 before the first snapshot, so the first lands at the
+/// base cadence, exactly where `LogsSinceLast(every)` would put it.
+fn snapshot_due(applied: u64, snapshot_at: u64, bytes: u64, every: u64, scale: u64) -> bool {
+    let units = (bytes / scale.max(1)).clamp(1, MAX_SNAPSHOT_SCALE);
+    applied.saturating_sub(snapshot_at) >= every.saturating_mul(units)
+}
+
+/// How often the size-aware snapshot supervisor checks each group. A snapshot
+/// is a coarse event (the base cadence is [`Config::snapshot_every`] applied
+/// entries), so a check a second is plenty and stays off the write path.
+const SNAPSHOT_CHECK_EVERY: Duration = Duration::from_secs(1);
+
+/// Drive size-aware snapshots from the engine ([`Config::snapshot_scale_bytes`]):
+/// every [`SNAPSHOT_CHECK_EVERY`], ask each group to build a snapshot if it
+/// leads here and has applied enough entries past its last one for the state's
+/// size ([`RpcTarget::snapshot_if_due`]). Spawned once, only when the cadence
+/// is size-aware (openraft's own policy is then `Never`); ends when the engine
+/// drops. A non-leader or a group short of the threshold is a no-op.
+async fn snapshot_supervisor(
+    groups: Weak<RwLock<HashMap<GroupId, Arc<dyn RpcTarget>>>>,
+    every: u64,
+    scale: u64,
+) {
+    let mut tick = tokio::time::interval(SNAPSHOT_CHECK_EVERY);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         let _at = tick.tick().await;
@@ -1457,7 +1598,62 @@ async fn heartbeat_ticker(
             .collect();
         drop(groups);
         for t in targets {
-            t.tick().await;
+            t.snapshot_if_due(every, scale).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod snapshot_cadence {
+    use super::{snapshot_due, MAX_SNAPSHOT_SCALE};
+
+    // Before the first snapshot (bytes and snapshot_at both 0) the cadence is
+    // exactly the base one, where `LogsSinceLast(every)` would put it.
+    #[test]
+    fn the_first_snapshot_lands_at_the_base_cadence() {
+        assert!(!snapshot_due(19, 0, 0, 20, 4096));
+        assert!(snapshot_due(20, 0, 0, 20, 4096));
+    }
+
+    // A state within one scale unit keeps the base cadence.
+    #[test]
+    fn a_small_state_keeps_the_base_cadence() {
+        let (every, scale) = (20, 4096);
+        // 3 KiB state, last snapshot at index 100: due again at 120, not before.
+        assert!(!snapshot_due(119, 100, 3 * 1024, every, scale));
+        assert!(snapshot_due(120, 100, 3 * 1024, every, scale));
+    }
+
+    // A k-unit state widens the interval to k times the base cadence.
+    #[test]
+    fn a_large_state_widens_the_interval_in_proportion() {
+        let (every, scale) = (20, 4096);
+        // 5 scale units of state: due every 5 * 20 = 100 entries, not every 20.
+        let bytes = 5 * scale;
+        assert!(
+            !snapshot_due(199, 100, bytes, every, scale),
+            "would be premature"
+        );
+        assert!(snapshot_due(200, 100, bytes, every, scale));
+    }
+
+    // However large the state, the interval never exceeds the cap, so the log
+    // between snapshots (and a catch-up's replay) stays bounded.
+    #[test]
+    fn the_interval_is_capped() {
+        let (every, scale) = (20, 4096);
+        // 1000 scale units would be 1000x without the cap; it stays at MAX.
+        let bytes = 1000 * scale;
+        let cap = every * MAX_SNAPSHOT_SCALE;
+        assert!(!snapshot_due(cap - 1, 0, bytes, every, scale));
+        assert!(snapshot_due(cap, 0, bytes, every, scale));
+    }
+
+    // A zero scale never divides by zero: it is treated as one byte per unit,
+    // so any non-trivial state is capped at the widest interval, not a panic.
+    #[test]
+    fn a_zero_scale_does_not_panic() {
+        assert!(!snapshot_due(20, 0, 999, 20, 0));
+        assert!(snapshot_due(20 * MAX_SNAPSHOT_SCALE, 0, 999, 20, 0));
     }
 }

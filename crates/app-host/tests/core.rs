@@ -1,4 +1,4 @@
-//! The host core's policy, overlay and determinism rules (spec sections 3-5, D19, D46, D47).
+//! The host core's policy, overlay and determinism rules.
 
 #![allow(
     clippy::unwrap_used,
@@ -111,7 +111,7 @@ fn view_writes_are_denied() {
     assert_eq!(host.storage_get(b"k"), Ok(None));
 }
 
-/// C10: the write past `MAX_WRITES` is a soft error naming the limit and the write's number,
+/// The write past `MAX_WRITES` is a soft error naming the limit and the write's number,
 /// not a trap, and nothing of it is kept; the trapping `put` of components built before
 /// WIT 0.5.7 keeps its old detail (`RunLimit::denied`).
 #[test]
@@ -140,9 +140,9 @@ fn the_write_after_ten_thousand_is_a_soft_error_with_its_number() {
     assert!(out.diff.iter().all(|w| !w.key.ends_with(b"one-more")));
 }
 
-/// C2 (Ruling 37): a run's writes are counted as they are made and refused at the host
-/// call once they pass `MAX_RUN_BYTES`, so host memory never holds more than that. C10:
-/// the refusal is a soft error with the run's total, which the guest can handle.
+/// A run's writes are counted as they are made and refused at the host call once they
+/// pass `MAX_RUN_BYTES`, so host memory never holds more than that. The refusal is a soft
+/// error with the run's total, which the guest can handle.
 #[test]
 fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
     assert_eq!(MAX_RUN_BYTES, 1024 * 1024);
@@ -213,9 +213,9 @@ fn bytes_written_past_the_run_cap_are_refused_at_the_call() {
     assert!(out.events.is_empty());
 }
 
-/// N1 (Ruling 43): an event's audience is kept with it, so its account strings count
-/// against the run's bytes, and one event names at most `MAX_AUDIENCE_ACCOUNTS` accounts.
-/// The re-review's probe: 100 events, each naming one 1 MiB account, were all kept.
+/// An event's audience is kept with it, so its account strings count against the run's
+/// bytes, and one event names at most `MAX_AUDIENCE_ACCOUNTS` accounts: 100 events, each
+/// naming one 1 MiB account, must not all be kept.
 #[test]
 fn audience_accounts_count_against_the_run_and_are_capped() {
     let state = base(&[]);
@@ -351,7 +351,7 @@ fn range_is_lazy() {
     assert_eq!(big.len(), 1_000, "max is capped at 1,000");
 }
 
-/// Review finding A4: 1,000 values of about 1 MiB each made one `range_next` gather
+/// 1,000 values of about 1 MiB each made one `range_next` gather
 /// about 1 GiB on the host before the guest (64 MiB) saw any of it. A batch now stops at
 /// `MAX_RANGE_BATCH_BYTES`, and the next one carries on where it stopped.
 #[test]
@@ -506,7 +506,7 @@ fn disabled_interfaces_refuse() {
     let state = base(&[]);
     let call = inv(InvocationKind::Call);
     let mut host = core_for(&state, &call);
-    // A call starts an action; its key comes from the run's unique ids (D17, D52).
+    // A call starts an action; its key comes from the run's unique ids (term.seq.n).
     assert_eq!(
         host.start_action("enrich", b"{}"),
         Ok(Ok("a.3.42.0".to_owned()))
@@ -639,7 +639,7 @@ fn assert_send_static<T: Send + 'static>() {}
 
 #[test]
 fn host_core_is_send_and_static() {
-    // wasmtime 50 needs `Store<T: 'static>` and `Send` store data for wasi and async calls.
+    // wasmtime needs `Store<T: 'static>` and `Send` store data for wasi and async calls.
     assert_send_static::<HostCore>();
 }
 
@@ -1364,8 +1364,9 @@ fn only_views_search_and_queries_are_bounded() {
     assert!(bare.search_query(&query(10, "eggs")).unwrap().is_err());
 }
 
-/// C7: a run makes at most `MAX_SEARCHES_PER_RUN` searches, and each one owes fuel for the
-/// documents it matched and the hits it returned; a host without host fuel owes none.
+/// A request makes at most `MAX_SEARCHES_PER_RUN` searches, across its run and the views
+/// its xcalls reach, and each one owes fuel for the documents it matched and the hits it
+/// returned.
 #[test]
 fn searches_are_capped_per_run_and_owe_fuel() {
     let state = base(&[]);
@@ -1385,12 +1386,89 @@ fn searches_are_capped_per_run_and_owe_fuel() {
     );
     assert_eq!(view.take_host_fuel(), 0, "taken once");
 
-    let mut free = core_for(&state, &inv(InvocationKind::View))
+    // Another run of the same request (a view its xcall reached) shares the count: none left.
+    let mut target = core_for(&state, &inv(InvocationKind::View))
         .with_search(Arc::new(OneHit))
-        .with_host_fuel(false);
-    assert!(free.search_query(&query(10, "eggs")).unwrap().is_ok());
-    assert_eq!(free.storage_get(b"k"), Ok(None));
-    assert_eq!(free.take_host_fuel(), 0);
+        .with_search_budget(view.search_budget());
+    assert_eq!(
+        target.search_query(&query(10, "eggs")).unwrap(),
+        Err(calimero_app_host::SEARCH_TOO_MANY.to_owned())
+    );
+    // A fresh request has its own.
+    let mut fresh = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
+    assert!(fresh.search_query(&query(10, "eggs")).unwrap().is_ok());
+}
+
+/// What a state call owes the host core is the table's: a state access and a fuel per byte
+/// of the key and the value (the engine takes `FUEL_HOST_CALL` itself).
+#[test]
+fn a_read_owes_what_the_fuel_table_says() {
+    let value = vec![1u8; 64 << 10];
+    let state = base(&[(b"big", &value)]);
+    let host = core_for(&state, &inv(InvocationKind::View));
+    assert_eq!(host.storage_get(b"big"), Ok(Some(value.clone())));
+    let mut host = host;
+    assert_eq!(
+        host.take_host_fuel(),
+        calimero_app_host::FUEL_STATE_ACCESS
+            + (3 + value.len()) as u64 * calimero_app_host::FUEL_PER_BYTE
+    );
+}
+
+/// A host call owes for the bytes it was handed before it
+/// checks anything, so a refused or denied call costs fuel too; a denial is still
+/// `HostDenied`.
+#[test]
+fn refused_and_denied_calls_owe_for_the_bytes_they_were_handed() {
+    let state = base(&[]);
+    let mut view = core_for(&state, &inv(InvocationKind::View)).with_search(Arc::new(OneHit));
+    let long = "x".repeat(4_096);
+    assert!(view.search_query(&query(10, &long)).unwrap().is_err());
+    let owed = view.take_host_fuel();
+    assert!(owed >= 4_096, "a refused 4 KiB query owes {owed}");
+    assert!(view.search_query(&query(0, "eggs")).unwrap().is_err());
+    let owed = view.take_host_fuel();
+    assert!(owed >= 4, "a refused limit owes {owed}");
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call));
+    let big = vec![0u8; 1 << 20];
+    assert!(call.xcall_call("other", "m", &big).unwrap().is_err());
+    let owed = call.take_host_fuel();
+    assert!(owed >= 1 << 20, "refused 1 MiB xcall arguments owe {owed}");
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call)).with_search(Arc::new(OneHit));
+    assert!(matches!(
+        call.search_query(&query(10, &long)),
+        Err(HostDenied(_))
+    ));
+    let owed = call.take_host_fuel();
+    assert!(owed >= 4_096, "a denied 4 KiB query owes {owed}");
+}
+
+/// A write refused with a run limit (`put-checked`, `delete-checked`,
+/// `add-checked`) is a soft error, and still owes for the bytes it was handed.
+#[test]
+fn writes_refused_with_a_run_limit_owe_for_the_bytes_they_were_handed() {
+    let state = base(&[]);
+    let per_byte = calimero_app_host::FUEL_PER_BYTE;
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call));
+    let big = vec![0u8; MAX_RUN_BYTES + 1];
+    assert!(matches!(call.storage_put(b"k", &big), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), (1 + big.len()) as u64 * per_byte);
+
+    let mut call = core_for(&state, &inv(InvocationKind::Call));
+    for i in 0..MAX_WRITES {
+        call.storage_put(&i.to_be_bytes(), b"v").unwrap().unwrap();
+    }
+    call.take_host_fuel();
+    let key = vec![7u8; 1_000];
+    assert!(matches!(call.storage_put(&key, b"value"), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), (key.len() + 5) as u64 * per_byte);
+    assert!(matches!(call.storage_delete(&key), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), key.len() as u64 * per_byte);
+    assert!(matches!(call.storage_add(&key, 1), Ok(Err(_))));
+    assert_eq!(call.take_host_fuel(), key.len() as u64 * per_byte);
 }
 
 #[test]
@@ -1526,13 +1604,28 @@ fn actions_send_http_and_calls_record_what_they_send() {
     let mut action = core_for(&state, &inv(InvocationKind::Action))
         .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
         .with_http(Arc::new(Echo));
-    assert!(action.storage_get(b"k").is_err(), "no state access (D12)");
+    assert!(
+        action.storage_get(b"k").is_err(),
+        "an action has no state access"
+    );
     assert_eq!(action.action_key().unwrap(), "a.1.1.0");
     assert_eq!(
         action.action_view("company", b"{}"),
         Ok(Ok(b"\"company\"".to_vec()))
     );
-    // The same call twice gets two keys; a retry would get the same two (D27).
+    // The node's reserved views and commands are never an action's, and reach no host.
+    for reserved in ["__secrets", "__run", "__pipeline_run"] {
+        assert_eq!(
+            action.action_view(reserved, b"{}"),
+            Ok(Err(calimero_app_host::ACTION_RESERVED_METHOD.to_owned()))
+        );
+    }
+    assert_eq!(
+        action.action_call("__upgrade", b"{}"),
+        Ok(Err(calimero_app_host::ACTION_RESERVED_METHOD.to_owned()))
+    );
+    assert!(runner.calls.lock().unwrap().is_empty());
+    // The same call twice gets two keys; a retry would get the same two.
     action.action_call("apply", b"{}").unwrap().unwrap();
     action.action_call("apply", b"{}").unwrap().unwrap();
     action.action_call("apply", b"{\"x\":1}").unwrap().unwrap();
@@ -1550,8 +1643,8 @@ fn actions_send_http_and_calls_record_what_they_send() {
     let out = action.finish(Status::Ok, Vec::new(), Usage::default());
     assert!(out.http.is_empty());
 
-    // A call has no action context; it sends HTTP (D76) and records the exchange for its
-    // entry, whatever its status. Views and `init` send none (S9).
+    // A call has no action context; it sends HTTP and records the exchange for its entry,
+    // whatever its status. Views and `init` send none.
     let mut call = core_for(&state, &inv(InvocationKind::Call))
         .with_action(Arc::clone(&runner) as Arc<dyn ActionHost>)
         .with_http(Arc::new(Echo));
@@ -1608,7 +1701,7 @@ impl HttpHost for Slow {
     }
 }
 
-/// C2: the run's deadline holds in host calls too. A call that comes back past it ends the
+/// The run's deadline holds in host calls too. A call that comes back past it ends the
 /// run `Timeout` (`WALL_CLOCK_EXCEEDED`, as the engine's own deadline does), whatever the
 /// guest would do next, and one made past it is not sent; within it, nothing changes.
 #[test]

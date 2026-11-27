@@ -40,7 +40,10 @@ import kotlinx.serialization.Contextual
  * @param maxFileBytesPerOrg 
  * @param maxConcurrentRunsPerOrg 
  * @param computeFuelPerOrg 
- * @param maxFuelPerDeveloperPerDay an unsigned 64-bit integer as a decimal string (D20)
+ * @param maxFuelPerDeveloperPerDay an unsigned 64-bit integer as a decimal string, exact past 2^53
+ * @param maxTeamsPerOrg 
+ * @param maxMetadataBytesPerOrg 
+ * @param maxMetadataBytesPerAccount 
  * @param orgs 
  */
 @Serializable
@@ -71,9 +74,18 @@ data class QuotaSettings (
     @SerialName(value = "computeFuelPerOrg")
     val computeFuelPerOrg: kotlin.Long,
 
-    /* an unsigned 64-bit integer as a decimal string (D20) */
+    /* an unsigned 64-bit integer as a decimal string, exact past 2^53 */
     @SerialName(value = "maxFuelPerDeveloperPerDay")
     val maxFuelPerDeveloperPerDay: kotlin.String,
+
+    @SerialName(value = "maxTeamsPerOrg")
+    val maxTeamsPerOrg: kotlin.Long,
+
+    @SerialName(value = "maxMetadataBytesPerOrg")
+    val maxMetadataBytesPerOrg: kotlin.Long,
+
+    @SerialName(value = "maxMetadataBytesPerAccount")
+    val maxMetadataBytesPerAccount: kotlin.Long,
 
     @Contextual @SerialName(value = "orgs")
     val orgs: kotlin.collections.Map<kotlin.String, OrgQuotas>

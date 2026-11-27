@@ -30,7 +30,7 @@ class OrgsFacade internal constructor(
      */
     suspend fun appTeamList(
         org: kotlin.String,
-    ): AppTeamList200Response =
+    ): AppTeamList =
         api(null, null, emptySet()).organizations.appTeamList(org = org)
 
     /**
@@ -48,11 +48,11 @@ class OrgsFacade internal constructor(
      */
     suspend fun appTeamsScope(
         org: kotlin.String,
-        apps: kotlin.collections.List<AppTeamsScopeRequestAppsInner>? = null,
+        apps: kotlin.collections.List<ScopeAppsBodyAppsInner>? = null,
         shared: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
-    ): AppTeamsScope200Response =
-        api(passkey, null, emptySet()).organizations.appTeamsScope(org = org, appTeamsScopeRequest = AppTeamsScopeRequest(apps = apps, shared = shared))
+    ): AppTeamsScoped =
+        api(passkey, null, emptySet()).organizations.appTeamsScope(org = org, scopeAppsBody = ScopeAppsBody(apps = apps, shared = shared))
 
     /**
      * Make an invite
@@ -76,8 +76,8 @@ class OrgsFacade internal constructor(
         allApps: kotlin.Boolean? = null,
         capabilities: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
-    ): InviteCreate200Response =
-        api(passkey, null, emptySet()).organizations.inviteCreate(org = org, inviteCreateRequest = InviteCreateRequest(role = role, teams = teams, ttlSecs = ttlSecs, uses = uses, allApps = allApps, capabilities = capabilities))
+    ): InviteMade =
+        api(passkey, null, emptySet()).organizations.inviteCreate(org = org, inviteBody = InviteBody(role = role, teams = teams, ttlSecs = ttlSecs, uses = uses, allApps = allApps, capabilities = capabilities))
 
     /**
      * The organization's invites
@@ -92,7 +92,7 @@ class OrgsFacade internal constructor(
      */
     suspend fun inviteList(
         org: kotlin.String,
-    ): InviteList200Response =
+    ): InviteList =
         api(null, null, emptySet()).organizations.inviteList(org = org)
 
     /**
@@ -108,7 +108,7 @@ class OrgsFacade internal constructor(
      */
     suspend fun inviteRedeem(
         token: kotlin.String,
-    ): InviteRedeem200Response =
+    ): InviteRedeemed =
         api(null, null, emptySet()).organizations.inviteRedeem(token = token)
 
     /**
@@ -145,7 +145,7 @@ class OrgsFacade internal constructor(
         account: kotlin.String,
         metadata: kotlinx.serialization.json.JsonElement?,
     ): kotlinx.serialization.json.JsonObject =
-        api(null, null, emptySet()).organizations.memberMetadata(org = org, account = account, memberMetadataRequest = MemberMetadataRequest(metadata = metadata))
+        api(null, null, emptySet()).organizations.memberMetadata(org = org, account = account, metadataBody = MetadataBody(metadata = metadata))
 
     /**
      * Remove a member from several teams, or leave them
@@ -166,7 +166,7 @@ class OrgsFacade internal constructor(
         teams: kotlin.collections.List<kotlin.String>,
         passkey: PasskeyProvider? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(passkey, null, emptySet()).organizations.memberRemoveTeams(org = org, account = account, memberRemoveTeamsRequest = MemberRemoveTeamsRequest(teams = teams))
+        api(passkey, null, emptySet()).organizations.memberRemoveTeams(org = org, account = account, teamIdsBody = TeamIdsBody(teams = teams))
 
     /**
      * Set a member's rows in several teams
@@ -184,10 +184,10 @@ class OrgsFacade internal constructor(
     suspend fun memberSetTeams(
         org: kotlin.String,
         account: kotlin.String,
-        teams: kotlin.collections.List<MemberSetTeamsRequestTeamsInner>,
+        teams: kotlin.collections.List<TeamRowsBodyTeamsInner>,
         passkey: PasskeyProvider? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(passkey, null, emptySet()).organizations.memberSetTeams(org = org, account = account, memberSetTeamsRequest = MemberSetTeamsRequest(teams = teams))
+        api(passkey, null, emptySet()).organizations.memberSetTeams(org = org, account = account, teamRowsBody = TeamRowsBody(teams = teams))
 
     /**
      * Give a member every app added later
@@ -208,7 +208,7 @@ class OrgsFacade internal constructor(
         allApps: kotlin.Boolean,
         passkey: PasskeyProvider? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(passkey, null, emptySet()).organizations.orgAllApps(org = org, orgAllAppsRequest = OrgAllAppsRequest(account = account, allApps = allApps))
+        api(passkey, null, emptySet()).organizations.orgAllApps(org = org, allAppsBody = AllAppsBody(account = account, allApps = allApps))
 
     /**
      * The organization's apps
@@ -225,7 +225,7 @@ class OrgsFacade internal constructor(
         org: kotlin.String,
         after: kotlin.String? = null,
         limit: kotlin.Long? = null,
-    ): OrgApps200Response =
+    ): AppsReport =
         api(null, null, emptySet()).organizations.orgApps(org = org, after = after, limit = limit)
 
     /**
@@ -264,7 +264,7 @@ class OrgsFacade internal constructor(
         team: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(passkey, null, emptySet()).organizations.orgCapabilities(org = org, orgCapabilitiesRequest = OrgCapabilitiesRequest(capabilities = capabilities, account = account, team = team))
+        api(passkey, null, emptySet()).organizations.orgCapabilities(org = org, capabilitiesBody = CapabilitiesBody(capabilities = capabilities, account = account, team = team))
 
     /**
      * Create an organization
@@ -281,8 +281,8 @@ class OrgsFacade internal constructor(
         name: kotlin.String,
         recoveryKey: kotlin.String? = null,
         capabilities: kotlin.Long? = null,
-    ): OrgCreate200Response =
-        api(null, null, emptySet()).organizations.orgCreate(orgCreateRequest = OrgCreateRequest(name = name, recoveryKey = recoveryKey, capabilities = capabilities))
+    ): OrgCreated =
+        api(null, null, emptySet()).organizations.orgCreate(orgBody = OrgBody(name = name, recoveryKey = recoveryKey, capabilities = capabilities))
 
     /**
      * Delete an organization
@@ -300,7 +300,7 @@ class OrgsFacade internal constructor(
     suspend fun delete(
         org: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): OrgDelete200Response =
+    ): OrgDeleted =
         api(passkey, null, emptySet()).organizations.orgDelete(org = org)
 
     /**
@@ -320,13 +320,13 @@ class OrgsFacade internal constructor(
         org: kotlin.String,
         egress: kotlin.Boolean,
         passkey: PasskeyProvider? = null,
-    ): AppSetEgress200Response =
+    ): EgressSet =
         api(passkey, null, emptySet()).organizations.orgEgress(org = org, orgEgressRequest = OrgEgressRequest(egress = egress))
 
     /**
      * One organization
      *
-     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).
+     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its `mode` (from its app teams), the accounts that may approve its releases (`releaseApprovers`), the keys it publishes under (`publishes`), and `newWorkStopped`: the release whose passed deadline stops new work in it (`after`, RFC 3339), `null` when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of `limit` (1 to 1000, default 1000), by id after `teamsAfter` and by account after `membersAfter`; `nextTeamsAfter` and `nextMembersAfter` are the cursors of the next pages, `null` on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -336,8 +336,11 @@ class OrgsFacade internal constructor(
      */
     suspend fun get(
         org: kotlin.String,
+        limit: kotlin.Long? = null,
+        teamsAfter: kotlin.String? = null,
+        membersAfter: kotlin.String? = null,
     ): Org =
-        api(null, null, emptySet()).organizations.orgGet(org = org)
+        api(null, null, emptySet()).organizations.orgGet(org = org, limit = limit, teamsAfter = teamsAfter, membersAfter = membersAfter)
 
     /**
      * Members' lockout risk
@@ -353,7 +356,7 @@ class OrgsFacade internal constructor(
     suspend fun members(
         org: kotlin.String,
         detail: com.calimero.mero.api.apis.OrganizationsApi.DetailOrgMembers? = null,
-    ): OrgMembers200Response =
+    ): MemberSecurityList =
         api(null, null, emptySet()).organizations.orgMembers(org = org, detail = detail)
 
     /**
@@ -371,7 +374,7 @@ class OrgsFacade internal constructor(
         org: kotlin.String,
         metadata: kotlinx.serialization.json.JsonElement?,
     ): kotlinx.serialization.json.JsonObject =
-        api(null, null, emptySet()).organizations.orgMetadata(org = org, memberMetadataRequest = MemberMetadataRequest(metadata = metadata))
+        api(null, null, emptySet()).organizations.orgMetadata(org = org, metadataBody = MetadataBody(metadata = metadata))
 
     /**
      * Approve outbound prefixes for the organization's apps
@@ -426,10 +429,10 @@ class OrgsFacade internal constructor(
      */
     suspend fun policySet(
         org: kotlin.String,
-        policy: com.calimero.mero.Explicit<OrgPolicySetRequestPolicy>? = null,
+        policy: com.calimero.mero.Explicit<UpgradePolicyBodyPolicy>? = null,
         passkey: PasskeyProvider? = null,
     ): PolicyView =
-        api(passkey, null, setOfNotNull("policy".takeIf { policy != null && policy.value == null })).organizations.orgPolicySet(org = org, orgPolicySetRequest = OrgPolicySetRequest(policy = policy?.value))
+        api(passkey, null, setOfNotNull("policy".takeIf { policy != null && policy.value == null })).organizations.orgPolicySet(org = org, upgradePolicyBody = UpgradePolicyBody(policy = policy?.value))
 
     /**
      * Bind a package signing key
@@ -450,8 +453,8 @@ class OrgsFacade internal constructor(
         publicKey: kotlin.String,
         signature: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): OrgPublisher200Response =
-        api(passkey, null, emptySet()).organizations.orgPublisher(org = org, orgPublisherRequest = OrgPublisherRequest(signerId = signerId, publicKey = publicKey, signature = signature))
+    ): PublisherBound =
+        api(passkey, null, emptySet()).organizations.orgPublisher(org = org, publisherBody = PublisherBody(signerId = signerId, publicKey = publicKey, signature = signature))
 
     /**
      * Approve a mero-tee release for the organization's apps
@@ -511,8 +514,8 @@ class OrgsFacade internal constructor(
         org: kotlin.String,
         name: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): OrgRename200Response =
-        api(passkey, null, emptySet()).organizations.orgRename(org = org, orgRenameRequest = OrgRenameRequest(name = name))
+    ): OrgRenamed =
+        api(passkey, null, emptySet()).organizations.orgRename(org = org, renameOrgBody = RenameOrgBody(name = name))
 
     /**
      * Set the organization's backup key
@@ -532,7 +535,7 @@ class OrgsFacade internal constructor(
         publicKey: kotlin.String,
         passkey: PasskeyProvider? = null,
     ): BackupKeyAnswer =
-        api(passkey, null, emptySet()).organizations.orgSetBackupKey(org = org, orgSetBackupKeyRequest = OrgSetBackupKeyRequest(publicKey = publicKey))
+        api(passkey, null, emptySet()).organizations.orgSetBackupKey(org = org, backupKeyBody = BackupKeyBody(publicKey = publicKey))
 
     /**
      * Set a member's role
@@ -553,7 +556,7 @@ class OrgsFacade internal constructor(
         role: OrgRole,
         passkey: PasskeyProvider? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(passkey, null, emptySet()).organizations.orgSetMember(org = org, orgSetMemberRequest = OrgSetMemberRequest(account = account, role = role))
+        api(passkey, null, emptySet()).organizations.orgSetMember(org = org, memberBody = MemberBody(account = account, role = role))
 
     /**
      * Change the organization's settings
@@ -573,8 +576,8 @@ class OrgsFacade internal constructor(
         allowGuests: kotlin.Boolean? = null,
         allowPublicLinks: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
-    ): OrgSettings200Response =
-        api(passkey, null, emptySet()).organizations.orgSettings(org = org, orgSettingsRequest = OrgSettingsRequest(allowGuests = allowGuests, allowPublicLinks = allowPublicLinks))
+    ): OrgSettingsSet =
+        api(passkey, null, emptySet()).organizations.orgSettings(org = org, orgSettingsBody = OrgSettingsBody(allowGuests = allowGuests, allowPublicLinks = allowPublicLinks))
 
     /**
      * Updates waiting across an organization's apps
@@ -590,7 +593,7 @@ class OrgsFacade internal constructor(
     suspend fun updates(
         org: kotlin.String,
         after: kotlin.String? = null,
-    ): OrgUpdates200Response =
+    ): OrgUpdates =
         api(null, null, emptySet()).organizations.orgUpdates(org = org, after = after)
 
     /**
@@ -615,7 +618,7 @@ class OrgsFacade internal constructor(
         migrate: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
     ): UpgradeRun =
-        api(passkey, null, emptySet()).organizations.orgUpgrade(org = org, orgUpgradeRequest = OrgUpgradeRequest(`package` = `package`, version = version, team = team, cascade = cascade, migrate = migrate))
+        api(passkey, null, emptySet()).organizations.orgUpgrade(org = org, orgUpgradeBody = OrgUpgradeBody(`package` = `package`, version = version, team = team, cascade = cascade, migrate = migrate))
 
     /**
      * Retry an upgrade run's failed apps
@@ -670,7 +673,7 @@ class OrgsFacade internal constructor(
      */
     suspend fun usage(
         org: kotlin.String,
-    ): OrgUsage200Response =
+    ): OrgUsage =
         api(null, null, emptySet()).organizations.orgUsage(org = org)
 
     /**
@@ -693,7 +696,7 @@ class OrgsFacade internal constructor(
         migrate: kotlin.String? = null,
         passkey: PasskeyProvider? = null,
     ): UpgradeRun =
-        api(passkey, null, emptySet()).organizations.publisherUpgrade(org = org, `package` = `package`, publisherUpgradeRequest = PublisherUpgradeRequest(version = version, migrate = migrate))
+        api(passkey, null, emptySet()).organizations.publisherUpgrade(org = org, `package` = `package`, publisherUpgradeBody = PublisherUpgradeBody(version = version, migrate = migrate))
 
     /**
      * Cancel an organization recovery
@@ -730,13 +733,13 @@ class OrgsFacade internal constructor(
     suspend fun recoveryFinish(
         org: kotlin.String,
         passkey: PasskeyProvider? = null,
-    ): RecoveryFinish200Response =
+    ): RecoveryFinished =
         api(passkey, null, emptySet()).organizations.recoveryFinish(org = org)
 
     /**
      * Set the organization's recovery key
      *
-     * Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first.
+     * Set or rotate it (`publicKey`: base64url Ed25519 public key), or remove it (`publicKey: null`; an absent `publicKey` removes it too); the owner; cancels a recovery under way. `412` first. An organization that owns a deployment keeps its key: removing it is `409 RECOVERY_KEY_REQUIRED` before the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).
      *
      * **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
      *
@@ -751,7 +754,7 @@ class OrgsFacade internal constructor(
         publicKey: com.calimero.mero.Explicit<kotlin.String>? = null,
         passkey: PasskeyProvider? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(passkey, null, setOfNotNull("publicKey".takeIf { publicKey != null && publicKey.value == null })).organizations.recoverySet(org = org, recoverySetRequest = RecoverySetRequest(publicKey = publicKey?.value))
+        api(passkey, null, setOfNotNull("publicKey".takeIf { publicKey != null && publicKey.value == null })).organizations.recoverySet(org = org, recoveryKeyBody = RecoveryKeyBody(publicKey = publicKey?.value))
 
     /**
      * Start an organization recovery
@@ -768,8 +771,8 @@ class OrgsFacade internal constructor(
         org: kotlin.String,
         nonce: kotlin.String,
         signature: kotlin.String,
-    ): RecoveryStart200Response =
-        api(null, null, emptySet()).organizations.recoveryStart(org = org, recoveryStartRequest = RecoveryStartRequest(nonce = nonce, signature = signature))
+    ): RecoveryStarted =
+        api(null, null, emptySet()).organizations.recoveryStart(org = org, recoveryStartBody = RecoveryStartBody(nonce = nonce, signature = signature))
 
     /**
      * Create a team
@@ -787,8 +790,8 @@ class OrgsFacade internal constructor(
         name: kotlin.String,
         join: TeamJoin,
         parent: kotlin.String? = null,
-    ): TeamCreate200Response =
-        api(null, null, emptySet()).organizations.teamCreate(org = org, teamCreateRequest = TeamCreateRequest(name = name, join = join, parent = parent))
+    ): TeamCreated =
+        api(null, null, emptySet()).organizations.teamCreate(org = org, teamBody = TeamBody(name = name, join = join, parent = parent))
 
     /**
      * Delete a team
@@ -808,8 +811,8 @@ class OrgsFacade internal constructor(
         team: kotlin.String,
         keepApps: kotlin.Boolean? = null,
         passkey: PasskeyProvider? = null,
-    ): TeamDelete200Response =
-        api(passkey, null, emptySet()).organizations.teamDelete(org = org, team = team, teamDeleteRequest = TeamDeleteRequest(keepApps = keepApps))
+    ): TeamDeleted =
+        api(passkey, null, emptySet()).organizations.teamDelete(org = org, team = team, teamDeleteBody = TeamDeleteBody(keepApps = keepApps))
 
     /**
      * One team
@@ -869,7 +872,7 @@ class OrgsFacade internal constructor(
         capabilities: kotlin.Long? = null,
         passkey: PasskeyProvider? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(passkey, null, emptySet()).organizations.teamSetMember(org = org, team = team, teamSetMemberRequest = TeamSetMemberRequest(account = account, lead = lead, role = role, capabilities = capabilities))
+        api(passkey, null, emptySet()).organizations.teamSetMember(org = org, team = team, teamMemberBody = TeamMemberBody(account = account, lead = lead, role = role, capabilities = capabilities))
 
     /**
      * Update a team
@@ -890,5 +893,5 @@ class OrgsFacade internal constructor(
         parent: com.calimero.mero.Explicit<kotlin.String>? = null,
         metadata: kotlinx.serialization.json.JsonElement? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(null, null, setOfNotNull("parent".takeIf { parent != null && parent.value == null })).organizations.teamUpdate(org = org, team = team, teamUpdateRequest = TeamUpdateRequest(name = name, join = join, parent = parent?.value, metadata = metadata))
+        api(null, null, setOfNotNull("parent".takeIf { parent != null && parent.value == null })).organizations.teamUpdate(org = org, team = team, teamUpdateBody = TeamUpdateBody(name = name, join = join, parent = parent?.value, metadata = metadata))
 }

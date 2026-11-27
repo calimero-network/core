@@ -10,15 +10,16 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use calimero_pipeline::{
-    estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline,
+    estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline, PriceTable,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{gate, may_handle_files, read_only_in, signed_in, typed_id, ApiResult, Principal};
 use crate::app::Status;
 use crate::component::{
-    parse_hex32, CostCap, PipelineStartEntry, INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS,
+    parse_hex32, CostCap, FanOut, PipelineStartEntry, PipelineState, RunInputRef, StepStatus,
+    INPUT_NOT_HELD, TOO_MANY_PIPELINE_RUNS,
 };
 use crate::error::ApiError;
 use crate::node::{Node, PIPELINE_VIEW};
@@ -258,7 +259,7 @@ pub(super) async fn validate(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(body): Json<ValidateBody>,
-) -> ApiResult {
+) -> ApiResult<Json<crate::packages::pipelines::PipelineValidation>> {
     let principal = signed_in(&node, &headers).await?;
     let account = principal.account()?;
     let release = match (&body.package, &body.version) {
@@ -266,8 +267,9 @@ pub(super) async fn validate(
         (Some(package), Some(version)) => {
             node.sys_fresh_from(principal.sys_index).await;
             let found = node.sys(|s| {
-                let v = s.packages.get(package)?.versions.get(version)?;
-                s.sees_release(v, &account).then(|| v.clone())
+                let v = s.release_used(package, version, &account)?;
+                let p = s.package_used(package, &account, false)?;
+                Some((p.signer_id.clone(), v.clone()))
             });
             Some(found.ok_or_else(|| ApiError::not_found("no such package version"))?)
         }
@@ -279,7 +281,11 @@ pub(super) async fn validate(
         }
     };
     let answer = node
-        .validate_pipeline(body.source.as_bytes(), release.as_ref(), &account)
+        .validate_pipeline(
+            body.source.as_bytes(),
+            release.as_ref().map(|(signer, v)| (signer.as_str(), v)),
+            &account,
+        )
         .await?;
     Ok(Json(answer))
 }
@@ -365,23 +371,27 @@ pub(super) async fn estimate_run(
     let _caught_up = node.sys_fresh().await;
     let table = node.sys(|s| s.price_table);
     let e = estimate(&pipeline, &env, &counts, table.as_ref());
-    let steps: BTreeMap<_, _> = e
+    let steps: BTreeMap<String, StepEstimate> = e
         .steps
         .iter()
         .map(|(step, s)| {
-            let mut v = json!({ "runs": s.runs.to_string(), "fuel": s.fuel.to_string() });
-            if let Some(cost) = s.cost {
-                v["cost"] = json!(cost.to_string());
-            }
-            (step, v)
+            (
+                step.clone(),
+                StepEstimate {
+                    runs: s.runs.to_string(),
+                    fuel: s.fuel.to_string(),
+                    cost: s.cost.map(|c| c.to_string()),
+                },
+            )
         })
         .collect();
-    let mut answer = json!({ "steps": steps, "fuel": e.fuel.to_string() });
-    if let (Some(cost), Some(t)) = (e.cost, table) {
-        answer["cost"] = json!(cost.to_string());
-        answer["priceVersion"] = json!(t.version);
-    }
-    Ok(Json(answer))
+    let priced = e.cost.zip(table);
+    Ok(Json(json!(RunEstimate {
+        steps,
+        fuel: e.fuel.to_string(),
+        cost: priced.map(|(cost, _)| cost.to_string()),
+        price_version: priced.map(|(_, t)| t.version),
+    })))
 }
 
 /// Starts a run of the named pipeline of the release the app runs.
@@ -506,14 +516,12 @@ async fn start_launch(
         .await?;
     match (a.status, a.error.as_str()) {
         (Status::Ok, _) => {
-            let mut answer = json!({ "run": run });
-            if let Some(cap) = cost {
-                answer["worstCase"] = json!(cap.worst_case.to_string());
-            }
-            if let Some(of) = retry_of {
-                answer["retryOf"] = json!(of);
-            }
-            Ok((StatusCode::ACCEPTED, Json(answer)))
+            let answer = PipelineStarted {
+                run,
+                worst_case: cost.map(|cap| cap.worst_case.to_string()),
+                retry_of,
+            };
+            Ok((StatusCode::OK, Json(json!(answer))))
         }
         (_, Some(TOO_MANY_PIPELINE_RUNS)) => Err(ApiError::new(
             429,
@@ -615,6 +623,7 @@ pub(super) async fn retry(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     let original = answer.result;
@@ -679,12 +688,13 @@ pub(super) async fn get(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
-    if answer.result.is_null() {
-        return Err(ApiError::not_found("no such pipeline run"));
+    match answer.result {
+        Value::Object(run) => Ok(Json(Value::Object(run))),
+        _ => Err(ApiError::not_found("no such pipeline run")),
     }
-    Ok(Json(answer.result))
 }
 
 #[derive(Deserialize)]
@@ -720,6 +730,7 @@ pub(super) async fn list(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     Ok(Json(answer.result))
@@ -739,7 +750,154 @@ pub(super) async fn cancel(
     if a.status != Status::Ok {
         return Err(ApiError::not_found("no pipeline run is going by that id"));
     }
-    Ok(Json(json!({ "run": run })))
+    Ok(Json(json!(PipelineCancelled { run })))
+}
+
+/// What `POST /apps/{app}/pipelines/{name}/estimate` answers: per step its runs and fuel, the
+/// whole run's fuel, and its cost and the price table's version when the cluster has one; every
+/// figure a decimal string.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct RunEstimate {
+    steps: BTreeMap<String, StepEstimate>,
+    fuel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    price_version: Option<u64>,
+}
+
+/// One step's estimate: its runs, fuel and (with a price table) cost, as decimal strings.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct StepEstimate {
+    runs: String,
+    fuel: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<String>,
+}
+
+/// What a pipeline run's start (and retry) answers: its id, its worst-case cost under a cap,
+/// and the run it retries.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PipelineStarted {
+    run: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    worst_case: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_of: Option<String>,
+}
+
+/// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), reshaped
+/// for the reader (results and file hashes only to those who handle the app's files).
+/// The routes answer the leader's JSON as it is; this type is what the document describes
+/// and what a test holds the leader's JSON to.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineRunView {
+    id: String,
+    pipeline: String,
+    version: String,
+    hash: String,
+    compute_bundle: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    modules: BTreeMap<String, String>,
+    owner: String,
+    inputs: BTreeMap<String, Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    input_files: BTreeMap<String, RunInputRef>,
+    params: BTreeMap<String, Value>,
+    caller: Caller,
+    payer: String,
+    start_ts_ms: u64,
+    state: PipelineState,
+    cancel_requested: bool,
+    fail_fast: bool,
+    stopping: bool,
+    steps: BTreeMap<String, PipelineStepView>,
+    end_ts_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<PipelineCostView>,
+    /// A decimal string, only under a cost cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost_so_far: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_of: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    limits: BTreeMap<String, Limits>,
+}
+
+/// The cost cap of a [`PipelineRunView`], its figures decimal strings.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineCostView {
+    max_cost: String,
+    price_version: u64,
+    table: PriceTable,
+    worst_case: String,
+}
+
+/// One step of a [`PipelineRunView`]; `runs`, `outputs`, `result` and `results` only when the
+/// answer is for one run, not a list.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineStepView {
+    status: StepStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runs: Option<Vec<String>>,
+    results_too_large: bool,
+    reason: Option<String>,
+    fan: FanOut,
+    finished: u32,
+    failed_items: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cached_count: Option<u32>,
+    cached_items: u32,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cached_keys: BTreeMap<String, String>,
+    /// A decimal string, under a cost cap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capped: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_items: Option<u32>,
+    cached: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    outputs: Option<Vec<PipelineOutputView>>,
+    /// Null to those who may not list the app's files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    results: Option<Vec<Value>>,
+}
+
+/// A file a step made: its size and hash only to those who may list the app's files.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineOutputView {
+    id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+}
+
+/// `GET /apps/{app}/pipeline-runs`: the app's recent pipeline runs, newest first.
+#[derive(Debug, Serialize, Deserialize)]
+#[allow(dead_code)] // read only as a schema and by tests
+pub(crate) struct PipelineRunList {
+    runs: Vec<PipelineRunView>,
+}
+
+/// What `POST /apps/{app}/pipeline-runs/{run}/cancel` answers: the run cancelled.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct PipelineCancelled {
+    run: String,
 }
 
 #[cfg(test)]

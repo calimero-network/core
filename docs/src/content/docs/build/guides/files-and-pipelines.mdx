@@ -293,7 +293,7 @@ compute component, `DUPLICATE_NAME` for two pipelines of one name); a
 multi-service package declaring pipelines is `422 PIPELINES_NEED_ONE_SERVICE`.
 A release with pipelines installs only once every node runs this release
 (`409 CLUSTER_NOT_UPGRADED`).
-`meroctl app pipelines com.example.docs` prints what a version registered:
+`meroctl package pipelines com.example.docs` prints what a version registered:
 each pipeline's hash, worst-case fuel, pinned modules and canonical JSON.
 
 ## Run it
@@ -308,7 +308,7 @@ each pipeline's hash, worst-case fuel, pinned modules and canonical JSON.
   steps={[
     { from: 0, to: 1, label: 'POST /apps/{app}/pipelines/wordcount/runs { inputs, params }' },
     { from: 1, to: 2, label: 'pipelineStart: inputs pinned, release and pipeline hash fixed' },
-    { from: 1, to: 0, label: '202 { run }', dashed: true },
+    { from: 1, to: 0, label: '200 { run }', dashed: true },
     { from: 1, to: 2, label: 'pipelineStep count: start runs .count.0 ... (a wave)' },
     { from: 1, to: 3, label: 'compute runs countWords, one per batch' },
     { from: 3, to: 1, label: 'signed reports and outputs', dashed: true },

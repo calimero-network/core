@@ -1,0 +1,34 @@
+[package]
+name = "calimero-connector-nearai"
+description = "NEAR AI Cloud chat completions from a Calimero app's action"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish = false
+
+[package.metadata.calimero.connector]
+outbound = ["https://cloud-api.near.ai/v1/chat/completions"]
+[package.metadata.calimero.connector.secrets.NEAR_AI_API_KEY]
+host = "cloud-api.near.ai"
+paths = ["/v1/chat/completions"]
+header = "authorization"
+format = "Bearer {}"
+description = "NEAR AI Cloud API key"
+required = true
+
+[dependencies]
+calimero-sdk.workspace = true
+hex.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+calimero-app-build.workspace = true
+calimero-sdk = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

@@ -12,7 +12,7 @@
  * - the credential (an API key or a session), and the session's refresh when a
  *   node answers `401` to it;
  * - moving to another node of the cluster on `421 WRONG_NODE`, and failing
- *   over when one stays unavailable to a call or a view (D70 retries);
+ *   over when one stays unavailable to a call or a view (`503` retries);
  * - the `412 CONFIRM_REQUIRED` step-up: the passkey's assertion over the
  *   node's challenge, sent with the same body again;
  * - error mapping (a refusal is a typed {@link CalimeroError}) and
@@ -35,6 +35,7 @@ import {
   errorFrom,
 } from './errors.js';
 import { b64url, type PasskeyProvider, type PasskeyUserVerification } from './passkey.js';
+import type { SessionHolder } from './holder.js';
 import { passkeyConfirm, type ConfirmChallenge } from './passkey.js';
 import type { components } from '../generated/api.js';
 
@@ -58,7 +59,7 @@ export interface NodeEvent {
 }
 
 /**
- * How a call or a view is sent again while the node is unavailable (D70): with
+ * How a call or a view is sent again while the node is unavailable: with
  * the same key, after a backoff that starts at `baseDelayMs` and doubles up to
  * `maxDelayMs`, no jitter, at most `retries` times. The defaults are the Rust
  * client's: 6 retries, 200 ms doubling, at most 2 s (about 9 s in all, past a
@@ -105,7 +106,7 @@ export interface RequestOptions {
   /** The user verification the step-up asks for when the node names none. Default `required`. */
   userVerification?: PasskeyUserVerification;
   /**
-   * D70 retries for a call or a view: `true` sends it again while the node
+   * Retries for a call or a view: `true` sends it again while the node
    * answers `503` or cannot be reached, then fails over to the next node;
    * `'once'` sends it exactly once (a confirmed attempt, whose challenge is
    * single-use). Only for a JSON body that carries its own idempotency key,
@@ -145,6 +146,12 @@ export interface NodeTransportOptions {
   fetch?: typeof fetch;
   /** How calls and views retry a 503 or a failed connection. */
   retry?: RetryOptions;
+  /**
+   * The device key sessions are bound to ({@link SessionHolder}): each refresh
+   * carries its proof, and a sign-in through the client binds the session to it.
+   * In a browser, {@link browserSessionHolder}.
+   */
+  holder?: SessionHolder;
 }
 
 /** Where a transport whose nodes came from the directory re-reads its node list. */
@@ -262,7 +269,7 @@ export function queryString(query: RequestOptions['query']): string {
  * repeats by itself: a sign-in or sign-up is started again by its caller (with
  * the passkey), and a refresh moves through the nodes in
  * {@link NodeTransport.refresh}. A node answers them `421 WRONG_NODE` before
- * it spends the challenge or the refresh token (core #4774).
+ * it spends the challenge or the refresh token.
  */
 function ceremony(path: string): boolean {
   return path === 'auth/refresh' || path.startsWith('auth/passkey/') || RECOVERY_CEREMONIES.has(path);
@@ -303,6 +310,8 @@ export class NodeTransport implements Transport {
   private visitor: (() => Promise<string>) | undefined;
   /** The refresh under way, which every request that needs one shares. */
   private refreshing: Promise<CalimeroSession> | undefined;
+  /** The device key sessions are bound to, if any ({@link NodeTransportOptions.holder}). */
+  private holderKey: SessionHolder | undefined;
   /** The backoff between retries, for a caller that retries a request the routes do not. */
   readonly retry: Required<RetryOptions>;
   /** Rejections of the underlying `fetch` itself: the node could not be reached or dropped the connection. */
@@ -315,6 +324,7 @@ export class NodeTransport implements Transport {
     this.nodeUrls = [...new Set([options.baseUrl, ...(options.nodes ?? [])].map(trim))];
     this.policy = options.policy;
     this.retry = { ...DEFAULT_RETRY, ...options.retry };
+    this.holderKey = options.holder;
     const given = options.fetch ?? ((input, init) => fetch(input, init));
     // `fetch` rejects with a `TypeError` when it gets no answer: the connection
     // was refused, reset or dropped before the response. The sealed fetch passes
@@ -370,6 +380,16 @@ export class NodeTransport implements Transport {
     this.auth = session.sessionToken;
     this.current = session;
     this.visitor = undefined;
+  }
+
+  /** Bind the sessions signed in from now on to `holder`, and prove it on every refresh ({@link NodeTransportOptions.holder}). */
+  useHolder(holder: SessionHolder | undefined): void {
+    this.holderKey = holder;
+  }
+
+  /** The device key sessions are bound to, if any. */
+  get holder(): SessionHolder | undefined {
+    return this.holderKey;
   }
 
   /** Drop the credential: no request after this carries it. */
@@ -644,7 +664,7 @@ export class NodeTransport implements Transport {
   }
 
   /**
-   * {@link read} for a call or a view (D70): while the node answers 503 or
+   * {@link read} for a call or a view: while the node answers 503 or
    * cannot be reached, the same request, with the same idempotency key, is sent
    * again after {@link retryDelayMs} (or the pause the node asked for, if
    * longer), at most `retries` times. Every other answer is final.
@@ -706,7 +726,7 @@ export class NodeTransport implements Transport {
   /**
    * One request to a route, answered whatever its status: the runtime's part
    * (sealing, the session and its refresh, `421 WRONG_NODE`, and with
-   * `options.retry` the D70 retries and failover) and nothing of the route's.
+   * `options.retry` the `503` retries and failover) and nothing of the route's.
    * A refusal is the node's response, for the caller to read; a connection
    * that failed rejects as `fetch` did (with `retry`, as
    * {@link UnavailableError} once the retries ran out). The generated route
@@ -805,11 +825,16 @@ export class NodeTransport implements Transport {
     if (!current) throw new Error('no session to refresh');
     let session: CalimeroSession | undefined;
     // A node that may not serve the account answers `421 WRONG_NODE` before it
-    // spends the refresh token (core #4774), so the same token goes to the next
+    // spends the refresh token, so the same token goes to the next
     // node (`send` moved there already): once per node, at most.
     for (let tried = 1; session === undefined; tried++) {
       try {
-        session = await this.json<CalimeroSession>('POST', 'auth/refresh', { body: { refreshToken: current.refreshToken } });
+        // A holder's proof goes with every refresh: a token bound to its key
+        // needs it, and the node ignores it for any other.
+        const holderProof = this.holderKey ? await this.holderKey.prove(current.refreshToken) : undefined;
+        session = await this.json<CalimeroSession>('POST', 'auth/refresh', {
+          body: holderProof ? { refreshToken: current.refreshToken, holderProof } : { refreshToken: current.refreshToken },
+        });
       } catch (error) {
         if (!(error instanceof WrongNode) || tried >= this.nodeUrls.length) throw error;
       }

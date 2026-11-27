@@ -4,9 +4,10 @@ description: Precise definitions of the terms the protocol reference and the cod
 sidebar: { order: 80 }
 ---
 
-Terms are grouped by theme. Where `meroctl` uses another word for the same
-thing, it is given in brackets: namespace = organization, group = team,
-instance = app instance (v1's context), application = signed package.
+Terms are grouped by theme. Where v1 (or an SDK's 0.x layer) used another word
+for the same thing, it is given in brackets. The API, `meroctl`, the SDKs and
+these docs use only the words defined here; the old ones are listed under
+[Retired words](#retired-words).
 
 ## Cluster & replication
 
@@ -360,3 +361,17 @@ records, compute run records, pipeline runs and their step rows.
 
 **Presence** — Ephemeral per-device state, in memory on every node. See
 [Presence](/protocol/presence/).
+
+## Retired words
+
+v1's names for things that have one name now. The node's API document, the
+docs and `meroctl` do not use them (`scripts/check-vocabulary.py` and
+`meroctl`'s `help_uses_the_glossary_words` test check it); a page that maps
+the old names (a migration guide, an SDK's 0.x layer) may.
+
+| Retired | Say | Where the old word still stands |
+| --- | --- | --- |
+| context, `contextId` | app instance (`instance`), `appId` | **Context id**, the id SDK 0.12 apps saw, which every `/apps/{app}` route still accepts; WIT's `context` interface; the web's "secure context" |
+| namespace | organization (`org`) | |
+| group (of people), subgroup | team (`team`), subteam | a Raft **group** (system group, app group) and the API's `group` field, its number |
+| application | package (a signed `.mpk`, `package`); an app (the `calimero:app` component) | the media types `application/*` |

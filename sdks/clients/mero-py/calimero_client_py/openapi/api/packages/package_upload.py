@@ -8,21 +8,31 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.package_upload_response_200 import PackageUploadResponse200
+from ...models.package_installed import PackageInstalled
 from ...types import File, FileTypes
+from ...types import UNSET, Unset
 from io import BytesIO
 from typing import cast
+from typing import Union
 
 
 def _get_kwargs(
     *,
     body: File,
+    org: Union[Unset, str] = UNSET,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
+
+    params: dict[str, Any] = {}
+
+    params["org"] = org
+
+    params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
         "url": "/packages",
+        "params": params,
     }
 
     _kwargs["content"] = body.payload
@@ -35,9 +45,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PackageUploadResponse200]]:
+) -> Optional[Union[Error, PackageInstalled]]:
     if response.status_code == 200:
-        response_200 = PackageUploadResponse200.from_dict(response.json())
+        response_200 = PackageInstalled.from_dict(response.json())
 
         return response_200
 
@@ -56,6 +66,11 @@ def _parse_response(
 
         return response_403
 
+    if response.status_code == 404:
+        response_404 = Error.from_dict(response.json())
+
+        return response_404
+
     if response.status_code == 413:
         response_413 = Error.from_dict(response.json())
 
@@ -71,6 +86,11 @@ def _parse_response(
 
         return response_422
 
+    if response.status_code == 429:
+        response_429 = Error.from_dict(response.json())
+
+        return response_429
+
     if response.status_code == 503:
         response_503 = Error.from_dict(response.json())
 
@@ -84,7 +104,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PackageUploadResponse200]]:
+) -> Response[Union[Error, PackageInstalled]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -97,16 +117,20 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Response[Union[Error, PackageUploadResponse200]]:
+    org: Union[Unset, str] = UNSET,
+) -> Response[Union[Error, PackageInstalled]]:
     """Upload a signed release
 
      A signed `.mpk`, checked as an install from the registry is (signature, artifact digests,
     `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`;
-    otherwise `403 UPLOADS_DISABLED`.
+    otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a
+    member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is
+    private to the accounts that install it.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
     Args:
+        org (Union[Unset, str]):
         body (File):
 
     Raises:
@@ -114,11 +138,12 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PackageUploadResponse200]]
+        Response[Union[Error, PackageInstalled]]
     """
 
     kwargs = _get_kwargs(
         body=body,
+        org=org,
     )
 
     response = client.get_httpx_client().request(
@@ -132,16 +157,20 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Optional[Union[Error, PackageUploadResponse200]]:
+    org: Union[Unset, str] = UNSET,
+) -> Optional[Union[Error, PackageInstalled]]:
     """Upload a signed release
 
      A signed `.mpk`, checked as an install from the registry is (signature, artifact digests,
     `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`;
-    otherwise `403 UPLOADS_DISABLED`.
+    otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a
+    member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is
+    private to the accounts that install it.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
     Args:
+        org (Union[Unset, str]):
         body (File):
 
     Raises:
@@ -149,12 +178,13 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PackageUploadResponse200]
+        Union[Error, PackageInstalled]
     """
 
     return sync_detailed(
         client=client,
         body=body,
+        org=org,
     ).parsed
 
 
@@ -162,16 +192,20 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Response[Union[Error, PackageUploadResponse200]]:
+    org: Union[Unset, str] = UNSET,
+) -> Response[Union[Error, PackageInstalled]]:
     """Upload a signed release
 
      A signed `.mpk`, checked as an install from the registry is (signature, artifact digests,
     `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`;
-    otherwise `403 UPLOADS_DISABLED`.
+    otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a
+    member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is
+    private to the accounts that install it.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
     Args:
+        org (Union[Unset, str]):
         body (File):
 
     Raises:
@@ -179,11 +213,12 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PackageUploadResponse200]]
+        Response[Union[Error, PackageInstalled]]
     """
 
     kwargs = _get_kwargs(
         body=body,
+        org=org,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -195,16 +230,20 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: File,
-) -> Optional[Union[Error, PackageUploadResponse200]]:
+    org: Union[Unset, str] = UNSET,
+) -> Optional[Union[Error, PackageInstalled]]:
     """Upload a signed release
 
      A signed `.mpk`, checked as an install from the registry is (signature, artifact digests,
     `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`;
-    otherwise `403 UPLOADS_DISABLED`.
+    otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a
+    member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is
+    private to the accounts that install it.
 
     **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
 
     Args:
+        org (Union[Unset, str]):
         body (File):
 
     Raises:
@@ -212,12 +251,13 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PackageUploadResponse200]
+        Union[Error, PackageInstalled]
     """
 
     return (
         await asyncio_detailed(
             client=client,
             body=body,
+            org=org,
         )
     ).parsed

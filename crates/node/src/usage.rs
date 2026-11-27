@@ -26,7 +26,7 @@
 //! `developer` are functions of `app` (one value each per app at a time), so
 //! they add no series: a node exports at most 12 series per app it hosts (4
 //! call kinds, CPU, memory, 3 compute, outbound, state, blobs), and an app that changes
-//! payer or developer starts over under the new values ([`Usage::entry`]).
+//! payer or developer starts over under the new values (`Usage::entry`).
 //! An app's series go once it leaves this node (deleted, or its replica moved).
 //! Counters start at zero when the process starts.
 
@@ -94,7 +94,7 @@ pub fn account_payer(account: &str) -> String {
 ///
 /// Unlike [`payer`] this moves no quota but one: file bytes and limits stay
 /// the owning organization's or account's, while the daily fuel cap
-/// (`Quotas::max_fuel_per_developer_per_day`, D76, D78) follows the developer.
+/// (`Quotas::max_fuel_per_developer_per_day`) follows the developer.
 ///
 /// [`Deployment`]: crate::system::Deployment
 #[must_use]

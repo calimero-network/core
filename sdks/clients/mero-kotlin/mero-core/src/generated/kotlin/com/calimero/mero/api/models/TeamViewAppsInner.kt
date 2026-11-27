@@ -33,7 +33,6 @@ import kotlinx.serialization.Contextual
  *
  * @param appId 
  * @param name 
- * @param contextId 
  */
 @Serializable
 
@@ -43,10 +42,7 @@ data class TeamViewAppsInner (
     val appId: kotlin.String,
 
     @SerialName(value = "name")
-    val name: kotlin.String,
-
-    @SerialName(value = "contextId")
-    val contextId: kotlin.String
+    val name: kotlin.String
 
 ) {
 

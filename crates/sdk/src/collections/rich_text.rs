@@ -24,26 +24,30 @@ use crate::encoding::key::KeyPart;
 use crate::encoding::value;
 use crate::error::StorageError;
 use crate::store::{DefaultStore, RangeCursor, Store, MAX_RANGE_BATCH};
+use crate::AbiType;
 
 /// One formatting mark as stored.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, AbiType)]
 #[serde(rename_all = "camelCase")]
 pub struct Mark {
     /// The attribute, e.g. `"bold"` or `"link"`.
     pub key: String,
     /// Its value; `None` removes the attribute from the covered characters.
     pub value: Option<String>,
-    /// The id of the first covered character.
+    /// The id of the first covered character: an integer when stored, a decimal string in
+    /// JSON.
+    #[serde(with = "crate::json::u64_auto")]
     pub start: u64,
     /// The id of the last covered character (`end_inclusive`), or of the character after
     /// the last one; `None` runs to the end of the text.
+    #[serde(default, with = "crate::json::opt_u64_auto")]
     pub end: Option<u64>,
     /// Whether `end` is itself covered.
     pub end_inclusive: bool,
 }
 
 /// A run of characters with the same attributes.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, AbiType)]
 pub struct Span {
     /// The characters.
     pub text: String,

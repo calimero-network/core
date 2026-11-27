@@ -3,6 +3,9 @@
 //! `cargo build --release --target wasm32-wasip2` emits a component whose
 //! `calimero:abi` custom section sits inside a nested core module. The build
 //! lifts it to the component's top level so a reader looks in one place.
+//!
+//! Spec: [Packaging & signing](https://calimero-network.github.io/core/build/packaging-signing/).
+//! Crate guide: [`crates/app-build/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/app-build/AGENTS.md).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,7 +25,8 @@ pub mod uses;
 /// Name of the custom section carrying the app's ABI JSON.
 pub const ABI_SECTION: &str = "calimero:abi";
 
-const TARGET: &str = "wasm32-wasip2";
+/// The target an app component is built for.
+pub const TARGET: &str = "wasm32-wasip2";
 const COMPUTE_CFG: &str = "calimero_compute"; // selects the compute world in the SDK and macros
 const COMPUTE_TARGET_SUBDIR: &str = "compute"; // inside the target dir, so the two builds never invalidate each other
 const TARGET_LOCK: &str = ".calimero-app-build.lock"; // inside the target dir
@@ -284,10 +288,20 @@ pub fn build_components_cached(
 /// the crate and the SDK, its macros, its old name and the WIT (`calimero:app`), which are
 /// every path a guest here reaches outside its own directory; see [`cache_key`].
 pub fn build_in_repo_cache(crate_dir: &Path) -> EyreResult<BuiltApp> {
+    build_in_repo_cache_with(crate_dir, &[])
+}
+
+/// [`build_in_repo_cache`] for a guest with path dependencies beyond the SDK (`path_deps`,
+/// e.g. the crate a test guest exercises), which the cache key then hashes too.
+pub fn build_in_repo_cache_with(crate_dir: &Path, path_deps: &[&Path]) -> EyreResult<BuiltApp> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let crates = root.join("crates");
-    let also = ["sdk", "sdk-macros", "app-sdk", "app-wit"].map(|c| crates.join(c));
-    let also: Vec<&Path> = also.iter().map(PathBuf::as_path).collect();
+    let sdk = ["sdk", "sdk-macros", "app-sdk", "app-wit"].map(|c| crates.join(c));
+    let also: Vec<&Path> = sdk
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(path_deps.iter().copied())
+        .collect();
     // The target dir cargo would use, as the node's test harness reads it.
     let target =
         std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);
@@ -308,7 +322,7 @@ const POST_PROCESSING_VERSION: u32 = 2;
 ///   (path relative to its root, length, bytes), so `Cargo.toml`, `Cargo.lock` and `src/` count;
 /// - the nearest `rust-toolchain.toml` / `rust-toolchain` at or above `crate_dir`;
 /// - the output of `rustc -V` run in `crate_dir` (the toolchain that builds the guest);
-/// - this crate's version, [`POST_PROCESSING_VERSION`] and the source of this file.
+/// - this crate's version, `POST_PROCESSING_VERSION` and the source of this file.
 pub fn cache_key(crate_dir: &Path, also_hash: &[&Path]) -> EyreResult<String> {
     let mut hasher = Sha256::new();
     let mut part = |label: &str, bytes: &[u8]| {

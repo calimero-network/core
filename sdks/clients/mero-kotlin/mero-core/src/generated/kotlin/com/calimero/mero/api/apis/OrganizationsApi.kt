@@ -27,59 +27,59 @@ import java.io.IOException
 import okhttp3.Call
 import okhttp3.HttpUrl
 
-import com.calimero.mero.api.models.AppSetEgress200Response
-import com.calimero.mero.api.models.AppTeamList200Response
-import com.calimero.mero.api.models.AppTeamsScope200Response
-import com.calimero.mero.api.models.AppTeamsScopeRequest
+import com.calimero.mero.api.models.AllAppsBody
+import com.calimero.mero.api.models.AppTeamList
+import com.calimero.mero.api.models.AppTeamsScoped
 import com.calimero.mero.api.models.ApprovedReleases
+import com.calimero.mero.api.models.AppsReport
 import com.calimero.mero.api.models.BackupKeyAnswer
+import com.calimero.mero.api.models.BackupKeyBody
+import com.calimero.mero.api.models.CapabilitiesBody
 import com.calimero.mero.api.models.ConfirmOnly
+import com.calimero.mero.api.models.EgressSet
 import com.calimero.mero.api.models.Error
-import com.calimero.mero.api.models.InviteCreate200Response
-import com.calimero.mero.api.models.InviteCreateRequest
-import com.calimero.mero.api.models.InviteList200Response
-import com.calimero.mero.api.models.InviteRedeem200Response
-import com.calimero.mero.api.models.MemberMetadataRequest
-import com.calimero.mero.api.models.MemberRemoveTeamsRequest
-import com.calimero.mero.api.models.MemberSetTeamsRequest
+import com.calimero.mero.api.models.InviteBody
+import com.calimero.mero.api.models.InviteList
+import com.calimero.mero.api.models.InviteMade
+import com.calimero.mero.api.models.InviteRedeemed
+import com.calimero.mero.api.models.MemberBody
+import com.calimero.mero.api.models.MemberSecurityList
+import com.calimero.mero.api.models.MetadataBody
 import com.calimero.mero.api.models.Org
-import com.calimero.mero.api.models.OrgAllAppsRequest
-import com.calimero.mero.api.models.OrgApps200Response
-import com.calimero.mero.api.models.OrgCapabilitiesRequest
-import com.calimero.mero.api.models.OrgCreate200Response
-import com.calimero.mero.api.models.OrgCreateRequest
-import com.calimero.mero.api.models.OrgDelete200Response
+import com.calimero.mero.api.models.OrgBody
+import com.calimero.mero.api.models.OrgCreated
+import com.calimero.mero.api.models.OrgDeleted
 import com.calimero.mero.api.models.OrgEgressRequest
-import com.calimero.mero.api.models.OrgMembers200Response
 import com.calimero.mero.api.models.OrgOutboundApprovalRequest
-import com.calimero.mero.api.models.OrgPolicySetRequest
-import com.calimero.mero.api.models.OrgPublisher200Response
-import com.calimero.mero.api.models.OrgPublisherRequest
 import com.calimero.mero.api.models.OrgReleaseApprovalRequest
-import com.calimero.mero.api.models.OrgRename200Response
-import com.calimero.mero.api.models.OrgRenameRequest
-import com.calimero.mero.api.models.OrgSetBackupKeyRequest
-import com.calimero.mero.api.models.OrgSetMemberRequest
-import com.calimero.mero.api.models.OrgSettings200Response
-import com.calimero.mero.api.models.OrgSettingsRequest
-import com.calimero.mero.api.models.OrgUpdates200Response
-import com.calimero.mero.api.models.OrgUpgradeRequest
+import com.calimero.mero.api.models.OrgRenamed
+import com.calimero.mero.api.models.OrgSettingsBody
+import com.calimero.mero.api.models.OrgSettingsSet
+import com.calimero.mero.api.models.OrgUpdates
+import com.calimero.mero.api.models.OrgUpgradeBody
 import com.calimero.mero.api.models.OrgUpgradeRetryRequest
-import com.calimero.mero.api.models.OrgUsage200Response
+import com.calimero.mero.api.models.OrgUsage
 import com.calimero.mero.api.models.OutboundApproved
 import com.calimero.mero.api.models.PolicyView
-import com.calimero.mero.api.models.PublisherUpgradeRequest
-import com.calimero.mero.api.models.RecoveryFinish200Response
-import com.calimero.mero.api.models.RecoverySetRequest
-import com.calimero.mero.api.models.RecoveryStart200Response
-import com.calimero.mero.api.models.RecoveryStartRequest
-import com.calimero.mero.api.models.TeamCreate200Response
-import com.calimero.mero.api.models.TeamCreateRequest
-import com.calimero.mero.api.models.TeamDelete200Response
-import com.calimero.mero.api.models.TeamDeleteRequest
-import com.calimero.mero.api.models.TeamSetMemberRequest
-import com.calimero.mero.api.models.TeamUpdateRequest
+import com.calimero.mero.api.models.PublisherBody
+import com.calimero.mero.api.models.PublisherBound
+import com.calimero.mero.api.models.PublisherUpgradeBody
+import com.calimero.mero.api.models.RecoveryFinished
+import com.calimero.mero.api.models.RecoveryKeyBody
+import com.calimero.mero.api.models.RecoveryStartBody
+import com.calimero.mero.api.models.RecoveryStarted
+import com.calimero.mero.api.models.RenameOrgBody
+import com.calimero.mero.api.models.ScopeAppsBody
+import com.calimero.mero.api.models.TeamBody
+import com.calimero.mero.api.models.TeamCreated
+import com.calimero.mero.api.models.TeamDeleteBody
+import com.calimero.mero.api.models.TeamDeleted
+import com.calimero.mero.api.models.TeamIdsBody
+import com.calimero.mero.api.models.TeamMemberBody
+import com.calimero.mero.api.models.TeamRowsBody
+import com.calimero.mero.api.models.TeamUpdateBody
 import com.calimero.mero.api.models.TeamView
+import com.calimero.mero.api.models.UpgradePolicyBody
 import com.calimero.mero.api.models.UpgradeRun
 
 import kotlinx.serialization.SerialName
@@ -115,7 +115,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * The organization&#39;s app teams
      * A member: each app team&#39;s package, id, name, &#x60;join&#x60;, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own).  **Who:** signed in (a session or an API key).
      * @param org 
-     * @return AppTeamList200Response
+     * @return AppTeamList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -124,11 +124,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appTeamList(org: kotlin.String) : AppTeamList200Response = withContext(Dispatchers.IO) {
+    suspend fun appTeamList(org: kotlin.String) : AppTeamList = withContext(Dispatchers.IO) {
         val localVarResponse = appTeamListWithHttpInfo(org = org)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppTeamList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppTeamList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -147,16 +147,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * The organization&#39;s app teams
      * A member: each app team&#39;s package, id, name, &#x60;join&#x60;, member count, default capabilities, and whether the caller is in it or manages it (a guest: only their own).  **Who:** signed in (a session or an API key).
      * @param org 
-     * @return ApiResponse<AppTeamList200Response?>
+     * @return ApiResponse<AppTeamList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appTeamListWithHttpInfo(org: kotlin.String) : ApiResponse<AppTeamList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun appTeamListWithHttpInfo(org: kotlin.String) : ApiResponse<AppTeamList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = appTeamListRequestConfig(org = org)
 
-        return@withContext request<Unit, AppTeamList200Response>(
+        return@withContext request<Unit, AppTeamList>(
             localVariableConfig
         )
     }
@@ -188,8 +188,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Give apps app teams, or open or close one
      * The owner or an admin; &#x60;keep&#x60; names who stays when a team closes; &#x60;childTeams&#x60; says whether the app team&#39;s members make restricted teams below it (private channels), adding or removing &#x60;CREATE_CHILD_TEAM&#x60; (absent: as they are). Naming &#x60;join&#x60; or &#x60;childTeams&#x60; on any package leaves &#x60;shared&#x60; unset to mean no other team. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param appTeamsScopeRequest 
-     * @return AppTeamsScope200Response
+     * @param scopeAppsBody 
+     * @return AppTeamsScoped
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -198,11 +198,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun appTeamsScope(org: kotlin.String, appTeamsScopeRequest: AppTeamsScopeRequest) : AppTeamsScope200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = appTeamsScopeWithHttpInfo(org = org, appTeamsScopeRequest = appTeamsScopeRequest)
+    suspend fun appTeamsScope(org: kotlin.String, scopeAppsBody: ScopeAppsBody) : AppTeamsScoped = withContext(Dispatchers.IO) {
+        val localVarResponse = appTeamsScopeWithHttpInfo(org = org, scopeAppsBody = scopeAppsBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppTeamsScope200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppTeamsScoped
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -221,17 +221,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Give apps app teams, or open or close one
      * The owner or an admin; &#x60;keep&#x60; names who stays when a team closes; &#x60;childTeams&#x60; says whether the app team&#39;s members make restricted teams below it (private channels), adding or removing &#x60;CREATE_CHILD_TEAM&#x60; (absent: as they are). Naming &#x60;join&#x60; or &#x60;childTeams&#x60; on any package leaves &#x60;shared&#x60; unset to mean no other team. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param appTeamsScopeRequest 
-     * @return ApiResponse<AppTeamsScope200Response?>
+     * @param scopeAppsBody 
+     * @return ApiResponse<AppTeamsScoped?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun appTeamsScopeWithHttpInfo(org: kotlin.String, appTeamsScopeRequest: AppTeamsScopeRequest) : ApiResponse<AppTeamsScope200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = appTeamsScopeRequestConfig(org = org, appTeamsScopeRequest = appTeamsScopeRequest)
+    suspend fun appTeamsScopeWithHttpInfo(org: kotlin.String, scopeAppsBody: ScopeAppsBody) : ApiResponse<AppTeamsScoped?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appTeamsScopeRequestConfig(org = org, scopeAppsBody = scopeAppsBody)
 
-        return@withContext request<AppTeamsScopeRequest, AppTeamsScope200Response>(
+        return@withContext request<ScopeAppsBody, AppTeamsScoped>(
             localVariableConfig
         )
     }
@@ -240,11 +240,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation appTeamsScope
      *
      * @param org 
-     * @param appTeamsScopeRequest 
+     * @param scopeAppsBody 
      * @return RequestConfig
      */
-    fun appTeamsScopeRequestConfig(org: kotlin.String, appTeamsScopeRequest: AppTeamsScopeRequest) : RequestConfig<AppTeamsScopeRequest> {
-        val localVariableBody = appTeamsScopeRequest
+    fun appTeamsScopeRequestConfig(org: kotlin.String, scopeAppsBody: ScopeAppsBody) : RequestConfig<ScopeAppsBody> {
+        val localVariableBody = scopeAppsBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -265,8 +265,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Make an invite
      * A token for &#x60;role&#x60; and &#x60;teams&#x60;, &#x60;uses&#x60; times within &#x60;ttlSecs&#x60;; &#x60;allApps&#x60; (an admin&#39;s) also gives every app added later; &#x60;capabilities&#x60; (bits) is what a new member gets as their own setting, no more than the creator holds (&#x60;403&#x60;), and &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param inviteCreateRequest 
-     * @return InviteCreate200Response
+     * @param inviteBody 
+     * @return InviteMade
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -275,11 +275,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun inviteCreate(org: kotlin.String, inviteCreateRequest: InviteCreateRequest) : InviteCreate200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = inviteCreateWithHttpInfo(org = org, inviteCreateRequest = inviteCreateRequest)
+    suspend fun inviteCreate(org: kotlin.String, inviteBody: InviteBody) : InviteMade = withContext(Dispatchers.IO) {
+        val localVarResponse = inviteCreateWithHttpInfo(org = org, inviteBody = inviteBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as InviteCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as InviteMade
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -298,17 +298,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Make an invite
      * A token for &#x60;role&#x60; and &#x60;teams&#x60;, &#x60;uses&#x60; times within &#x60;ttlSecs&#x60;; &#x60;allApps&#x60; (an admin&#39;s) also gives every app added later; &#x60;capabilities&#x60; (bits) is what a new member gets as their own setting, no more than the creator holds (&#x60;403&#x60;), and &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param inviteCreateRequest 
-     * @return ApiResponse<InviteCreate200Response?>
+     * @param inviteBody 
+     * @return ApiResponse<InviteMade?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun inviteCreateWithHttpInfo(org: kotlin.String, inviteCreateRequest: InviteCreateRequest) : ApiResponse<InviteCreate200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = inviteCreateRequestConfig(org = org, inviteCreateRequest = inviteCreateRequest)
+    suspend fun inviteCreateWithHttpInfo(org: kotlin.String, inviteBody: InviteBody) : ApiResponse<InviteMade?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = inviteCreateRequestConfig(org = org, inviteBody = inviteBody)
 
-        return@withContext request<InviteCreateRequest, InviteCreate200Response>(
+        return@withContext request<InviteBody, InviteMade>(
             localVariableConfig
         )
     }
@@ -317,11 +317,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation inviteCreate
      *
      * @param org 
-     * @param inviteCreateRequest 
+     * @param inviteBody 
      * @return RequestConfig
      */
-    fun inviteCreateRequestConfig(org: kotlin.String, inviteCreateRequest: InviteCreateRequest) : RequestConfig<InviteCreateRequest> {
-        val localVariableBody = inviteCreateRequest
+    fun inviteCreateRequestConfig(org: kotlin.String, inviteBody: InviteBody) : RequestConfig<InviteBody> {
+        val localVariableBody = inviteBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -342,7 +342,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * The organization&#39;s invites
      * Their keys and terms, never a token: &#x60;expiresAt&#x60; Unix seconds; &#x60;createdBy&#x60; and &#x60;createdAt&#x60; are &#x60;null&#x60; on an invite from before they were kept.  **Who:** a passkey session (an API key is refused).
      * @param org 
-     * @return InviteList200Response
+     * @return InviteList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -351,11 +351,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun inviteList(org: kotlin.String) : InviteList200Response = withContext(Dispatchers.IO) {
+    suspend fun inviteList(org: kotlin.String) : InviteList = withContext(Dispatchers.IO) {
         val localVarResponse = inviteListWithHttpInfo(org = org)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as InviteList200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as InviteList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -374,16 +374,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * The organization&#39;s invites
      * Their keys and terms, never a token: &#x60;expiresAt&#x60; Unix seconds; &#x60;createdBy&#x60; and &#x60;createdAt&#x60; are &#x60;null&#x60; on an invite from before they were kept.  **Who:** a passkey session (an API key is refused).
      * @param org 
-     * @return ApiResponse<InviteList200Response?>
+     * @return ApiResponse<InviteList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun inviteListWithHttpInfo(org: kotlin.String) : ApiResponse<InviteList200Response?> = withContext(Dispatchers.IO) {
+    suspend fun inviteListWithHttpInfo(org: kotlin.String) : ApiResponse<InviteList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = inviteListRequestConfig(org = org)
 
-        return@withContext request<Unit, InviteList200Response>(
+        return@withContext request<Unit, InviteList>(
             localVariableConfig
         )
     }
@@ -415,7 +415,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Join with an invite
      * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, and &#x60;member&#x60;: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; unless the instance&#39;s release says &#x60;guests: allowed&#x60; and its organization&#39;s &#x60;allowGuests&#x60; is on, judged as the redemption applies.  **Who:** a passkey session (an API key is refused).
      * @param token 
-     * @return InviteRedeem200Response
+     * @return InviteRedeemed
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -424,11 +424,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun inviteRedeem(token: kotlin.String) : InviteRedeem200Response = withContext(Dispatchers.IO) {
+    suspend fun inviteRedeem(token: kotlin.String) : InviteRedeemed = withContext(Dispatchers.IO) {
         val localVarResponse = inviteRedeemWithHttpInfo(token = token)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as InviteRedeem200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as InviteRedeemed
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -447,16 +447,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Join with an invite
      * No passkey prompt: the node signs the redemption with the token&#39;s key. Answers the organization joined; for an instance invite, the instance (&#x60;app&#x60;) and its organization, and &#x60;member&#x60;: whether the redeemer was named as a member of it (else a guest, never made a member). An instance invite always names a member of its organization; anyone else is refused &#x60;409 GUESTS_NOT_ALLOWED&#x60; unless the instance&#39;s release says &#x60;guests: allowed&#x60; and its organization&#39;s &#x60;allowGuests&#x60; is on, judged as the redemption applies.  **Who:** a passkey session (an API key is refused).
      * @param token 
-     * @return ApiResponse<InviteRedeem200Response?>
+     * @return ApiResponse<InviteRedeemed?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun inviteRedeemWithHttpInfo(token: kotlin.String) : ApiResponse<InviteRedeem200Response?> = withContext(Dispatchers.IO) {
+    suspend fun inviteRedeemWithHttpInfo(token: kotlin.String) : ApiResponse<InviteRedeemed?> = withContext(Dispatchers.IO) {
         val localVariableConfig = inviteRedeemRequestConfig(token = token)
 
-        return@withContext request<Unit, InviteRedeem200Response>(
+        return@withContext request<Unit, InviteRedeemed>(
             localVariableConfig
         )
     }
@@ -569,7 +569,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * &#x60;metadata&#x60; is the caller&#39;s own JSON, free-form, kept as given.  **Who:** signed in (a session or an API key).
      * @param org 
      * @param account 
-     * @param memberMetadataRequest 
+     * @param metadataBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -579,8 +579,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun memberMetadata(org: kotlin.String, account: kotlin.String, memberMetadataRequest: MemberMetadataRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = memberMetadataWithHttpInfo(org = org, account = account, memberMetadataRequest = memberMetadataRequest)
+    suspend fun memberMetadata(org: kotlin.String, account: kotlin.String, metadataBody: MetadataBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = memberMetadataWithHttpInfo(org = org, account = account, metadataBody = metadataBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -603,17 +603,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * &#x60;metadata&#x60; is the caller&#39;s own JSON, free-form, kept as given.  **Who:** signed in (a session or an API key).
      * @param org 
      * @param account 
-     * @param memberMetadataRequest 
+     * @param metadataBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun memberMetadataWithHttpInfo(org: kotlin.String, account: kotlin.String, memberMetadataRequest: MemberMetadataRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = memberMetadataRequestConfig(org = org, account = account, memberMetadataRequest = memberMetadataRequest)
+    suspend fun memberMetadataWithHttpInfo(org: kotlin.String, account: kotlin.String, metadataBody: MetadataBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = memberMetadataRequestConfig(org = org, account = account, metadataBody = metadataBody)
 
-        return@withContext request<MemberMetadataRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<MetadataBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -623,11 +623,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      *
      * @param org 
      * @param account 
-     * @param memberMetadataRequest 
+     * @param metadataBody 
      * @return RequestConfig
      */
-    fun memberMetadataRequestConfig(org: kotlin.String, account: kotlin.String, memberMetadataRequest: MemberMetadataRequest) : RequestConfig<MemberMetadataRequest> {
-        val localVariableBody = memberMetadataRequest
+    fun memberMetadataRequestConfig(org: kotlin.String, account: kotlin.String, metadataBody: MetadataBody) : RequestConfig<MetadataBody> {
+        val localVariableBody = metadataBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -649,7 +649,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Each judged as &#x60;DELETE /orgs/{org}/teams/{team}/members/{account}&#x60; would judge it, and none taken unless every one may be. 1 to 64 distinct teams; one passkey, &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param account 
-     * @param memberRemoveTeamsRequest 
+     * @param teamIdsBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -659,8 +659,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun memberRemoveTeams(org: kotlin.String, account: kotlin.String, memberRemoveTeamsRequest: MemberRemoveTeamsRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = memberRemoveTeamsWithHttpInfo(org = org, account = account, memberRemoveTeamsRequest = memberRemoveTeamsRequest)
+    suspend fun memberRemoveTeams(org: kotlin.String, account: kotlin.String, teamIdsBody: TeamIdsBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = memberRemoveTeamsWithHttpInfo(org = org, account = account, teamIdsBody = teamIdsBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -683,17 +683,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Each judged as &#x60;DELETE /orgs/{org}/teams/{team}/members/{account}&#x60; would judge it, and none taken unless every one may be. 1 to 64 distinct teams; one passkey, &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param account 
-     * @param memberRemoveTeamsRequest 
+     * @param teamIdsBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun memberRemoveTeamsWithHttpInfo(org: kotlin.String, account: kotlin.String, memberRemoveTeamsRequest: MemberRemoveTeamsRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = memberRemoveTeamsRequestConfig(org = org, account = account, memberRemoveTeamsRequest = memberRemoveTeamsRequest)
+    suspend fun memberRemoveTeamsWithHttpInfo(org: kotlin.String, account: kotlin.String, teamIdsBody: TeamIdsBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = memberRemoveTeamsRequestConfig(org = org, account = account, teamIdsBody = teamIdsBody)
 
-        return@withContext request<MemberRemoveTeamsRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<TeamIdsBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -703,11 +703,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      *
      * @param org 
      * @param account 
-     * @param memberRemoveTeamsRequest 
+     * @param teamIdsBody 
      * @return RequestConfig
      */
-    fun memberRemoveTeamsRequestConfig(org: kotlin.String, account: kotlin.String, memberRemoveTeamsRequest: MemberRemoveTeamsRequest) : RequestConfig<MemberRemoveTeamsRequest> {
-        val localVariableBody = memberRemoveTeamsRequest
+    fun memberRemoveTeamsRequestConfig(org: kotlin.String, account: kotlin.String, teamIdsBody: TeamIdsBody) : RequestConfig<TeamIdsBody> {
+        val localVariableBody = teamIdsBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -729,7 +729,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Each team judged as &#x60;POST /orgs/{org}/teams/{team}/members&#x60; would judge it, and none set unless every one may be (a row&#39;s absent &#x60;role&#x60; is &#x60;member&#x60;; absent &#x60;capabilities&#x60;, a new row takes the defaults and an existing row keeps its own). 1 to 64 distinct teams; one passkey, &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param account 
-     * @param memberSetTeamsRequest 
+     * @param teamRowsBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -739,8 +739,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun memberSetTeams(org: kotlin.String, account: kotlin.String, memberSetTeamsRequest: MemberSetTeamsRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = memberSetTeamsWithHttpInfo(org = org, account = account, memberSetTeamsRequest = memberSetTeamsRequest)
+    suspend fun memberSetTeams(org: kotlin.String, account: kotlin.String, teamRowsBody: TeamRowsBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = memberSetTeamsWithHttpInfo(org = org, account = account, teamRowsBody = teamRowsBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -763,17 +763,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Each team judged as &#x60;POST /orgs/{org}/teams/{team}/members&#x60; would judge it, and none set unless every one may be (a row&#39;s absent &#x60;role&#x60; is &#x60;member&#x60;; absent &#x60;capabilities&#x60;, a new row takes the defaults and an existing row keeps its own). 1 to 64 distinct teams; one passkey, &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param account 
-     * @param memberSetTeamsRequest 
+     * @param teamRowsBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun memberSetTeamsWithHttpInfo(org: kotlin.String, account: kotlin.String, memberSetTeamsRequest: MemberSetTeamsRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = memberSetTeamsRequestConfig(org = org, account = account, memberSetTeamsRequest = memberSetTeamsRequest)
+    suspend fun memberSetTeamsWithHttpInfo(org: kotlin.String, account: kotlin.String, teamRowsBody: TeamRowsBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = memberSetTeamsRequestConfig(org = org, account = account, teamRowsBody = teamRowsBody)
 
-        return@withContext request<MemberSetTeamsRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<TeamRowsBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -783,11 +783,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      *
      * @param org 
      * @param account 
-     * @param memberSetTeamsRequest 
+     * @param teamRowsBody 
      * @return RequestConfig
      */
-    fun memberSetTeamsRequestConfig(org: kotlin.String, account: kotlin.String, memberSetTeamsRequest: MemberSetTeamsRequest) : RequestConfig<MemberSetTeamsRequest> {
-        val localVariableBody = memberSetTeamsRequest
+    fun memberSetTeamsRequestConfig(org: kotlin.String, account: kotlin.String, teamRowsBody: TeamRowsBody) : RequestConfig<TeamRowsBody> {
+        val localVariableBody = teamRowsBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -808,7 +808,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Give a member every app added later
      * Or stop it (&#x60;allApps: false&#x60;); apps already there are not touched. The owner or an admin; &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgAllAppsRequest 
+     * @param allAppsBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -818,8 +818,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgAllApps(org: kotlin.String, orgAllAppsRequest: OrgAllAppsRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = orgAllAppsWithHttpInfo(org = org, orgAllAppsRequest = orgAllAppsRequest)
+    suspend fun orgAllApps(org: kotlin.String, allAppsBody: AllAppsBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = orgAllAppsWithHttpInfo(org = org, allAppsBody = allAppsBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -841,17 +841,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Give a member every app added later
      * Or stop it (&#x60;allApps: false&#x60;); apps already there are not touched. The owner or an admin; &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgAllAppsRequest 
+     * @param allAppsBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgAllAppsWithHttpInfo(org: kotlin.String, orgAllAppsRequest: OrgAllAppsRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgAllAppsRequestConfig(org = org, orgAllAppsRequest = orgAllAppsRequest)
+    suspend fun orgAllAppsWithHttpInfo(org: kotlin.String, allAppsBody: AllAppsBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgAllAppsRequestConfig(org = org, allAppsBody = allAppsBody)
 
-        return@withContext request<OrgAllAppsRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<AllAppsBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -860,11 +860,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgAllApps
      *
      * @param org 
-     * @param orgAllAppsRequest 
+     * @param allAppsBody 
      * @return RequestConfig
      */
-    fun orgAllAppsRequestConfig(org: kotlin.String, orgAllAppsRequest: OrgAllAppsRequest) : RequestConfig<OrgAllAppsRequest> {
-        val localVariableBody = orgAllAppsRequest
+    fun orgAllAppsRequestConfig(org: kotlin.String, allAppsBody: AllAppsBody) : RequestConfig<AllAppsBody> {
+        val localVariableBody = allAppsBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -887,7 +887,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * @param org 
      * @param after  (optional)
      * @param limit  (optional)
-     * @return OrgApps200Response
+     * @return AppsReport
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -896,11 +896,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgApps(org: kotlin.String, after: kotlin.String? = null, limit: kotlin.Long? = null) : OrgApps200Response = withContext(Dispatchers.IO) {
+    suspend fun orgApps(org: kotlin.String, after: kotlin.String? = null, limit: kotlin.Long? = null) : AppsReport = withContext(Dispatchers.IO) {
         val localVarResponse = orgAppsWithHttpInfo(org = org, after = after, limit = limit)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgApps200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppsReport
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -921,16 +921,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * @param org 
      * @param after  (optional)
      * @param limit  (optional)
-     * @return ApiResponse<OrgApps200Response?>
+     * @return ApiResponse<AppsReport?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgAppsWithHttpInfo(org: kotlin.String, after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<OrgApps200Response?> = withContext(Dispatchers.IO) {
+    suspend fun orgAppsWithHttpInfo(org: kotlin.String, after: kotlin.String?, limit: kotlin.Long?) : ApiResponse<AppsReport?> = withContext(Dispatchers.IO) {
         val localVariableConfig = orgAppsRequestConfig(org = org, after = after, limit = limit)
 
-        return@withContext request<Unit, OrgApps200Response>(
+        return@withContext request<Unit, AppsReport>(
             localVariableConfig
         )
     }
@@ -1045,7 +1045,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set capabilities
      * A member&#39;s (&#x60;account&#x60;), in a team (&#x60;team&#x60;), or a team&#39;s default; the capability bits. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgCapabilitiesRequest 
+     * @param capabilitiesBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1055,8 +1055,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgCapabilities(org: kotlin.String, orgCapabilitiesRequest: OrgCapabilitiesRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = orgCapabilitiesWithHttpInfo(org = org, orgCapabilitiesRequest = orgCapabilitiesRequest)
+    suspend fun orgCapabilities(org: kotlin.String, capabilitiesBody: CapabilitiesBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = orgCapabilitiesWithHttpInfo(org = org, capabilitiesBody = capabilitiesBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -1078,17 +1078,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set capabilities
      * A member&#39;s (&#x60;account&#x60;), in a team (&#x60;team&#x60;), or a team&#39;s default; the capability bits. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgCapabilitiesRequest 
+     * @param capabilitiesBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgCapabilitiesWithHttpInfo(org: kotlin.String, orgCapabilitiesRequest: OrgCapabilitiesRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgCapabilitiesRequestConfig(org = org, orgCapabilitiesRequest = orgCapabilitiesRequest)
+    suspend fun orgCapabilitiesWithHttpInfo(org: kotlin.String, capabilitiesBody: CapabilitiesBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgCapabilitiesRequestConfig(org = org, capabilitiesBody = capabilitiesBody)
 
-        return@withContext request<OrgCapabilitiesRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<CapabilitiesBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -1097,11 +1097,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgCapabilities
      *
      * @param org 
-     * @param orgCapabilitiesRequest 
+     * @param capabilitiesBody 
      * @return RequestConfig
      */
-    fun orgCapabilitiesRequestConfig(org: kotlin.String, orgCapabilitiesRequest: OrgCapabilitiesRequest) : RequestConfig<OrgCapabilitiesRequest> {
-        val localVariableBody = orgCapabilitiesRequest
+    fun orgCapabilitiesRequestConfig(org: kotlin.String, capabilitiesBody: CapabilitiesBody) : RequestConfig<CapabilitiesBody> {
+        val localVariableBody = capabilitiesBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -1121,8 +1121,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * POST /orgs
      * Create an organization
      * &#x60;recoveryKey&#x60; is the public half of an organization recovery key. &#x60;capabilities&#x60; (bits) is what members can do unless set for them, in place of the default; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account&#39;s are those it creates here (or with a &#x60;standalone&#x60; instance) or is invited to; before, every account also had a personal organization from sign-up (&#x60;personal&#x60; in &#x60;/auth/me&#x60;).  **Who:** a passkey session (an API key is refused).
-     * @param orgCreateRequest 
-     * @return OrgCreate200Response
+     * @param orgBody 
+     * @return OrgCreated
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1131,11 +1131,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgCreate(orgCreateRequest: OrgCreateRequest) : OrgCreate200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = orgCreateWithHttpInfo(orgCreateRequest = orgCreateRequest)
+    suspend fun orgCreate(orgBody: OrgBody) : OrgCreated = withContext(Dispatchers.IO) {
+        val localVarResponse = orgCreateWithHttpInfo(orgBody = orgBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgCreated
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1153,17 +1153,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * POST /orgs
      * Create an organization
      * &#x60;recoveryKey&#x60; is the public half of an organization recovery key. &#x60;capabilities&#x60; (bits) is what members can do unless set for them, in place of the default; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.29. From cluster version 1.0.0-rc.32 a sign-up makes no organization: an account&#39;s are those it creates here (or with a &#x60;standalone&#x60; instance) or is invited to; before, every account also had a personal organization from sign-up (&#x60;personal&#x60; in &#x60;/auth/me&#x60;).  **Who:** a passkey session (an API key is refused).
-     * @param orgCreateRequest 
-     * @return ApiResponse<OrgCreate200Response?>
+     * @param orgBody 
+     * @return ApiResponse<OrgCreated?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgCreateWithHttpInfo(orgCreateRequest: OrgCreateRequest) : ApiResponse<OrgCreate200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgCreateRequestConfig(orgCreateRequest = orgCreateRequest)
+    suspend fun orgCreateWithHttpInfo(orgBody: OrgBody) : ApiResponse<OrgCreated?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgCreateRequestConfig(orgBody = orgBody)
 
-        return@withContext request<OrgCreateRequest, OrgCreate200Response>(
+        return@withContext request<OrgBody, OrgCreated>(
             localVariableConfig
         )
     }
@@ -1171,11 +1171,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * To obtain the request config of the operation orgCreate
      *
-     * @param orgCreateRequest 
+     * @param orgBody 
      * @return RequestConfig
      */
-    fun orgCreateRequestConfig(orgCreateRequest: OrgCreateRequest) : RequestConfig<OrgCreateRequest> {
-        val localVariableBody = orgCreateRequest
+    fun orgCreateRequestConfig(orgBody: OrgBody) : RequestConfig<OrgBody> {
+        val localVariableBody = orgBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -1197,7 +1197,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * With its teams, invites and apps; the owner. &#x60;apps&#x60;: the apps deleted with it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param confirmOnly May be absent. (optional)
-     * @return OrgDelete200Response
+     * @return OrgDeleted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1206,11 +1206,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgDelete(org: kotlin.String, confirmOnly: ConfirmOnly? = null) : OrgDelete200Response = withContext(Dispatchers.IO) {
+    suspend fun orgDelete(org: kotlin.String, confirmOnly: ConfirmOnly? = null) : OrgDeleted = withContext(Dispatchers.IO) {
         val localVarResponse = orgDeleteWithHttpInfo(org = org, confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgDelete200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgDeleted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1230,16 +1230,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * With its teams, invites and apps; the owner. &#x60;apps&#x60;: the apps deleted with it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<OrgDelete200Response?>
+     * @return ApiResponse<OrgDeleted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgDeleteWithHttpInfo(org: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<OrgDelete200Response?> = withContext(Dispatchers.IO) {
+    suspend fun orgDeleteWithHttpInfo(org: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<OrgDeleted?> = withContext(Dispatchers.IO) {
         val localVariableConfig = orgDeleteRequestConfig(org = org, confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, OrgDelete200Response>(
+        return@withContext request<ConfirmOnly, OrgDeleted>(
             localVariableConfig
         )
     }
@@ -1274,7 +1274,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * &#x60;egress: false&#x60; turns egress off for every app of the organization: from each app&#39;s next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization&#39;s or the operator&#39;s) says, and the organization approves no new outbound host (&#x60;409 EGRESS_OFF&#x60;). &#x60;egress: true&#x60; turns it back on, a red change made only on the consent page (&#x60;kind: setEgress&#x60;); from any other client &#x60;403 CONSENT_PAGE_REQUIRED&#x60;. The owner or an admin, with a passkey (&#x60;412&#x60; first); &#x60;403&#x60; to a member below admin, &#x60;404&#x60; to anyone outside it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param orgEgressRequest 
-     * @return AppSetEgress200Response
+     * @return EgressSet
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1283,11 +1283,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgEgress(org: kotlin.String, orgEgressRequest: OrgEgressRequest) : AppSetEgress200Response = withContext(Dispatchers.IO) {
+    suspend fun orgEgress(org: kotlin.String, orgEgressRequest: OrgEgressRequest) : EgressSet = withContext(Dispatchers.IO) {
         val localVarResponse = orgEgressWithHttpInfo(org = org, orgEgressRequest = orgEgressRequest)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as AppSetEgress200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as EgressSet
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1307,16 +1307,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * &#x60;egress: false&#x60; turns egress off for every app of the organization: from each app&#39;s next outbound request on, nothing leaves the cluster for it, whatever its release declares and whatever an approval (the organization&#39;s or the operator&#39;s) says, and the organization approves no new outbound host (&#x60;409 EGRESS_OFF&#x60;). &#x60;egress: true&#x60; turns it back on, a red change made only on the consent page (&#x60;kind: setEgress&#x60;); from any other client &#x60;403 CONSENT_PAGE_REQUIRED&#x60;. The owner or an admin, with a passkey (&#x60;412&#x60; first); &#x60;403&#x60; to a member below admin, &#x60;404&#x60; to anyone outside it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param orgEgressRequest 
-     * @return ApiResponse<AppSetEgress200Response?>
+     * @return ApiResponse<EgressSet?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgEgressWithHttpInfo(org: kotlin.String, orgEgressRequest: OrgEgressRequest) : ApiResponse<AppSetEgress200Response?> = withContext(Dispatchers.IO) {
+    suspend fun orgEgressWithHttpInfo(org: kotlin.String, orgEgressRequest: OrgEgressRequest) : ApiResponse<EgressSet?> = withContext(Dispatchers.IO) {
         val localVariableConfig = orgEgressRequestConfig(org = org, orgEgressRequest = orgEgressRequest)
 
-        return@withContext request<OrgEgressRequest, AppSetEgress200Response>(
+        return@withContext request<OrgEgressRequest, EgressSet>(
             localVariableConfig
         )
     }
@@ -1348,8 +1348,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * GET /orgs/{org}
      * One organization
-     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its &#x60;mode&#x60; (from its app teams), the accounts that may approve its releases (&#x60;releaseApprovers&#x60;), the keys it publishes under (&#x60;publishes&#x60;), and &#x60;newWorkStopped&#x60;: the release whose passed deadline stops new work in it (&#x60;after&#x60;, RFC 3339), &#x60;null&#x60; when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).  **Who:** signed in (a session or an API key).
+     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its &#x60;mode&#x60; (from its app teams), the accounts that may approve its releases (&#x60;releaseApprovers&#x60;), the keys it publishes under (&#x60;publishes&#x60;), and &#x60;newWorkStopped&#x60;: the release whose passed deadline stops new work in it (&#x60;after&#x60;, RFC 3339), &#x60;null&#x60; when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of &#x60;limit&#x60; (1 to 1000, default 1000), by id after &#x60;teamsAfter&#x60; and by account after &#x60;membersAfter&#x60;; &#x60;nextTeamsAfter&#x60; and &#x60;nextMembersAfter&#x60; are the cursors of the next pages, &#x60;null&#x60; on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).  **Who:** signed in (a session or an API key).
      * @param org 
+     * @param limit  (optional)
+     * @param teamsAfter  (optional)
+     * @param membersAfter  (optional)
      * @return Org
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1359,8 +1362,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgGet(org: kotlin.String) : Org = withContext(Dispatchers.IO) {
-        val localVarResponse = orgGetWithHttpInfo(org = org)
+    suspend fun orgGet(org: kotlin.String, limit: kotlin.Long? = null, teamsAfter: kotlin.String? = null, membersAfter: kotlin.String? = null) : Org = withContext(Dispatchers.IO) {
+        val localVarResponse = orgGetWithHttpInfo(org = org, limit = limit, teamsAfter = teamsAfter, membersAfter = membersAfter)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as Org
@@ -1380,16 +1383,19 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * GET /orgs/{org}
      * One organization
-     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its &#x60;mode&#x60; (from its app teams), the accounts that may approve its releases (&#x60;releaseApprovers&#x60;), the keys it publishes under (&#x60;publishes&#x60;), and &#x60;newWorkStopped&#x60;: the release whose passed deadline stops new work in it (&#x60;after&#x60;, RFC 3339), &#x60;null&#x60; when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them).  **Who:** signed in (a session or an API key).
+     * As the directory records it, with only the teams the caller reaches or manages and the people they see; and its &#x60;mode&#x60; (from its app teams), the accounts that may approve its releases (&#x60;releaseApprovers&#x60;), the keys it publishes under (&#x60;publishes&#x60;), and &#x60;newWorkStopped&#x60;: the release whose passed deadline stops new work in it (&#x60;after&#x60;, RFC 3339), &#x60;null&#x60; when none does. Those four are absent from a node older than they are (1.0.0-rc.1 sends none of them). Teams and members come in pages of &#x60;limit&#x60; (1 to 1000, default 1000), by id after &#x60;teamsAfter&#x60; and by account after &#x60;membersAfter&#x60;; &#x60;nextTeamsAfter&#x60; and &#x60;nextMembersAfter&#x60; are the cursors of the next pages, &#x60;null&#x60; on the last (absent from a node before 1.0.0-rc.39, which answers every team and member).  **Who:** signed in (a session or an API key).
      * @param org 
+     * @param limit  (optional)
+     * @param teamsAfter  (optional)
+     * @param membersAfter  (optional)
      * @return ApiResponse<Org?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgGetWithHttpInfo(org: kotlin.String) : ApiResponse<Org?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgGetRequestConfig(org = org)
+    suspend fun orgGetWithHttpInfo(org: kotlin.String, limit: kotlin.Long?, teamsAfter: kotlin.String?, membersAfter: kotlin.String?) : ApiResponse<Org?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgGetRequestConfig(org = org, limit = limit, teamsAfter = teamsAfter, membersAfter = membersAfter)
 
         return@withContext request<Unit, Org>(
             localVariableConfig
@@ -1400,11 +1406,25 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgGet
      *
      * @param org 
+     * @param limit  (optional)
+     * @param teamsAfter  (optional)
+     * @param membersAfter  (optional)
      * @return RequestConfig
      */
-    fun orgGetRequestConfig(org: kotlin.String) : RequestConfig<Unit> {
+    fun orgGetRequestConfig(org: kotlin.String, limit: kotlin.Long?, teamsAfter: kotlin.String?, membersAfter: kotlin.String?) : RequestConfig<Unit> {
         val localVariableBody = null
-        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableQuery: MultiValueMap = mutableMapOf<kotlin.String, kotlin.collections.List<kotlin.String>>()
+            .apply {
+                if (limit != null) {
+                    put("limit", listOf(limit.toString()))
+                }
+                if (teamsAfter != null) {
+                    put("teamsAfter", listOf(teamsAfter.toString()))
+                }
+                if (membersAfter != null) {
+                    put("membersAfter", listOf(membersAfter.toString()))
+                }
+            }
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Accept"] = "application/json"
 
@@ -1440,7 +1460,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * &#x60;detail&#x3D;security&#x60; (the only listing: without it, or with another value, &#x60;400 BAD_REQUEST&#x60;), the owner or an admin: each member&#39;s passkeys (&#x60;1&#x60;, &#x60;2&#x60; or &#x60;\&quot;3+\&quot;&#x60;), recovery code, last active UTC day and sessions. &#x60;403&#x60; below admin, &#x60;404&#x60; outside the organization.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
      * @param org 
      * @param detail  (optional)
-     * @return OrgMembers200Response
+     * @return MemberSecurityList
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1449,11 +1469,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgMembers(org: kotlin.String, detail: DetailOrgMembers? = null) : OrgMembers200Response = withContext(Dispatchers.IO) {
+    suspend fun orgMembers(org: kotlin.String, detail: DetailOrgMembers? = null) : MemberSecurityList = withContext(Dispatchers.IO) {
         val localVarResponse = orgMembersWithHttpInfo(org = org, detail = detail)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgMembers200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as MemberSecurityList
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1473,16 +1493,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * &#x60;detail&#x3D;security&#x60; (the only listing: without it, or with another value, &#x60;400 BAD_REQUEST&#x60;), the owner or an admin: each member&#39;s passkeys (&#x60;1&#x60;, &#x60;2&#x60; or &#x60;\&quot;3+\&quot;&#x60;), recovery code, last active UTC day and sessions. &#x60;403&#x60; below admin, &#x60;404&#x60; outside the organization.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
      * @param org 
      * @param detail  (optional)
-     * @return ApiResponse<OrgMembers200Response?>
+     * @return ApiResponse<MemberSecurityList?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgMembersWithHttpInfo(org: kotlin.String, detail: DetailOrgMembers?) : ApiResponse<OrgMembers200Response?> = withContext(Dispatchers.IO) {
+    suspend fun orgMembersWithHttpInfo(org: kotlin.String, detail: DetailOrgMembers?) : ApiResponse<MemberSecurityList?> = withContext(Dispatchers.IO) {
         val localVariableConfig = orgMembersRequestConfig(org = org, detail = detail)
 
-        return@withContext request<Unit, OrgMembers200Response>(
+        return@withContext request<Unit, MemberSecurityList>(
             localVariableConfig
         )
     }
@@ -1520,7 +1540,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set an organization&#39;s metadata
      * &#x60;metadata&#x60; is the caller&#39;s own JSON, free-form, kept as given.  **Who:** signed in (a session or an API key).
      * @param org 
-     * @param memberMetadataRequest 
+     * @param metadataBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1530,8 +1550,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgMetadata(org: kotlin.String, memberMetadataRequest: MemberMetadataRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = orgMetadataWithHttpInfo(org = org, memberMetadataRequest = memberMetadataRequest)
+    suspend fun orgMetadata(org: kotlin.String, metadataBody: MetadataBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = orgMetadataWithHttpInfo(org = org, metadataBody = metadataBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -1553,17 +1573,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set an organization&#39;s metadata
      * &#x60;metadata&#x60; is the caller&#39;s own JSON, free-form, kept as given.  **Who:** signed in (a session or an API key).
      * @param org 
-     * @param memberMetadataRequest 
+     * @param metadataBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgMetadataWithHttpInfo(org: kotlin.String, memberMetadataRequest: MemberMetadataRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgMetadataRequestConfig(org = org, memberMetadataRequest = memberMetadataRequest)
+    suspend fun orgMetadataWithHttpInfo(org: kotlin.String, metadataBody: MetadataBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgMetadataRequestConfig(org = org, metadataBody = metadataBody)
 
-        return@withContext request<MemberMetadataRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<MetadataBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -1572,11 +1592,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgMetadata
      *
      * @param org 
-     * @param memberMetadataRequest 
+     * @param metadataBody 
      * @return RequestConfig
      */
-    fun orgMetadataRequestConfig(org: kotlin.String, memberMetadataRequest: MemberMetadataRequest) : RequestConfig<MemberMetadataRequest> {
-        val localVariableBody = memberMetadataRequest
+    fun orgMetadataRequestConfig(org: kotlin.String, metadataBody: MetadataBody) : RequestConfig<MetadataBody> {
+        val localVariableBody = metadataBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -1747,7 +1767,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set the organization&#39;s update policy
      * The owner or an admin, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app: null, policy }&#x60;; &#x60;policy: null&#x60; (or left out) drops it (the defaults). &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgPolicySetRequest 
+     * @param upgradePolicyBody 
      * @return PolicyView
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -1757,8 +1777,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgPolicySet(org: kotlin.String, orgPolicySetRequest: OrgPolicySetRequest) : PolicyView = withContext(Dispatchers.IO) {
-        val localVarResponse = orgPolicySetWithHttpInfo(org = org, orgPolicySetRequest = orgPolicySetRequest)
+    suspend fun orgPolicySet(org: kotlin.String, upgradePolicyBody: UpgradePolicyBody) : PolicyView = withContext(Dispatchers.IO) {
+        val localVarResponse = orgPolicySetWithHttpInfo(org = org, upgradePolicyBody = upgradePolicyBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as PolicyView
@@ -1780,17 +1800,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set the organization&#39;s update policy
      * The owner or an admin, with a step-up over &#x60;org:&lt;org&gt; / __set_upgrade_policy / { app: null, policy }&#x60;; &#x60;policy: null&#x60; (or left out) drops it (the defaults). &#x60;holdHours&#x60; outside 24 to 168 is &#x60;400 BAD_UPGRADE_POLICY&#x60; before the step-up. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgPolicySetRequest 
+     * @param upgradePolicyBody 
      * @return ApiResponse<PolicyView?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgPolicySetWithHttpInfo(org: kotlin.String, orgPolicySetRequest: OrgPolicySetRequest) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgPolicySetRequestConfig(org = org, orgPolicySetRequest = orgPolicySetRequest)
+    suspend fun orgPolicySetWithHttpInfo(org: kotlin.String, upgradePolicyBody: UpgradePolicyBody) : ApiResponse<PolicyView?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgPolicySetRequestConfig(org = org, upgradePolicyBody = upgradePolicyBody)
 
-        return@withContext request<OrgPolicySetRequest, PolicyView>(
+        return@withContext request<UpgradePolicyBody, PolicyView>(
             localVariableConfig
         )
     }
@@ -1799,11 +1819,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgPolicySet
      *
      * @param org 
-     * @param orgPolicySetRequest 
+     * @param upgradePolicyBody 
      * @return RequestConfig
      */
-    fun orgPolicySetRequestConfig(org: kotlin.String, orgPolicySetRequest: OrgPolicySetRequest) : RequestConfig<OrgPolicySetRequest> {
-        val localVariableBody = orgPolicySetRequest
+    fun orgPolicySetRequestConfig(org: kotlin.String, upgradePolicyBody: UpgradePolicyBody) : RequestConfig<UpgradePolicyBody> {
+        val localVariableBody = upgradePolicyBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -1824,8 +1844,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Bind a package signing key
      * The key&#39;s signature over the binding proves the organization holds it; then its &#x60;MANAGE_APPLICATION&#x60; holders upgrade the apps of packages that name &#x60;publisher&#x60;. Answers the key&#39;s binding generation now.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgPublisherRequest 
-     * @return OrgPublisher200Response
+     * @param publisherBody 
+     * @return PublisherBound
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -1834,11 +1854,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgPublisher(org: kotlin.String, orgPublisherRequest: OrgPublisherRequest) : OrgPublisher200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = orgPublisherWithHttpInfo(org = org, orgPublisherRequest = orgPublisherRequest)
+    suspend fun orgPublisher(org: kotlin.String, publisherBody: PublisherBody) : PublisherBound = withContext(Dispatchers.IO) {
+        val localVarResponse = orgPublisherWithHttpInfo(org = org, publisherBody = publisherBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgPublisher200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PublisherBound
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -1857,17 +1877,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Bind a package signing key
      * The key&#39;s signature over the binding proves the organization holds it; then its &#x60;MANAGE_APPLICATION&#x60; holders upgrade the apps of packages that name &#x60;publisher&#x60;. Answers the key&#39;s binding generation now.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgPublisherRequest 
-     * @return ApiResponse<OrgPublisher200Response?>
+     * @param publisherBody 
+     * @return ApiResponse<PublisherBound?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgPublisherWithHttpInfo(org: kotlin.String, orgPublisherRequest: OrgPublisherRequest) : ApiResponse<OrgPublisher200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgPublisherRequestConfig(org = org, orgPublisherRequest = orgPublisherRequest)
+    suspend fun orgPublisherWithHttpInfo(org: kotlin.String, publisherBody: PublisherBody) : ApiResponse<PublisherBound?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgPublisherRequestConfig(org = org, publisherBody = publisherBody)
 
-        return@withContext request<OrgPublisherRequest, OrgPublisher200Response>(
+        return@withContext request<PublisherBody, PublisherBound>(
             localVariableConfig
         )
     }
@@ -1876,11 +1896,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgPublisher
      *
      * @param org 
-     * @param orgPublisherRequest 
+     * @param publisherBody 
      * @return RequestConfig
      */
-    fun orgPublisherRequestConfig(org: kotlin.String, orgPublisherRequest: OrgPublisherRequest) : RequestConfig<OrgPublisherRequest> {
-        val localVariableBody = orgPublisherRequest
+    fun orgPublisherRequestConfig(org: kotlin.String, publisherBody: PublisherBody) : RequestConfig<PublisherBody> {
+        val localVariableBody = publisherBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -2058,8 +2078,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Rename an organization
      * The owner or an admin, to a name that fits as a new organization&#39;s would; &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgRenameRequest 
-     * @return OrgRename200Response
+     * @param renameOrgBody 
+     * @return OrgRenamed
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2068,11 +2088,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgRename(org: kotlin.String, orgRenameRequest: OrgRenameRequest) : OrgRename200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = orgRenameWithHttpInfo(org = org, orgRenameRequest = orgRenameRequest)
+    suspend fun orgRename(org: kotlin.String, renameOrgBody: RenameOrgBody) : OrgRenamed = withContext(Dispatchers.IO) {
+        val localVarResponse = orgRenameWithHttpInfo(org = org, renameOrgBody = renameOrgBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgRename200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgRenamed
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2091,17 +2111,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Rename an organization
      * The owner or an admin, to a name that fits as a new organization&#39;s would; &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgRenameRequest 
-     * @return ApiResponse<OrgRename200Response?>
+     * @param renameOrgBody 
+     * @return ApiResponse<OrgRenamed?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgRenameWithHttpInfo(org: kotlin.String, orgRenameRequest: OrgRenameRequest) : ApiResponse<OrgRename200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgRenameRequestConfig(org = org, orgRenameRequest = orgRenameRequest)
+    suspend fun orgRenameWithHttpInfo(org: kotlin.String, renameOrgBody: RenameOrgBody) : ApiResponse<OrgRenamed?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgRenameRequestConfig(org = org, renameOrgBody = renameOrgBody)
 
-        return@withContext request<OrgRenameRequest, OrgRename200Response>(
+        return@withContext request<RenameOrgBody, OrgRenamed>(
             localVariableConfig
         )
     }
@@ -2110,11 +2130,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgRename
      *
      * @param org 
-     * @param orgRenameRequest 
+     * @param renameOrgBody 
      * @return RequestConfig
      */
-    fun orgRenameRequestConfig(org: kotlin.String, orgRenameRequest: OrgRenameRequest) : RequestConfig<OrgRenameRequest> {
-        val localVariableBody = orgRenameRequest
+    fun orgRenameRequestConfig(org: kotlin.String, renameOrgBody: RenameOrgBody) : RequestConfig<RenameOrgBody> {
+        val localVariableBody = renameOrgBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -2135,7 +2155,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set the organization&#39;s backup key
      * &#x60;publicKey&#x60;: 64 lowercase hex, an X25519 public key whose private half its holder keeps (never a node). Those who upgrade all the organization&#39;s apps (org-wide &#x60;MANAGE_APPLICATION&#x60;), where owners upgrade apps; replaces the key before. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgSetBackupKeyRequest 
+     * @param backupKeyBody 
      * @return BackupKeyAnswer
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -2145,8 +2165,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgSetBackupKey(org: kotlin.String, orgSetBackupKeyRequest: OrgSetBackupKeyRequest) : BackupKeyAnswer = withContext(Dispatchers.IO) {
-        val localVarResponse = orgSetBackupKeyWithHttpInfo(org = org, orgSetBackupKeyRequest = orgSetBackupKeyRequest)
+    suspend fun orgSetBackupKey(org: kotlin.String, backupKeyBody: BackupKeyBody) : BackupKeyAnswer = withContext(Dispatchers.IO) {
+        val localVarResponse = orgSetBackupKeyWithHttpInfo(org = org, backupKeyBody = backupKeyBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as BackupKeyAnswer
@@ -2168,17 +2188,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set the organization&#39;s backup key
      * &#x60;publicKey&#x60;: 64 lowercase hex, an X25519 public key whose private half its holder keeps (never a node). Those who upgrade all the organization&#39;s apps (org-wide &#x60;MANAGE_APPLICATION&#x60;), where owners upgrade apps; replaces the key before. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgSetBackupKeyRequest 
+     * @param backupKeyBody 
      * @return ApiResponse<BackupKeyAnswer?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgSetBackupKeyWithHttpInfo(org: kotlin.String, orgSetBackupKeyRequest: OrgSetBackupKeyRequest) : ApiResponse<BackupKeyAnswer?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgSetBackupKeyRequestConfig(org = org, orgSetBackupKeyRequest = orgSetBackupKeyRequest)
+    suspend fun orgSetBackupKeyWithHttpInfo(org: kotlin.String, backupKeyBody: BackupKeyBody) : ApiResponse<BackupKeyAnswer?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgSetBackupKeyRequestConfig(org = org, backupKeyBody = backupKeyBody)
 
-        return@withContext request<OrgSetBackupKeyRequest, BackupKeyAnswer>(
+        return@withContext request<BackupKeyBody, BackupKeyAnswer>(
             localVariableConfig
         )
     }
@@ -2187,11 +2207,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgSetBackupKey
      *
      * @param org 
-     * @param orgSetBackupKeyRequest 
+     * @param backupKeyBody 
      * @return RequestConfig
      */
-    fun orgSetBackupKeyRequestConfig(org: kotlin.String, orgSetBackupKeyRequest: OrgSetBackupKeyRequest) : RequestConfig<OrgSetBackupKeyRequest> {
-        val localVariableBody = orgSetBackupKeyRequest
+    fun orgSetBackupKeyRequestConfig(org: kotlin.String, backupKeyBody: BackupKeyBody) : RequestConfig<BackupKeyBody> {
+        val localVariableBody = backupKeyBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -2212,7 +2232,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set a member&#39;s role
      * &#x60;owner&#x60; moves ownership. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgSetMemberRequest 
+     * @param memberBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -2222,8 +2242,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgSetMember(org: kotlin.String, orgSetMemberRequest: OrgSetMemberRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = orgSetMemberWithHttpInfo(org = org, orgSetMemberRequest = orgSetMemberRequest)
+    suspend fun orgSetMember(org: kotlin.String, memberBody: MemberBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = orgSetMemberWithHttpInfo(org = org, memberBody = memberBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -2245,17 +2265,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Set a member&#39;s role
      * &#x60;owner&#x60; moves ownership. &#x60;412&#x60; first.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgSetMemberRequest 
+     * @param memberBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgSetMemberWithHttpInfo(org: kotlin.String, orgSetMemberRequest: OrgSetMemberRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgSetMemberRequestConfig(org = org, orgSetMemberRequest = orgSetMemberRequest)
+    suspend fun orgSetMemberWithHttpInfo(org: kotlin.String, memberBody: MemberBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgSetMemberRequestConfig(org = org, memberBody = memberBody)
 
-        return@withContext request<OrgSetMemberRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<MemberBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -2264,11 +2284,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgSetMember
      *
      * @param org 
-     * @param orgSetMemberRequest 
+     * @param memberBody 
      * @return RequestConfig
      */
-    fun orgSetMemberRequestConfig(org: kotlin.String, orgSetMemberRequest: OrgSetMemberRequest) : RequestConfig<OrgSetMemberRequest> {
-        val localVariableBody = orgSetMemberRequest
+    fun orgSetMemberRequestConfig(org: kotlin.String, memberBody: MemberBody) : RequestConfig<MemberBody> {
+        val localVariableBody = memberBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -2289,8 +2309,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Change the organization&#39;s settings
      * &#x60;allowGuests&#x60; (default on): whether its instances take guests, accounts named on one instance (an &#x60;account&#x60; grant) that are not members, where the instance&#39;s release allows them too (&#x60;guests: allowed&#x60; in its signed manifest); off, every guest stops reaching its instances at their next request. &#x60;allowPublicLinks&#x60; (default on): whether its instances&#39; public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor&#39;s next call. A setting left out is kept; none is &#x60;400&#x60;. The owner or an admin; &#x60;412&#x60; first. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.33.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgSettingsRequest 
-     * @return OrgSettings200Response
+     * @param orgSettingsBody 
+     * @return OrgSettingsSet
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2299,11 +2319,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgSettings(org: kotlin.String, orgSettingsRequest: OrgSettingsRequest) : OrgSettings200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = orgSettingsWithHttpInfo(org = org, orgSettingsRequest = orgSettingsRequest)
+    suspend fun orgSettings(org: kotlin.String, orgSettingsBody: OrgSettingsBody) : OrgSettingsSet = withContext(Dispatchers.IO) {
+        val localVarResponse = orgSettingsWithHttpInfo(org = org, orgSettingsBody = orgSettingsBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgSettings200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgSettingsSet
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2322,17 +2342,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Change the organization&#39;s settings
      * &#x60;allowGuests&#x60; (default on): whether its instances take guests, accounts named on one instance (an &#x60;account&#x60; grant) that are not members, where the instance&#39;s release allows them too (&#x60;guests: allowed&#x60; in its signed manifest); off, every guest stops reaching its instances at their next request. &#x60;allowPublicLinks&#x60; (default on): whether its instances&#39; public links admit visitors; off, creating one is refused and existing ones admit nobody at the visitor&#39;s next call. A setting left out is kept; none is &#x60;400&#x60;. The owner or an admin; &#x60;412&#x60; first. &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.33.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgSettingsRequest 
-     * @return ApiResponse<OrgSettings200Response?>
+     * @param orgSettingsBody 
+     * @return ApiResponse<OrgSettingsSet?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgSettingsWithHttpInfo(org: kotlin.String, orgSettingsRequest: OrgSettingsRequest) : ApiResponse<OrgSettings200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgSettingsRequestConfig(org = org, orgSettingsRequest = orgSettingsRequest)
+    suspend fun orgSettingsWithHttpInfo(org: kotlin.String, orgSettingsBody: OrgSettingsBody) : ApiResponse<OrgSettingsSet?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgSettingsRequestConfig(org = org, orgSettingsBody = orgSettingsBody)
 
-        return@withContext request<OrgSettingsRequest, OrgSettings200Response>(
+        return@withContext request<OrgSettingsBody, OrgSettingsSet>(
             localVariableConfig
         )
     }
@@ -2341,11 +2361,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgSettings
      *
      * @param org 
-     * @param orgSettingsRequest 
+     * @param orgSettingsBody 
      * @return RequestConfig
      */
-    fun orgSettingsRequestConfig(org: kotlin.String, orgSettingsRequest: OrgSettingsRequest) : RequestConfig<OrgSettingsRequest> {
-        val localVariableBody = orgSettingsRequest
+    fun orgSettingsRequestConfig(org: kotlin.String, orgSettingsBody: OrgSettingsBody) : RequestConfig<OrgSettingsBody> {
+        val localVariableBody = orgSettingsBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -2367,7 +2387,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * For its owner and admins (&#x60;403&#x60; to other members, &#x60;404&#x60; to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as &#x60;GET /apps/{app}/update&#x60; answers it with the app&#39;s &#x60;name&#x60;; &#x60;policy&#x60; is the organization&#39;s; &#x60;next&#x60; is the &#x60;after&#x60; of the next page, &#x60;null&#x60; at the end.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
      * @param org 
      * @param after  (optional)
-     * @return OrgUpdates200Response
+     * @return OrgUpdates
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2376,11 +2396,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgUpdates(org: kotlin.String, after: kotlin.String? = null) : OrgUpdates200Response = withContext(Dispatchers.IO) {
+    suspend fun orgUpdates(org: kotlin.String, after: kotlin.String? = null) : OrgUpdates = withContext(Dispatchers.IO) {
         val localVarResponse = orgUpdatesWithHttpInfo(org = org, after = after)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgUpdates200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgUpdates
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2400,16 +2420,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * For its owner and admins (&#x60;403&#x60; to other members, &#x60;404&#x60; to anyone else): its apps, by id, at most 50 read per page, that have an update available or a first approval waiting, each as &#x60;GET /apps/{app}/update&#x60; answers it with the app&#39;s &#x60;name&#x60;; &#x60;policy&#x60; is the organization&#39;s; &#x60;next&#x60; is the &#x60;after&#x60; of the next page, &#x60;null&#x60; at the end.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
      * @param org 
      * @param after  (optional)
-     * @return ApiResponse<OrgUpdates200Response?>
+     * @return ApiResponse<OrgUpdates?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgUpdatesWithHttpInfo(org: kotlin.String, after: kotlin.String?) : ApiResponse<OrgUpdates200Response?> = withContext(Dispatchers.IO) {
+    suspend fun orgUpdatesWithHttpInfo(org: kotlin.String, after: kotlin.String?) : ApiResponse<OrgUpdates?> = withContext(Dispatchers.IO) {
         val localVariableConfig = orgUpdatesRequestConfig(org = org, after = after)
 
-        return@withContext request<Unit, OrgUpdates200Response>(
+        return@withContext request<Unit, OrgUpdates>(
             localVariableConfig
         )
     }
@@ -2447,7 +2467,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Start an upgrade run
      * Upgrade every app of the organization (or of &#x60;team&#x60;, with &#x60;cascade&#x60; its subtree) that runs &#x60;package&#x60; to &#x60;version&#x60;, with one passkey assertion over the whole run; the organization&#39;s owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds &#x60;MANAGE_APPLICATION&#x60; there). Each app is upgraded as &#x60;POST /apps/{app}/upgrade&#x60; would; &#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgUpgradeRequest 
+     * @param orgUpgradeBody 
      * @return UpgradeRun
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -2457,8 +2477,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgUpgrade(org: kotlin.String, orgUpgradeRequest: OrgUpgradeRequest) : UpgradeRun = withContext(Dispatchers.IO) {
-        val localVarResponse = orgUpgradeWithHttpInfo(org = org, orgUpgradeRequest = orgUpgradeRequest)
+    suspend fun orgUpgrade(org: kotlin.String, orgUpgradeBody: OrgUpgradeBody) : UpgradeRun = withContext(Dispatchers.IO) {
+        val localVarResponse = orgUpgradeWithHttpInfo(org = org, orgUpgradeBody = orgUpgradeBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as UpgradeRun
@@ -2480,17 +2500,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Start an upgrade run
      * Upgrade every app of the organization (or of &#x60;team&#x60;, with &#x60;cascade&#x60; its subtree) that runs &#x60;package&#x60; to &#x60;version&#x60;, with one passkey assertion over the whole run; the organization&#39;s owner or an admin (on a cluster still below 1.0.0-rc.32, whoever holds &#x60;MANAGE_APPLICATION&#x60; there). Each app is upgraded as &#x60;POST /apps/{app}/upgrade&#x60; would; &#x60;GET /orgs/{org}/upgrades/{run}&#x60; follows it.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param orgUpgradeRequest 
+     * @param orgUpgradeBody 
      * @return ApiResponse<UpgradeRun?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgUpgradeWithHttpInfo(org: kotlin.String, orgUpgradeRequest: OrgUpgradeRequest) : ApiResponse<UpgradeRun?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = orgUpgradeRequestConfig(org = org, orgUpgradeRequest = orgUpgradeRequest)
+    suspend fun orgUpgradeWithHttpInfo(org: kotlin.String, orgUpgradeBody: OrgUpgradeBody) : ApiResponse<UpgradeRun?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = orgUpgradeRequestConfig(org = org, orgUpgradeBody = orgUpgradeBody)
 
-        return@withContext request<OrgUpgradeRequest, UpgradeRun>(
+        return@withContext request<OrgUpgradeBody, UpgradeRun>(
             localVariableConfig
         )
     }
@@ -2499,11 +2519,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation orgUpgrade
      *
      * @param org 
-     * @param orgUpgradeRequest 
+     * @param orgUpgradeBody 
      * @return RequestConfig
      */
-    fun orgUpgradeRequestConfig(org: kotlin.String, orgUpgradeRequest: OrgUpgradeRequest) : RequestConfig<OrgUpgradeRequest> {
-        val localVariableBody = orgUpgradeRequest
+    fun orgUpgradeRequestConfig(org: kotlin.String, orgUpgradeBody: OrgUpgradeBody) : RequestConfig<OrgUpgradeBody> {
+        val localVariableBody = orgUpgradeBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -2680,7 +2700,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * An organization&#39;s usage
      * An admin: how many apps the organization develops, what their runs used today (decimal strings) and the cluster&#39;s quotas; a member gets &#x60;403&#x60;.  **Who:** signed in (a session or an API key).
      * @param org 
-     * @return OrgUsage200Response
+     * @return OrgUsage
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2689,11 +2709,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun orgUsage(org: kotlin.String) : OrgUsage200Response = withContext(Dispatchers.IO) {
+    suspend fun orgUsage(org: kotlin.String) : OrgUsage = withContext(Dispatchers.IO) {
         val localVarResponse = orgUsageWithHttpInfo(org = org)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgUsage200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OrgUsage
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2712,16 +2732,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * An organization&#39;s usage
      * An admin: how many apps the organization develops, what their runs used today (decimal strings) and the cluster&#39;s quotas; a member gets &#x60;403&#x60;.  **Who:** signed in (a session or an API key).
      * @param org 
-     * @return ApiResponse<OrgUsage200Response?>
+     * @return ApiResponse<OrgUsage?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun orgUsageWithHttpInfo(org: kotlin.String) : ApiResponse<OrgUsage200Response?> = withContext(Dispatchers.IO) {
+    suspend fun orgUsageWithHttpInfo(org: kotlin.String) : ApiResponse<OrgUsage?> = withContext(Dispatchers.IO) {
         val localVariableConfig = orgUsageRequestConfig(org = org)
 
-        return@withContext request<Unit, OrgUsage200Response>(
+        return@withContext request<Unit, OrgUsage>(
             localVariableConfig
         )
     }
@@ -2754,7 +2774,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * An upgrade run, by an owner or admin of the publisher organization, over the apps that run the package in the organizations they are an owner or admin of (the publisher&#39;s own included), never another organization&#39;s: those are upgraded by their own owner and admins. On a cluster still below 1.0.0-rc.32, as before: by the publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders, over every instance its publisher upgrades.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param `package` 
-     * @param publisherUpgradeRequest 
+     * @param publisherUpgradeBody 
      * @return UpgradeRun
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -2764,8 +2784,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun publisherUpgrade(org: kotlin.String, `package`: kotlin.String, publisherUpgradeRequest: PublisherUpgradeRequest) : UpgradeRun = withContext(Dispatchers.IO) {
-        val localVarResponse = publisherUpgradeWithHttpInfo(org = org, `package` = `package`, publisherUpgradeRequest = publisherUpgradeRequest)
+    suspend fun publisherUpgrade(org: kotlin.String, `package`: kotlin.String, publisherUpgradeBody: PublisherUpgradeBody) : UpgradeRun = withContext(Dispatchers.IO) {
+        val localVarResponse = publisherUpgradeWithHttpInfo(org = org, `package` = `package`, publisherUpgradeBody = publisherUpgradeBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as UpgradeRun
@@ -2788,17 +2808,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * An upgrade run, by an owner or admin of the publisher organization, over the apps that run the package in the organizations they are an owner or admin of (the publisher&#39;s own included), never another organization&#39;s: those are upgraded by their own owner and admins. On a cluster still below 1.0.0-rc.32, as before: by the publisher&#39;s &#x60;MANAGE_APPLICATION&#x60; holders, over every instance its publisher upgrades.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param `package` 
-     * @param publisherUpgradeRequest 
+     * @param publisherUpgradeBody 
      * @return ApiResponse<UpgradeRun?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun publisherUpgradeWithHttpInfo(org: kotlin.String, `package`: kotlin.String, publisherUpgradeRequest: PublisherUpgradeRequest) : ApiResponse<UpgradeRun?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = publisherUpgradeRequestConfig(org = org, `package` = `package`, publisherUpgradeRequest = publisherUpgradeRequest)
+    suspend fun publisherUpgradeWithHttpInfo(org: kotlin.String, `package`: kotlin.String, publisherUpgradeBody: PublisherUpgradeBody) : ApiResponse<UpgradeRun?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = publisherUpgradeRequestConfig(org = org, `package` = `package`, publisherUpgradeBody = publisherUpgradeBody)
 
-        return@withContext request<PublisherUpgradeRequest, UpgradeRun>(
+        return@withContext request<PublisherUpgradeBody, UpgradeRun>(
             localVariableConfig
         )
     }
@@ -2808,11 +2828,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      *
      * @param org 
      * @param `package` 
-     * @param publisherUpgradeRequest 
+     * @param publisherUpgradeBody 
      * @return RequestConfig
      */
-    fun publisherUpgradeRequestConfig(org: kotlin.String, `package`: kotlin.String, publisherUpgradeRequest: PublisherUpgradeRequest) : RequestConfig<PublisherUpgradeRequest> {
-        val localVariableBody = publisherUpgradeRequest
+    fun publisherUpgradeRequestConfig(org: kotlin.String, `package`: kotlin.String, publisherUpgradeBody: PublisherUpgradeBody) : RequestConfig<PublisherUpgradeBody> {
+        val localVariableBody = publisherUpgradeBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -2911,7 +2931,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * The account that started it, once &#x60;readyAt&#x60; passed; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param confirmOnly May be absent. (optional)
-     * @return RecoveryFinish200Response
+     * @return RecoveryFinished
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -2920,11 +2940,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun recoveryFinish(org: kotlin.String, confirmOnly: ConfirmOnly? = null) : RecoveryFinish200Response = withContext(Dispatchers.IO) {
+    suspend fun recoveryFinish(org: kotlin.String, confirmOnly: ConfirmOnly? = null) : RecoveryFinished = withContext(Dispatchers.IO) {
         val localVarResponse = recoveryFinishWithHttpInfo(org = org, confirmOnly = confirmOnly)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as RecoveryFinish200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RecoveryFinished
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -2944,16 +2964,16 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * The account that started it, once &#x60;readyAt&#x60; passed; &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param confirmOnly May be absent. (optional)
-     * @return ApiResponse<RecoveryFinish200Response?>
+     * @return ApiResponse<RecoveryFinished?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun recoveryFinishWithHttpInfo(org: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<RecoveryFinish200Response?> = withContext(Dispatchers.IO) {
+    suspend fun recoveryFinishWithHttpInfo(org: kotlin.String, confirmOnly: ConfirmOnly?) : ApiResponse<RecoveryFinished?> = withContext(Dispatchers.IO) {
         val localVariableConfig = recoveryFinishRequestConfig(org = org, confirmOnly = confirmOnly)
 
-        return@withContext request<ConfirmOnly, RecoveryFinish200Response>(
+        return@withContext request<ConfirmOnly, RecoveryFinished>(
             localVariableConfig
         )
     }
@@ -2985,9 +3005,9 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/recovery
      * Set the organization&#39;s recovery key
-     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first. An organization that owns a deployment keeps its key: removing it is &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param recoverySetRequest 
+     * @param recoveryKeyBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -2997,8 +3017,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun recoverySet(org: kotlin.String, recoverySetRequest: RecoverySetRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = recoverySetWithHttpInfo(org = org, recoverySetRequest = recoverySetRequest)
+    suspend fun recoverySet(org: kotlin.String, recoveryKeyBody: RecoveryKeyBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = recoverySetWithHttpInfo(org = org, recoveryKeyBody = recoveryKeyBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -3018,19 +3038,19 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
     /**
      * POST /orgs/{org}/recovery
      * Set the organization&#39;s recovery key
-     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * Set or rotate it (&#x60;publicKey&#x60;: base64url Ed25519 public key), or remove it (&#x60;publicKey: null&#x60;; an absent &#x60;publicKey&#x60; removes it too); the owner; cancels a recovery under way. &#x60;412&#x60; first. An organization that owns a deployment keeps its key: removing it is &#x60;409 RECOVERY_KEY_REQUIRED&#x60; before the step-up from cluster version 1.0.0-rc.38 (rotating stays allowed).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
-     * @param recoverySetRequest 
+     * @param recoveryKeyBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun recoverySetWithHttpInfo(org: kotlin.String, recoverySetRequest: RecoverySetRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = recoverySetRequestConfig(org = org, recoverySetRequest = recoverySetRequest)
+    suspend fun recoverySetWithHttpInfo(org: kotlin.String, recoveryKeyBody: RecoveryKeyBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = recoverySetRequestConfig(org = org, recoveryKeyBody = recoveryKeyBody)
 
-        return@withContext request<RecoverySetRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<RecoveryKeyBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -3039,11 +3059,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation recoverySet
      *
      * @param org 
-     * @param recoverySetRequest 
+     * @param recoveryKeyBody 
      * @return RequestConfig
      */
-    fun recoverySetRequestConfig(org: kotlin.String, recoverySetRequest: RecoverySetRequest) : RequestConfig<RecoverySetRequest> {
-        val localVariableBody = recoverySetRequest
+    fun recoverySetRequestConfig(org: kotlin.String, recoveryKeyBody: RecoveryKeyBody) : RequestConfig<RecoveryKeyBody> {
+        val localVariableBody = recoveryKeyBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -3064,8 +3084,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Start an organization recovery
      * The recovery seed&#39;s signature handing the organization to the caller.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
      * @param org 
-     * @param recoveryStartRequest 
-     * @return RecoveryStart200Response
+     * @param recoveryStartBody 
+     * @return RecoveryStarted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3074,11 +3094,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun recoveryStart(org: kotlin.String, recoveryStartRequest: RecoveryStartRequest) : RecoveryStart200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = recoveryStartWithHttpInfo(org = org, recoveryStartRequest = recoveryStartRequest)
+    suspend fun recoveryStart(org: kotlin.String, recoveryStartBody: RecoveryStartBody) : RecoveryStarted = withContext(Dispatchers.IO) {
+        val localVarResponse = recoveryStartWithHttpInfo(org = org, recoveryStartBody = recoveryStartBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as RecoveryStart200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as RecoveryStarted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3097,17 +3117,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Start an organization recovery
      * The recovery seed&#39;s signature handing the organization to the caller.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
      * @param org 
-     * @param recoveryStartRequest 
-     * @return ApiResponse<RecoveryStart200Response?>
+     * @param recoveryStartBody 
+     * @return ApiResponse<RecoveryStarted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun recoveryStartWithHttpInfo(org: kotlin.String, recoveryStartRequest: RecoveryStartRequest) : ApiResponse<RecoveryStart200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = recoveryStartRequestConfig(org = org, recoveryStartRequest = recoveryStartRequest)
+    suspend fun recoveryStartWithHttpInfo(org: kotlin.String, recoveryStartBody: RecoveryStartBody) : ApiResponse<RecoveryStarted?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = recoveryStartRequestConfig(org = org, recoveryStartBody = recoveryStartBody)
 
-        return@withContext request<RecoveryStartRequest, RecoveryStart200Response>(
+        return@withContext request<RecoveryStartBody, RecoveryStarted>(
             localVariableConfig
         )
     }
@@ -3116,11 +3136,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation recoveryStart
      *
      * @param org 
-     * @param recoveryStartRequest 
+     * @param recoveryStartBody 
      * @return RequestConfig
      */
-    fun recoveryStartRequestConfig(org: kotlin.String, recoveryStartRequest: RecoveryStartRequest) : RequestConfig<RecoveryStartRequest> {
-        val localVariableBody = recoveryStartRequest
+    fun recoveryStartRequestConfig(org: kotlin.String, recoveryStartBody: RecoveryStartBody) : RequestConfig<RecoveryStartBody> {
+        val localVariableBody = recoveryStartBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -3141,8 +3161,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Create a team
      * An admin, a lead of &#x60;parent&#x60;, a member with &#x60;CREATE_TEAM&#x60; at the top, or a member who holds &#x60;CREATE_CHILD_TEAM&#x60; under &#x60;parent&#x60; (a restricted team only). A package-bound session: only its own package&#39;s teams (its app team and the teams below it): &#x60;parent&#x60; one of them.  **Who:** a passkey session (an API key is refused).
      * @param org 
-     * @param teamCreateRequest 
-     * @return TeamCreate200Response
+     * @param teamBody 
+     * @return TeamCreated
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3151,11 +3171,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun teamCreate(org: kotlin.String, teamCreateRequest: TeamCreateRequest) : TeamCreate200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = teamCreateWithHttpInfo(org = org, teamCreateRequest = teamCreateRequest)
+    suspend fun teamCreate(org: kotlin.String, teamBody: TeamBody) : TeamCreated = withContext(Dispatchers.IO) {
+        val localVarResponse = teamCreateWithHttpInfo(org = org, teamBody = teamBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as TeamCreate200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as TeamCreated
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3174,17 +3194,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Create a team
      * An admin, a lead of &#x60;parent&#x60;, a member with &#x60;CREATE_TEAM&#x60; at the top, or a member who holds &#x60;CREATE_CHILD_TEAM&#x60; under &#x60;parent&#x60; (a restricted team only). A package-bound session: only its own package&#39;s teams (its app team and the teams below it): &#x60;parent&#x60; one of them.  **Who:** a passkey session (an API key is refused).
      * @param org 
-     * @param teamCreateRequest 
-     * @return ApiResponse<TeamCreate200Response?>
+     * @param teamBody 
+     * @return ApiResponse<TeamCreated?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun teamCreateWithHttpInfo(org: kotlin.String, teamCreateRequest: TeamCreateRequest) : ApiResponse<TeamCreate200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = teamCreateRequestConfig(org = org, teamCreateRequest = teamCreateRequest)
+    suspend fun teamCreateWithHttpInfo(org: kotlin.String, teamBody: TeamBody) : ApiResponse<TeamCreated?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = teamCreateRequestConfig(org = org, teamBody = teamBody)
 
-        return@withContext request<TeamCreateRequest, TeamCreate200Response>(
+        return@withContext request<TeamBody, TeamCreated>(
             localVariableConfig
         )
     }
@@ -3193,11 +3213,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * To obtain the request config of the operation teamCreate
      *
      * @param org 
-     * @param teamCreateRequest 
+     * @param teamBody 
      * @return RequestConfig
      */
-    fun teamCreateRequestConfig(org: kotlin.String, teamCreateRequest: TeamCreateRequest) : RequestConfig<TeamCreateRequest> {
-        val localVariableBody = teamCreateRequest
+    fun teamCreateRequestConfig(org: kotlin.String, teamBody: TeamBody) : RequestConfig<TeamBody> {
+        val localVariableBody = teamBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -3219,8 +3239,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (&#x60;apps&#x60;), unless &#x60;keepApps: true&#x60;: then they stay (&#x60;keptApps&#x60;), each without those teams&#39; grants and with its other grants (named members, guests, &#x60;anyone&#x60;, public links), or, with none left, an empty grant list (only its owner reaches it); &#x60;keepApps&#x60; needs cluster version 1.0.0-rc.33 (&#x60;409 FEATURE_NOT_ACTIVE&#x60;). An instance another team or the organization admits only loses the deleted teams&#39; grants either way. With such instances, the passkey is over &#x60;{ team, apps }&#x60; (plus &#x60;keepApps: true&#x60; when set), and the &#x60;412&#x60;&#39;s details list &#x60;apps&#x60; and &#x60;keepApps&#x60;, so the approver sees what happens to them. A package-bound session: only its own package&#39;s teams (its app team and the teams below it): a team below its app team whose apps are all its package&#39;s.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param team 
-     * @param teamDeleteRequest May be absent. (optional)
-     * @return TeamDelete200Response
+     * @param teamDeleteBody May be absent. (optional)
+     * @return TeamDeleted
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      * @throws UnsupportedOperationException If the API returns an informational or redirection response
@@ -3229,11 +3249,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun teamDelete(org: kotlin.String, team: kotlin.String, teamDeleteRequest: TeamDeleteRequest? = null) : TeamDelete200Response = withContext(Dispatchers.IO) {
-        val localVarResponse = teamDeleteWithHttpInfo(org = org, team = team, teamDeleteRequest = teamDeleteRequest)
+    suspend fun teamDelete(org: kotlin.String, team: kotlin.String, teamDeleteBody: TeamDeleteBody? = null) : TeamDeleted = withContext(Dispatchers.IO) {
+        val localVarResponse = teamDeleteWithHttpInfo(org = org, team = team, teamDeleteBody = teamDeleteBody)
 
         return@withContext when (localVarResponse.responseType) {
-            ResponseType.Success -> (localVarResponse as Success<*>).data as TeamDelete200Response
+            ResponseType.Success -> (localVarResponse as Success<*>).data as TeamDeleted
             ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
             ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
             ResponseType.ClientError -> {
@@ -3253,17 +3273,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (&#x60;apps&#x60;), unless &#x60;keepApps: true&#x60;: then they stay (&#x60;keptApps&#x60;), each without those teams&#39; grants and with its other grants (named members, guests, &#x60;anyone&#x60;, public links), or, with none left, an empty grant list (only its owner reaches it); &#x60;keepApps&#x60; needs cluster version 1.0.0-rc.33 (&#x60;409 FEATURE_NOT_ACTIVE&#x60;). An instance another team or the organization admits only loses the deleted teams&#39; grants either way. With such instances, the passkey is over &#x60;{ team, apps }&#x60; (plus &#x60;keepApps: true&#x60; when set), and the &#x60;412&#x60;&#39;s details list &#x60;apps&#x60; and &#x60;keepApps&#x60;, so the approver sees what happens to them. A package-bound session: only its own package&#39;s teams (its app team and the teams below it): a team below its app team whose apps are all its package&#39;s.  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param team 
-     * @param teamDeleteRequest May be absent. (optional)
-     * @return ApiResponse<TeamDelete200Response?>
+     * @param teamDeleteBody May be absent. (optional)
+     * @return ApiResponse<TeamDeleted?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun teamDeleteWithHttpInfo(org: kotlin.String, team: kotlin.String, teamDeleteRequest: TeamDeleteRequest?) : ApiResponse<TeamDelete200Response?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = teamDeleteRequestConfig(org = org, team = team, teamDeleteRequest = teamDeleteRequest)
+    suspend fun teamDeleteWithHttpInfo(org: kotlin.String, team: kotlin.String, teamDeleteBody: TeamDeleteBody?) : ApiResponse<TeamDeleted?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = teamDeleteRequestConfig(org = org, team = team, teamDeleteBody = teamDeleteBody)
 
-        return@withContext request<TeamDeleteRequest, TeamDelete200Response>(
+        return@withContext request<TeamDeleteBody, TeamDeleted>(
             localVariableConfig
         )
     }
@@ -3273,11 +3293,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      *
      * @param org 
      * @param team 
-     * @param teamDeleteRequest May be absent. (optional)
+     * @param teamDeleteBody May be absent. (optional)
      * @return RequestConfig
      */
-    fun teamDeleteRequestConfig(org: kotlin.String, team: kotlin.String, teamDeleteRequest: TeamDeleteRequest?) : RequestConfig<TeamDeleteRequest> {
-        val localVariableBody = teamDeleteRequest
+    fun teamDeleteRequestConfig(org: kotlin.String, team: kotlin.String, teamDeleteBody: TeamDeleteBody?) : RequestConfig<TeamDeleteBody> {
+        val localVariableBody = teamDeleteBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -3458,7 +3478,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * A package-bound session: only its own package&#39;s teams (its app team and the teams below it).  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param team 
-     * @param teamSetMemberRequest 
+     * @param teamMemberBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -3468,8 +3488,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun teamSetMember(org: kotlin.String, team: kotlin.String, teamSetMemberRequest: TeamSetMemberRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = teamSetMemberWithHttpInfo(org = org, team = team, teamSetMemberRequest = teamSetMemberRequest)
+    suspend fun teamSetMember(org: kotlin.String, team: kotlin.String, teamMemberBody: TeamMemberBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = teamSetMemberWithHttpInfo(org = org, team = team, teamMemberBody = teamMemberBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -3492,17 +3512,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * A package-bound session: only its own package&#39;s teams (its app team and the teams below it).  **Who:** a passkey session (an API key is refused). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param org 
      * @param team 
-     * @param teamSetMemberRequest 
+     * @param teamMemberBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun teamSetMemberWithHttpInfo(org: kotlin.String, team: kotlin.String, teamSetMemberRequest: TeamSetMemberRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = teamSetMemberRequestConfig(org = org, team = team, teamSetMemberRequest = teamSetMemberRequest)
+    suspend fun teamSetMemberWithHttpInfo(org: kotlin.String, team: kotlin.String, teamMemberBody: TeamMemberBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = teamSetMemberRequestConfig(org = org, team = team, teamMemberBody = teamMemberBody)
 
-        return@withContext request<TeamSetMemberRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<TeamMemberBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -3512,11 +3532,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      *
      * @param org 
      * @param team 
-     * @param teamSetMemberRequest 
+     * @param teamMemberBody 
      * @return RequestConfig
      */
-    fun teamSetMemberRequestConfig(org: kotlin.String, team: kotlin.String, teamSetMemberRequest: TeamSetMemberRequest) : RequestConfig<TeamSetMemberRequest> {
-        val localVariableBody = teamSetMemberRequest
+    fun teamSetMemberRequestConfig(org: kotlin.String, team: kotlin.String, teamMemberBody: TeamMemberBody) : RequestConfig<TeamMemberBody> {
+        val localVariableBody = teamMemberBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"
@@ -3538,7 +3558,7 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Rename, open or restrict, move under another parent, or set its metadata (the caller&#39;s own JSON, free-form, kept as given). &#x60;parent&#x60; absent leaves the team where it is; &#x60;parent: null&#x60; (an explicit null) moves it to the top; a team id moves it under that team. A package-bound session: only its own package&#39;s teams (its app team and the teams below it): a team below its app team, moved only within.  **Who:** a passkey session (an API key is refused).
      * @param org 
      * @param team 
-     * @param teamUpdateRequest 
+     * @param teamUpdateBody 
      * @return kotlinx.serialization.json.JsonObject
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
@@ -3548,8 +3568,8 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
-    suspend fun teamUpdate(org: kotlin.String, team: kotlin.String, teamUpdateRequest: TeamUpdateRequest) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
-        val localVarResponse = teamUpdateWithHttpInfo(org = org, team = team, teamUpdateRequest = teamUpdateRequest)
+    suspend fun teamUpdate(org: kotlin.String, team: kotlin.String, teamUpdateBody: TeamUpdateBody) : kotlinx.serialization.json.JsonObject = withContext(Dispatchers.IO) {
+        val localVarResponse = teamUpdateWithHttpInfo(org = org, team = team, teamUpdateBody = teamUpdateBody)
 
         return@withContext when (localVarResponse.responseType) {
             ResponseType.Success -> (localVarResponse as Success<*>).data as kotlinx.serialization.json.JsonObject
@@ -3572,17 +3592,17 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      * Rename, open or restrict, move under another parent, or set its metadata (the caller&#39;s own JSON, free-form, kept as given). &#x60;parent&#x60; absent leaves the team where it is; &#x60;parent: null&#x60; (an explicit null) moves it to the top; a team id moves it under that team. A package-bound session: only its own package&#39;s teams (its app team and the teams below it): a team below its app team, moved only within.  **Who:** a passkey session (an API key is refused).
      * @param org 
      * @param team 
-     * @param teamUpdateRequest 
+     * @param teamUpdateBody 
      * @return ApiResponse<kotlinx.serialization.json.JsonObject?>
      * @throws IllegalStateException If the request is not correctly configured
      * @throws IOException Rethrows the OkHttp execute method exception
      */
     @Suppress("UNCHECKED_CAST")
     @Throws(IllegalStateException::class, IOException::class)
-    suspend fun teamUpdateWithHttpInfo(org: kotlin.String, team: kotlin.String, teamUpdateRequest: TeamUpdateRequest) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
-        val localVariableConfig = teamUpdateRequestConfig(org = org, team = team, teamUpdateRequest = teamUpdateRequest)
+    suspend fun teamUpdateWithHttpInfo(org: kotlin.String, team: kotlin.String, teamUpdateBody: TeamUpdateBody) : ApiResponse<kotlinx.serialization.json.JsonObject?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = teamUpdateRequestConfig(org = org, team = team, teamUpdateBody = teamUpdateBody)
 
-        return@withContext request<TeamUpdateRequest, kotlinx.serialization.json.JsonObject>(
+        return@withContext request<TeamUpdateBody, kotlinx.serialization.json.JsonObject>(
             localVariableConfig
         )
     }
@@ -3592,11 +3612,11 @@ open class OrganizationsApi(basePath: kotlin.String = defaultBasePath, client: C
      *
      * @param org 
      * @param team 
-     * @param teamUpdateRequest 
+     * @param teamUpdateBody 
      * @return RequestConfig
      */
-    fun teamUpdateRequestConfig(org: kotlin.String, team: kotlin.String, teamUpdateRequest: TeamUpdateRequest) : RequestConfig<TeamUpdateRequest> {
-        val localVariableBody = teamUpdateRequest
+    fun teamUpdateRequestConfig(org: kotlin.String, team: kotlin.String, teamUpdateBody: TeamUpdateBody) : RequestConfig<TeamUpdateBody> {
+        val localVariableBody = teamUpdateBody
         val localVariableQuery: MultiValueMap = mutableMapOf()
         val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
         localVariableHeaders["Content-Type"] = "application/json"

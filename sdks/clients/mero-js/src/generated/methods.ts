@@ -102,7 +102,7 @@ export function createRoutes(api: RouteClient) {
        *
        * `POST /apps/{app}/intents` (`intents`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * Answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI: give `confirm` (here or on the client); the passkey must verify the user `required`.
-       * Retried on `503` (D70), with its `idempotencyKey` (one is made when none is given).
+       * Retried on `503` or when the node cannot be reached, with its `idempotencyKey` (one is made when none is given).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       call: (args: operations['intents']['parameters']['path'] & operations['intents']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['intents']['responses'][200]['content']['application/json']> =>
@@ -260,7 +260,7 @@ export function createRoutes(api: RouteClient) {
        *
        * `POST /apps/{app}/methods/{method}` (`app_method`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
        * Answers `412 CONFIRM_REQUIRED` first when the method is a `confirm` method of the app's ABI: give `confirm` (here or on the client); the passkey must verify the user `required`.
-       * Retried on `503` (D70), with its `idempotencyKey` (one is made when none is given).
+       * Retried on `503` or when the node cannot be reached, with its `idempotencyKey` (one is made when none is given).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       method: (args: operations['app_method']['parameters']['path'] & operations['app_method']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_method']['responses'][200]['content']['application/json']> =>
@@ -282,6 +282,40 @@ export function createRoutes(api: RouteClient) {
        */
       openapi: (args: operations['app_openapi']['parameters']['path'], options?: MethodOptions): Promise<operations['app_openapi']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/apps/{app}/openapi.json","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_openapi']['responses'][200]['content']['application/json']>,
+      /**
+       * Register a web origin for an instance.
+       *
+       * `POST /apps/{app}/origins` (`app_origin_add`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      originAdd: (args: operations['app_origin_add']['parameters']['path'] & operations['app_origin_add']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_origin_add']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/apps/{app}/origins","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_origin_add']['responses'][200]['content']['application/json']>,
+      /**
+       * Remove an instance's web origin.
+       *
+       * `DELETE /apps/{app}/origins` (`app_origin_remove`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      originRemove: (args: operations['app_origin_remove']['parameters']['path'] & operations['app_origin_remove']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_origin_remove']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/apps/{app}/origins","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_origin_remove']['responses'][200]['content']['application/json']>,
+      /**
+       * An instance's web origins.
+       *
+       * `GET /apps/{app}/origins` (`app_origins`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      origins: (args: operations['app_origins']['parameters']['path'], options?: MethodOptions): Promise<operations['app_origins']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/origins","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_origins']['responses'][200]['content']['application/json']>,
+      /**
+       * An app's outbound requests.
+       *
+       * `GET /apps/{app}/outbound-log` (`app_outbound_log`). **Who:** signed in (a session or an API key).
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      outboundLog: (args: operations['app_outbound_log']['parameters']['path'], options?: MethodOptions): Promise<operations['app_outbound_log']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/apps/{app}/outbound-log","pathParams":["app"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_outbound_log']['responses'][200]['content']['application/json']>,
       /**
        * A pipeline run's receipt.
        *
@@ -593,7 +627,7 @@ export function createRoutes(api: RouteClient) {
        * Read with a view method.
        *
        * `POST /apps/{app}/views` (`views`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
-       * Retried on `503` (D70).
+       * Retried on `503` or when the node cannot be reached.
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       view: (args: operations['views']['parameters']['path'] & operations['views']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['views']['responses'][200]['content']['application/json']> =>
@@ -1045,6 +1079,33 @@ export function createRoutes(api: RouteClient) {
       signUpSet: (args: operations['sign_up_set']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['sign_up_set']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"POST","path":"/sign-up","pathParams":[],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['sign_up_set']['responses'][200]['content']['application/json']>,
       /**
+       * Accept a deployment offered to an owner.
+       *
+       * `POST /deployments/{id}/transfer/accept` (`deployment_transfer_accept`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      transferAccept: (args: operations['deployment_transfer_accept']['parameters']['path'] & operations['deployment_transfer_accept']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['deployment_transfer_accept']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/deployments/{id}/transfer/accept","pathParams":["id"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_transfer_accept']['responses'][200]['content']['application/json']>,
+      /**
+       * Cancel the offer of a deployment.
+       *
+       * `DELETE /deployments/{id}/transfer` (`deployment_transfer_cancel`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      transferCancel: (args: operations['deployment_transfer_cancel']['parameters']['path'] & Partial<NonNullable<operations['deployment_transfer_cancel']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['deployment_transfer_cancel']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"DELETE","path":"/deployments/{id}/transfer","pathParams":["id"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_transfer_cancel']['responses'][200]['content']['application/json']>,
+      /**
+       * Offer a deployment to another owner.
+       *
+       * `POST /deployments/{id}/transfer` (`deployment_transfer_offer`). **Who:** an account holder (a passkey session not bound to an app's frontend).
+       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
+       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
+       */
+      transferOffer: (args: operations['deployment_transfer_offer']['parameters']['path'] & operations['deployment_transfer_offer']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['deployment_transfer_offer']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/deployments/{id}/transfer","pathParams":["id"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['deployment_transfer_offer']['responses'][200]['content']['application/json']>,
+      /**
        * Withdraw an offer.
        *
        * `DELETE /deployments/{id}/apps/{app}` (`deployment_withdraw`). **Who:** an account holder (a passkey session not bound to an app's frontend).
@@ -1478,8 +1539,8 @@ export function createRoutes(api: RouteClient) {
        * `GET /orgs/{org}` (`org_get`). **Who:** signed in (a session or an API key).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
-      get: (args: operations['org_get']['parameters']['path'], options?: MethodOptions): Promise<operations['org_get']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"GET","path":"/orgs/{org}","pathParams":["org"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_get']['responses'][200]['content']['application/json']>,
+      get: (args: operations['org_get']['parameters']['path'] & NonNullable<operations['org_get']['parameters']['query']>, options?: MethodOptions): Promise<operations['org_get']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/orgs/{org}","pathParams":["org"],"query":["limit","teamsAfter","membersAfter"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['org_get']['responses'][200]['content']['application/json']>,
       /**
        * Make an invite.
        *
@@ -1802,6 +1863,13 @@ export function createRoutes(api: RouteClient) {
       capabilities: (args: operations['package_capabilities']['parameters']['path'] & NonNullable<operations['package_capabilities']['parameters']['query']>, options?: MethodOptions): Promise<operations['package_capabilities']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"GET","path":"/packages/{package}/{version}/capabilities","pathParams":["package","version"],"query":["service"],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_capabilities']['responses'][200]['content']['application/json']>,
       /**
+       * A release's frontend files.
+       *
+       * `GET /packages/{package}/{version}/frontend` (`package_frontend`). **Who:** anyone.
+       */
+      frontend: (args: operations['package_frontend']['parameters']['path'], options?: MethodOptions): Promise<operations['package_frontend']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"GET","path":"/packages/{package}/{version}/frontend","pathParams":["package","version"],"query":[],"body":"none","optionalBody":false,"reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_frontend']['responses'][200]['content']['application/json']>,
+      /**
        * One package.
        *
        * `GET /packages/{package}` (`package_get`). **Who:** signed in (a session or an API key).
@@ -1873,8 +1941,8 @@ export function createRoutes(api: RouteClient) {
        * `POST /packages` (`package_upload`). **Who:** an installer (an account holder, or an unscoped API key that is not read-only).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
-      upload: (args: RawBody, options?: MethodOptions): Promise<operations['package_upload']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"POST","path":"/packages","pathParams":[],"query":[],"body":"raw","optionalBody":false,"media":"application/octet-stream","reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_upload']['responses'][200]['content']['application/json']>,
+      upload: (args: NonNullable<operations['package_upload']['parameters']['query']> & RawBody, options?: MethodOptions): Promise<operations['package_upload']['responses'][200]['content']['application/json']> =>
+        route(api, {"method":"POST","path":"/packages","pathParams":[],"query":["org"],"body":"raw","optionalBody":false,"media":"application/octet-stream","reply":"json"}, args as unknown as Record<string, unknown>, options) as Promise<operations['package_upload']['responses'][200]['content']['application/json']>,
       /**
        * Uninstall one version.
        *
@@ -1928,7 +1996,7 @@ export function createRoutes(api: RouteClient) {
 
 /**
  * The routes the document marks `x-calimero-retry-safe`: the transport sends them again on a `503`
- * (D70), and one that `requires` an `idempotencyKey` is given one before it is first sent.
+ * or cannot be reached, and one that `requires` an `idempotencyKey` is given one before it is first sent.
  */
 export const RETRY_SAFE_ROUTES: ReadonlyArray<{ method: string; path: string; requires?: string }> = [{"method":"POST","path":"/apps/{app}/intents","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/methods/{method}","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/views"}];
 

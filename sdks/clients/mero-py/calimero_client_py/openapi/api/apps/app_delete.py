@@ -7,7 +7,7 @@ from ...client import AuthenticatedClient, Client
 from ...types import Response, UNSET
 from ... import errors
 
-from ...models.app_delete_response_200 import AppDeleteResponse200
+from ...models.app_deleted import AppDeleted
 from ...models.error import Error
 from typing import cast
 
@@ -28,9 +28,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppDeleteResponse200, Error]]:
+) -> Optional[Union[AppDeleted, Error]]:
     if response.status_code == 200:
-        response_200 = AppDeleteResponse200.from_dict(response.json())
+        response_200 = AppDeleted.from_dict(response.json())
 
         return response_200
 
@@ -43,6 +43,11 @@ def _parse_response(
         response_403 = Error.from_dict(response.json())
 
         return response_403
+
+    if response.status_code == 404:
+        response_404 = Error.from_dict(response.json())
+
+        return response_404
 
     if response.status_code == 409:
         response_409 = Error.from_dict(response.json())
@@ -62,7 +67,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppDeleteResponse200, Error]]:
+) -> Response[Union[AppDeleted, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -75,7 +80,7 @@ def sync_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppDeleteResponse200, Error]]:
+) -> Response[Union[AppDeleted, Error]]:
     """Delete an app
 
      The owner or an organization admin. An instance whose release created apps with it (`uses` with
@@ -93,7 +98,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppDeleteResponse200, Error]]
+        Response[Union[AppDeleted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -111,7 +116,7 @@ def sync(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppDeleteResponse200, Error]]:
+) -> Optional[Union[AppDeleted, Error]]:
     """Delete an app
 
      The owner or an organization admin. An instance whose release created apps with it (`uses` with
@@ -129,7 +134,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppDeleteResponse200, Error]
+        Union[AppDeleted, Error]
     """
 
     return sync_detailed(
@@ -142,7 +147,7 @@ async def asyncio_detailed(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[AppDeleteResponse200, Error]]:
+) -> Response[Union[AppDeleted, Error]]:
     """Delete an app
 
      The owner or an organization admin. An instance whose release created apps with it (`uses` with
@@ -160,7 +165,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppDeleteResponse200, Error]]
+        Response[Union[AppDeleted, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -176,7 +181,7 @@ async def asyncio(
     app: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[AppDeleteResponse200, Error]]:
+) -> Optional[Union[AppDeleted, Error]]:
     """Delete an app
 
      The owner or an organization admin. An instance whose release created apps with it (`uses` with
@@ -194,7 +199,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppDeleteResponse200, Error]
+        Union[AppDeleted, Error]
     """
 
     return (

@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_link_body import AppLinkBody
-from ...models.app_link_response_200 import AppLinkResponse200
 from ...models.error import Error
+from ...models.link_row import LinkRow
 from typing import cast
 
 
@@ -39,9 +39,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppLinkResponse200, Error]]:
+) -> Optional[Union[Error, LinkRow]]:
     if response.status_code == 200:
-        response_200 = AppLinkResponse200.from_dict(response.json())
+        response_200 = LinkRow.from_dict(response.json())
 
         return response_200
 
@@ -59,6 +59,11 @@ def _parse_response(
         response_403 = Error.from_dict(response.json())
 
         return response_403
+
+    if response.status_code == 404:
+        response_404 = Error.from_dict(response.json())
+
+        return response_404
 
     if response.status_code == 409:
         response_409 = Error.from_dict(response.json())
@@ -83,7 +88,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppLinkResponse200, Error]]:
+) -> Response[Union[Error, LinkRow]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -98,7 +103,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppLinkBody,
-) -> Response[Union[AppLinkResponse200, Error]]:
+) -> Response[Union[Error, LinkRow]]:
     """Attach an app to one of an app's references
 
      `name` is an `attach` reference of the release the app runs, and `app` an app of the same
@@ -121,7 +126,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppLinkResponse200, Error]]
+        Response[Union[Error, LinkRow]]
     """
 
     kwargs = _get_kwargs(
@@ -143,7 +148,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppLinkBody,
-) -> Optional[Union[AppLinkResponse200, Error]]:
+) -> Optional[Union[Error, LinkRow]]:
     """Attach an app to one of an app's references
 
      `name` is an `attach` reference of the release the app runs, and `app` an app of the same
@@ -166,7 +171,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppLinkResponse200, Error]
+        Union[Error, LinkRow]
     """
 
     return sync_detailed(
@@ -183,7 +188,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppLinkBody,
-) -> Response[Union[AppLinkResponse200, Error]]:
+) -> Response[Union[Error, LinkRow]]:
     """Attach an app to one of an app's references
 
      `name` is an `attach` reference of the release the app runs, and `app` an app of the same
@@ -206,7 +211,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppLinkResponse200, Error]]
+        Response[Union[Error, LinkRow]]
     """
 
     kwargs = _get_kwargs(
@@ -226,7 +231,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppLinkBody,
-) -> Optional[Union[AppLinkResponse200, Error]]:
+) -> Optional[Union[Error, LinkRow]]:
     """Attach an app to one of an app's references
 
      `name` is an `attach` reference of the release the app runs, and `app` an app of the same
@@ -249,7 +254,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppLinkResponse200, Error]
+        Union[Error, LinkRow]
     """
 
     return (

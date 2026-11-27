@@ -83,8 +83,8 @@ environment.
 
 `CalimeroClient.connect({ cluster, policy })` is the recommended way to reach a
 Calimero Cloud cluster. It reads the cluster's nodes from the public node
-directory (`DEFAULT_DIRECTORY`, `https://manager.cloud.calimero.network/api/directory`;
-`directory` names another), puts those in `zone` first when you give one, and
+directory (`DEFAULT_DIRECTORY`, `https://manager.cloud.calimero.network/api/directory`,
+or staging's on a page staging serves; `directory` names another), puts those in `zone` first when you give one, and
 orders each group at random, weighted by the directory's weight. A cluster the
 directory does not know, or one with no usable node, throws `DirectoryError`.
 
@@ -110,6 +110,17 @@ between `baseUrl` and `nodes` the same way, and never reads a directory.
 `environment: 'staging'` reads the staging Calimero Cloud's directory instead
 (`CLOUD_ENVIRONMENTS`).
 
+A page on a Calimero Cloud's apps domain uses that Cloud's servers by default:
+on staging (`*.apps.relay.staging.cloud.calimero.network`) the directory, the
+release mirror and the collateral mirror are staging's
+(`CLOUD_ENVIRONMENTS.staging.directory` and `.cloudUrl`,
+`https://staging.cloud.calimero.network`); on any other host, and in Node,
+production's. Only the page's hostname picks the Cloud, never anything a
+server answers, so a production page cannot be made to use staging's. An
+explicit `directory`, `environment`, `releaseSource` or `collateralSource`
+always wins. The mirrors are only a transport (everything they serve is
+signature-checked), so this changes where the client reads, not what it trusts.
+
 A frontend that one build ships to several places (served by staging, shared
 and dedicated clusters from its `.mpk`, and hosted on Vercel for previews) uses
 `CalimeroClient.connectHere({ policy, fallback })`. On a page a cluster serves,
@@ -129,7 +140,9 @@ and its quote must still be that profile's signed image.
 ## Confidential KV
 
 A service reaches a Confidential KV store from its environment
-(`CALIMERO_CLUSTER`, `CALIMERO_API_KEY`, `CALIMERO_KV_STORE`, `CALIMERO_MIN_RELEASE`):
+(`CALIMERO_CLUSTER`, `CALIMERO_API_KEY`, `CALIMERO_KV_STORE`, `CALIMERO_MIN_RELEASE`;
+on staging also `CALIMERO_ENVIRONMENT=staging`, which uses staging's directory,
+mirrors and image profiles):
 
 ```ts
 import { Calimero } from '@calimero-network/mero-js';
@@ -147,8 +160,8 @@ Before it sends anything to a node, as core's Rust client does (`Measurements::R
 
 1. The node names the mero-tee release it runs. A release below `minReleaseVersion` is refused before anything is fetched.
 2. The release's `published-mrtds.json` is fetched and its Sigstore signature is checked against the mero-tee node release workflow.
-   By default it comes from the `cloud.calimero.network` mirror; `releaseSource: 'github'` reads the GitHub release instead (Node only: GitHub sends no CORS headers).
-3. The quote is checked against Intel's collateral with `@phala/dcap-qvl`: the signature chain and the TCB status. The collateral comes from the cloud's mirror (`DEFAULT_COLLATERAL_MIRROR`), which browsers can read; it only carries Intel-signed items. `collateralSource: 'intel'` asks Intel's PCS (no CORS: not in browsers), `fetchCollateral` replaces the fetch, and `maxCollateralAgeDays` refuses collateral Intel issued longer ago. Collateral whose TCB evaluation data is below `DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER` (20, core's floor) is refused; `minTcbEvaluationDataNumber` raises it, never lowers it.
+   By default it comes from the `cloud.calimero.network` mirror (staging's on a page staging serves); `releaseSource: 'github'` reads the GitHub release instead (Node only: GitHub sends no CORS headers).
+3. The quote is checked against Intel's collateral with `@phala/dcap-qvl`: the signature chain and the TCB status. The collateral comes from the cloud's mirror (`DEFAULT_COLLATERAL_MIRROR`, staging's on a page staging serves), which browsers can read; it only carries Intel-signed items. `collateralSource: 'intel'` asks Intel's PCS (no CORS: not in browsers), `fetchCollateral` replaces the fetch, and `maxCollateralAgeDays` refuses collateral Intel issued longer ago. Collateral whose TCB evaluation data is below `DEFAULT_MIN_TCB_EVALUATION_DATA_NUMBER` (20, core's floor) is refused; `minTcbEvaluationDataNumber` raises it, never lowers it.
 4. A debug TD is refused.
 5. The registers must be the release's `locked-read-only` image (or `release.profile`, or the node's own profile when `release.profiles` lists it); a debug profile is trusted only with `allowDebugProfile`.
 6. The quote's report data binds the client's nonce and the transport key the sealed channel opens to.
@@ -164,7 +177,7 @@ Every route of the node is a generated method, in a group per area
 flows and streams a single route cannot be:
 
 - **Credentials**: `signUp(passkey, name, { invite?, origin?, signal? })`, `signIn(passkey, { origin?, signal? })`, `refresh`, `signOut`, `signOutEverywhere`, `useSession`, `useApiKey`, `addPasskey(newPasskey, approver)`.
-- **Account recovery** (core #4844): signed out, `startAccountRecovery(code, passkey)` and, 72 hours later, `finishAccountRecovery(passkey, accountId?)`. The code itself is `client.auth.recoveryCreate({}, { confirm })`.
+- **Account recovery**: signed out, `startAccountRecovery(code, passkey)` and, 72 hours later, `finishAccountRecovery(passkey, accountId?)`. The code itself is `client.auth.recoveryCreate({}, { confirm })`.
 - **Organization recovery**: `startRecovery(org, seed)` (the seed signs here and never leaves the process); `newRecoverySeed`, `recoveryPublicKey`.
 - **Files**: `uploadFile(app, data)` (a large file goes up in parts), `exportFile(app, id)` and `exportFileTo(app, id, sink)` (the plaintext, checked against its id, size and hash).
 - **Blobs**: `downloadBlob(app, id)`, `downloadBlobGranted(app, id, grant)` (bytes; `client.apps.blobDownload` answers a `Blob` with its type).
@@ -253,7 +266,7 @@ interface Transport {
   events(path: string, options?: { query?; signal? }): AsyncGenerator<NodeEvent>;
 }
 // RequestOptions: { query?, body? (JSON) | bytes? + contentType?, passkey? (answers a 412),
-//                   userVerification?, retry?: true | 'once' (D70), signal?, promptSignal? }
+//                   userVerification?, retry?: true | 'once', signal?, promptSignal? }
 ```
 
 `NodeTransport` implements it, and `exchange(method, path, options)` answers a

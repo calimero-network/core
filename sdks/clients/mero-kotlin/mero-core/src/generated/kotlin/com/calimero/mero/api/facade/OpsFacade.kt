@@ -31,7 +31,7 @@ class OpsFacade internal constructor(
     suspend fun apps(
         after: kotlin.String? = null,
         limit: kotlin.Long? = null,
-    ): OpsApps200Response =
+    ): OpsApps =
         api(null, null, emptySet()).ops.opsApps(after = after, limit = limit)
 
     /**
@@ -47,7 +47,7 @@ class OpsFacade internal constructor(
      */
     suspend fun backup(
         all: kotlin.Boolean? = null,
-    ): OpsBackup200Response =
+    ): BackupWritten =
         api(null, null, emptySet()).ops.opsBackup(all = all)
 
     /**
@@ -75,7 +75,7 @@ class OpsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun cluster(): OpsCluster200Response =
+    suspend fun cluster(): ClusterIdentity =
         api(null, null, emptySet()).ops.opsCluster()
 
     /**
@@ -94,7 +94,7 @@ class OpsFacade internal constructor(
     suspend fun clusterOwner(
         owner: com.calimero.mero.Deployer,
         operator: DeviceSigner? = null,
-    ): OpsClusterOwner200Response =
+    ): ClusterOwnerNamed =
         api(null, operator, emptySet()).ops.opsClusterOwner(opsClusterOwnerRequest = OpsClusterOwnerRequest(owner = owner))
 
     /**
@@ -114,8 +114,8 @@ class OpsFacade internal constructor(
         deployer: com.calimero.mero.Deployer,
         until: kotlin.String? = null,
         operator: DeviceSigner? = null,
-    ): OpsDeployerGrant200Response =
-        api(null, operator, emptySet()).ops.opsDeployerGrant(opsDeployerGrantRequest = OpsDeployerGrantRequest(deployer = deployer, until = until))
+    ): DeployerGranted =
+        api(null, operator, emptySet()).ops.opsDeployerGrant(deployerBody = DeployerBody(deployer = deployer, until = until))
 
     /**
      * Revoke a deployer
@@ -131,7 +131,7 @@ class OpsFacade internal constructor(
     suspend fun deployerRevokeDelete(
         key: kotlin.String,
         operator: DeviceSigner? = null,
-    ): OpsDeployerRevokeDelete200Response =
+    ): DeployerRevoked =
         api(null, operator, emptySet()).ops.opsDeployerRevokeDelete(key = key)
 
     /**
@@ -150,7 +150,7 @@ class OpsFacade internal constructor(
     suspend fun deployerRevokePost(
         key: kotlin.String,
         operator: DeviceSigner? = null,
-    ): OpsDeployerRevokeDelete200Response =
+    ): DeployerRevoked =
         api(null, operator, emptySet()).ops.opsDeployerRevokePost(key = key)
 
     /**
@@ -168,7 +168,7 @@ class OpsFacade internal constructor(
      */
     suspend fun deploymentsGranted(
         operator: DeviceSigner? = null,
-    ): OpsDeploymentsGranted200Response =
+    ): GovernanceSet =
         api(null, operator, emptySet()).ops.opsDeploymentsGranted()
 
     /**
@@ -221,7 +221,7 @@ class OpsFacade internal constructor(
         migrate: kotlin.String? = null,
         operator: DeviceSigner? = null,
     ): UpgradeRun =
-        api(null, operator, emptySet()).ops.opsOrgUpgrade(org = org, opsOrgUpgradeRequest = OpsOrgUpgradeRequest(`package` = `package`, version = version, team = team, cascade = cascade, migrate = migrate))
+        api(null, operator, emptySet()).ops.opsOrgUpgrade(org = org, orgUpgradeBody = OrgUpgradeBody(`package` = `package`, version = version, team = team, cascade = cascade, migrate = migrate))
 
     /**
      * Each organization's approved releases
@@ -235,7 +235,7 @@ class OpsFacade internal constructor(
     suspend fun orgs(
         after: kotlin.String? = null,
         limit: kotlin.Long? = null,
-    ): OpsOrgs200Response =
+    ): OpsOrgs =
         api(null, null, emptySet()).ops.opsOrgs(after = after, limit = limit)
 
     /**
@@ -271,7 +271,7 @@ class OpsFacade internal constructor(
     suspend fun packageInstall(
         `package`: kotlin.String,
         version: kotlin.String,
-    ): OpsPackageInstall200Response =
+    ): PackageInstalled =
         api(null, null, emptySet()).ops.opsPackageInstall(opsPackageInstallRequest = OpsPackageInstallRequest(`package` = `package`, version = version))
 
     /**
@@ -283,7 +283,7 @@ class OpsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun packageList(): OpsPackageList200Response =
+    suspend fun packageList(): PackageList =
         api(null, null, emptySet()).ops.opsPackageList()
 
     /**
@@ -311,7 +311,7 @@ class OpsFacade internal constructor(
      */
     suspend fun packageUpload(
         body: kotlin.ByteArray,
-    ): OpsPackageUpload200Response =
+    ): PackageInstalled =
         api(null, null, emptySet()).ops.opsPackageUpload(body = body)
 
     /**
@@ -340,7 +340,7 @@ class OpsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun placement(): OpsPlacement200Response =
+    suspend fun placement(): Placement =
         api(null, null, emptySet()).ops.opsPlacement()
 
     /**
@@ -354,7 +354,7 @@ class OpsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun poolsGet(): OpsPoolsGet200Response =
+    suspend fun poolsGet(): OpsPools =
         api(null, null, emptySet()).ops.opsPoolsGet()
 
     /**
@@ -387,7 +387,7 @@ class OpsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun pricesGet(): OpsPricesGet200Response =
+    suspend fun pricesGet(): PriceTableView =
         api(null, null, emptySet()).ops.opsPricesGet()
 
     /**
@@ -448,12 +448,15 @@ class OpsFacade internal constructor(
         maxConcurrentRunsPerOrg: kotlin.Long? = null,
         computeFuelPerOrg: kotlin.Long? = null,
         maxFuelPerDeveloperPerDay: kotlin.String? = null,
+        maxTeamsPerOrg: kotlin.Long? = null,
+        maxMetadataBytesPerOrg: kotlin.Long? = null,
+        maxMetadataBytesPerAccount: kotlin.Long? = null,
         maxConcurrentRuns: com.calimero.mero.Explicit<kotlin.Long>? = null,
         computeFuel: com.calimero.mero.Explicit<kotlin.String>? = null,
         maxFileBytes: com.calimero.mero.Explicit<kotlin.Long>? = null,
         operator: DeviceSigner? = null,
     ): kotlinx.serialization.json.JsonObject =
-        api(null, operator, setOfNotNull("maxConcurrentRuns".takeIf { maxConcurrentRuns != null && maxConcurrentRuns.value == null }, "computeFuel".takeIf { computeFuel != null && computeFuel.value == null }, "maxFileBytes".takeIf { maxFileBytes != null && maxFileBytes.value == null })).ops.opsQuotasSet(quotaChanges = QuotaChanges(org = org, orgs = orgs, maxAppsPerAccount = maxAppsPerAccount, maxBundleBytesPerAccount = maxBundleBytesPerAccount, maxApiKeysPerAccount = maxApiKeysPerAccount, maxOrgsPerAccount = maxOrgsPerAccount, maxAccounts = maxAccounts, maxFileBytesPerOrg = maxFileBytesPerOrg, maxConcurrentRunsPerOrg = maxConcurrentRunsPerOrg, computeFuelPerOrg = computeFuelPerOrg, maxFuelPerDeveloperPerDay = maxFuelPerDeveloperPerDay, maxConcurrentRuns = maxConcurrentRuns?.value, computeFuel = computeFuel?.value, maxFileBytes = maxFileBytes?.value))
+        api(null, operator, setOfNotNull("maxConcurrentRuns".takeIf { maxConcurrentRuns != null && maxConcurrentRuns.value == null }, "computeFuel".takeIf { computeFuel != null && computeFuel.value == null }, "maxFileBytes".takeIf { maxFileBytes != null && maxFileBytes.value == null })).ops.opsQuotasSet(quotaChanges = QuotaChanges(org = org, orgs = orgs, maxAppsPerAccount = maxAppsPerAccount, maxBundleBytesPerAccount = maxBundleBytesPerAccount, maxApiKeysPerAccount = maxApiKeysPerAccount, maxOrgsPerAccount = maxOrgsPerAccount, maxAccounts = maxAccounts, maxFileBytesPerOrg = maxFileBytesPerOrg, maxConcurrentRunsPerOrg = maxConcurrentRunsPerOrg, computeFuelPerOrg = computeFuelPerOrg, maxFuelPerDeveloperPerDay = maxFuelPerDeveloperPerDay, maxTeamsPerOrg = maxTeamsPerOrg, maxMetadataBytesPerOrg = maxMetadataBytesPerOrg, maxMetadataBytesPerAccount = maxMetadataBytesPerAccount, maxConcurrentRuns = maxConcurrentRuns?.value, computeFuel = computeFuel?.value, maxFileBytes = maxFileBytes?.value))
 
     /**
      * A node's receipt key
@@ -466,7 +469,7 @@ class OpsFacade internal constructor(
      */
     suspend fun receiptKey(
         id: kotlin.String,
-    ): OpsReceiptKey200Response =
+    ): ReceiptKey =
         api(null, null, emptySet()).ops.opsReceiptKey(id = id)
 
     /**
@@ -483,7 +486,7 @@ class OpsFacade internal constructor(
     suspend fun recover(
         system: OpsRecoverRequestSystem,
         code: kotlin.collections.List<OpsRecoverRequestCodeInner>? = null,
-    ): OpsRecover200Response =
+    ): SystemRecovered =
         api(null, null, emptySet()).ops.opsRecover(opsRecoverRequest = OpsRecoverRequest(system = system, code = code))
 
     /**
@@ -499,7 +502,7 @@ class OpsFacade internal constructor(
      */
     suspend fun recoveryFiles(
         holder: kotlin.String? = null,
-    ): OpsRecoveryFiles200Response =
+    ): RecoveryFiles =
         api(null, null, emptySet()).ops.opsRecoveryFiles(holder = holder)
 
     /**
@@ -598,13 +601,13 @@ class OpsFacade internal constructor(
     suspend fun removeNode(
         id: kotlin.String,
         operator: DeviceSigner? = null,
-    ): OpsRemoveNode200Response =
+    ): NodeRemoved =
         api(null, operator, emptySet()).ops.opsRemoveNode(id = id)
 
     /**
      * Restore an app from its sealed backup
      *
-     * Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's.
+     * Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the signature is asked for.
      *
      * **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
      *
@@ -619,7 +622,7 @@ class OpsFacade internal constructor(
         backup: kotlin.String? = null,
         recovery: OpsRestoreRequestRecovery? = null,
         operator: DeviceSigner? = null,
-    ): OpsRestore200Response =
+    ): AppRestored =
         api(null, operator, emptySet()).ops.opsRestore(app = app, opsRestoreRequest = OpsRestoreRequest(backup = backup, recovery = recovery))
 
     /**
@@ -633,7 +636,7 @@ class OpsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun served(): OpsServed200Response =
+    suspend fun served(): ServedOrigins =
         api(null, null, emptySet()).ops.opsServed()
 
     /**
@@ -672,7 +675,7 @@ class OpsFacade internal constructor(
         app: kotlin.String,
         replicas: kotlin.collections.List<kotlin.Long>,
         operator: DeviceSigner? = null,
-    ): OpsSetReplicas200Response =
+    ): ReplicasSet =
         api(null, operator, emptySet()).ops.opsSetReplicas(app = app, opsSetReplicasRequest = OpsSetReplicasRequest(replicas = replicas))
 
     /**
@@ -703,7 +706,7 @@ class OpsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun signUpInviteList(): OpsSignUpInviteList200Response =
+    suspend fun signUpInviteList(): SignUpInviteList =
         api(null, null, emptySet()).ops.opsSignUpInviteList()
 
     /**
@@ -772,13 +775,13 @@ class OpsFacade internal constructor(
      *
      * @throws com.calimero.mero.CalimeroError the node's refusal, typed by [com.calimero.mero.errorFrom].
      */
-    suspend fun status(): OpsStatus200Response =
+    suspend fun status(): OpsStatus =
         api(null, null, emptySet()).ops.opsStatus()
 
     /**
      * Upgrade an app as the operator
      *
-     * To a release the operator installed, where the operator holds app upgrades. `error` is the app log's error value (`null` when it ran), free-form: the app's own.
+     * To a release the operator installed, where the operator holds app upgrades. A pinned instance (its record's `lineage`) is held to its package, publisher and forward order as for anyone (`409 OUTSIDE_LINEAGE`, `409 LINEAGE_OLDER_RELEASE`). `error` is the app log's error value (`null` when it ran), free-form: the app's own.
      *
      * **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
      *
@@ -796,6 +799,6 @@ class OpsFacade internal constructor(
         service: kotlin.String? = null,
         migrate: kotlin.String? = null,
         operator: DeviceSigner? = null,
-    ): OpsUpgrade200Response =
+    ): UpgradeApplied =
         api(null, operator, emptySet()).ops.opsUpgrade(app = app, opsUpgradeRequest = OpsUpgradeRequest(bundle = bundle, `package` = `package`, version = version, service = service, migrate = migrate))
 }

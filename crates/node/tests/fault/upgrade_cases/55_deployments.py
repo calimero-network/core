@@ -11,8 +11,11 @@ import tarfile
 import urllib.parse
 from pathlib import Path
 
+import ed25519_sign
+from rv2 import b64url
 from upgrade_deep import (DeepCase, check, eq, install, kv_wasm, new_org, ops, people, person, refused, scratch,
                           signed_ops, subset, until)
+from upgrade_deep import not_covered
 from upgrade_path import case
 
 USED = "com.calimero.upgrade.used-secrets"
@@ -209,6 +212,139 @@ class DeploymentOfferUpgrades(DeepCase):
         self.check(w, s)
 
 
+@case
+class DeploymentNamedToCustomers(DeepCase):
+    name = "deployment-named-to-customers"
+    area = "Deployments"
+    since = "1.0.0-rc.38"
+    seeds = "a deployment offering a release, and a customer's instance from it"
+    verifies = ("`GET /apps/{app}/update` names the instance's deployment with its id and its owner's kind and name "
+                "(names are not unique), as `GET /deployments/{id}` names the owner; on the new release a second "
+                "instance from it is named the same way")
+
+    def populate(self, w):
+        drew, cass = people(w, "drew", "cass")
+        install(drew, w, "kv-o-1.0.0.mpk")
+        d = drew.raw("post", "deployments", {"name": "drew-labs", "owner": {"account": drew.id}})["id"]
+        drew.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.0.0"})
+        org = new_org(cass, "Named Customer Org")
+        app = cass.raw("post", "apps", {"name": "named-1", "deployment": d, "package": OFFERED, "org": org})["appId"]
+        return {"deployment": d, "org": org, "apps": [app]}
+
+    def check(self, w, s):
+        drew, cass = people(w, "drew", "cass")
+        d = s["deployment"]
+        owner = drew.get(f"deployments/{d}")["owner"]
+        eq(owner.get("kind"), "account", "the deployment's owner kind")
+        for app in s["apps"]:
+            eq(cass.get(f"apps/{app}/update").get("deployment"), {"id": d, "name": "drew-labs", "owner": owner},
+               f"instance {app}'s update names its deployment and owner")
+
+    def exercise(self, w, s):
+        cass = person(w, "cass")
+        s["apps"].append(cass.raw("post", "apps", {"name": "named-2", "deployment": s["deployment"],
+                                                   "package": OFFERED, "org": s["org"]})["appId"])
+        self.check(w, s)
+
+
+def _recovery_key(seed: bytes) -> str:
+    return b64url(ed25519_sign.public_key(seed))
+
+
+@case
+class DeploymentNeedsRecovery(DeepCase):
+    name = "deployment-needs-recovery"
+    area = "Deployments"
+    since = "1.0.0-rc.38"
+    seeds = "an organization with a recovery key, and a deployment it owns"
+    verifies = ("the organization keeps its key; removing it is refused (`409 RECOVERY_KEY_REQUIRED`) while it owns "
+                "the deployment, before the passkey; on the new release rotating it succeeds, and another "
+                "organization without a key is refused a deployment")
+
+    def populate(self, w):
+        ruth = person(w, "ruth")
+        org = new_org(ruth, "Recoverable Deployer Org")
+        ruth.raw("post", f"orgs/{org}/recovery", {"publicKey": _recovery_key(b"\x11" * 32)})
+        d = ruth.raw("post", "deployments", {"name": "ruth-labs", "owner": {"org": org}})["id"]
+        return {"org": org, "deployment": d, "key": _recovery_key(b"\x11" * 32)}
+
+    def check(self, w, s):
+        ruth = person(w, "ruth")
+        eq((ruth.get(f"orgs/{s['org']}").get("recovery") or {}).get("publicKey"), s["key"],
+           "the deploying organization's recovery key")
+        eq(ruth.get(f"deployments/{s['deployment']}").get("owner", {}).get("kind"), "org", "the org's deployment")
+        refused("RECOVERY_KEY_REQUIRED", lambda: ruth.raw("post", f"orgs/{s['org']}/recovery", {"publicKey": None},
+                                                         approve=False),
+                "removing the recovery key of an organization that owns a deployment")
+
+    def exercise(self, w, s):
+        ruth = person(w, "ruth")
+        s["key"] = _recovery_key(b"\x12" * 32)
+        ruth.raw("post", f"orgs/{s['org']}/recovery", {"publicKey": s["key"]})
+        bare = new_org(ruth, "Keyless Deployer Org")
+        refused("RECOVERY_KEY_REQUIRED", lambda: ruth.raw("post", "deployments", {"name": "keyless",
+                                                                                 "owner": {"org": bare}},
+                                                         approve=False),
+                "a deployment of an organization without a recovery key")
+        self.check(w, s)
+
+
+@case
+class DeploymentTransfer(DeepCase):
+    name = "deployment-transfer"
+    area = "Deployments"
+    since = "1.0.0-rc.38"
+    seeds = ("an account's deployment offering a release, with a customer's instance from it, handed to an "
+             "organization with a recovery key: offered by the account, accepted by the organization")
+    verifies = ("the organization owns it (`GET /deployments/{id}`), its offer and the customer's instance stay, the "
+                "previous owner changes nothing (`403`), and the "
+                "customer's `GET /apps/{app}/update` names the new owner and whom it came from; on the new release "
+                "the organization offers it back and cancels the offer, and a second offer waits for none")
+
+    def populate(self, w):
+        tilda, ursa, vik = people(w, "tilda", "ursa", "vik")
+        install(tilda, w, "kv-o-1.0.0.mpk")
+        d = tilda.raw("post", "deployments", {"name": "tilda-labs", "owner": {"account": tilda.id}})["id"]
+        tilda.raw("post", f"deployments/{d}/apps", {"app": "kv", "package": OFFERED, "version": "1.0.0"})
+        customer = new_org(vik, "Transfer Customer Org")
+        app = vik.raw("post", "apps", {"name": "moved-1", "deployment": d, "package": OFFERED,
+                                       "org": customer})["appId"]
+        receiver = new_org(ursa, "Transfer Receiver Org")
+        ursa.raw("post", f"orgs/{receiver}/recovery", {"publicKey": _recovery_key(b"\x13" * 32)})
+        to = {"org": receiver}
+        tilda.raw("post", f"deployments/{d}/transfer", {"to": to})
+        ursa.raw("post", f"deployments/{d}/transfer/accept", {"to": to})
+        return {"deployment": d, "app": app, "receiver": receiver}
+
+    def check(self, w, s):
+        tilda, ursa, vik = people(w, "tilda", "ursa", "vik")
+        d = s["deployment"]
+        got = vik.get(f"deployments/{d}")
+        eq(got.get("owner"), {"kind": "org", "name": "Transfer Receiver Org"}, "the new owner")
+        eq([(o["app"], o["version"]) for o in got.get("apps", [])], [("kv", "1.0.0")], "the offer stays")
+        eq(vik.get(f"apps/{s['app']}").get("deployment"), d, "the customer's instance stays on it")
+        shown = vik.get(f"apps/{s['app']}/update").get("deployment") or {}
+        eq(shown.get("owner"), {"kind": "org", "name": "Transfer Receiver Org"}, "the update names the new owner")
+        eq((shown.get("transferred") or {}).get("from"), {"kind": "account", "name": "tilda"},
+           "the update names whom it came from")
+        refused("FORBIDDEN", lambda: tilda.raw("post", f"deployments/{d}/apps",
+                                              {"app": "kv", "package": OFFERED, "version": "1.0.0"}, approve=False),
+                "the previous owner offering in it")
+        eq([x.get("id") for x in ursa.get("deployments").get("deployments", [])], [d], "the receiver manages it")
+
+    def exercise(self, w, s):
+        tilda, ursa = people(w, "tilda", "ursa")
+        d = s["deployment"]
+        ursa.raw("post", f"deployments/{d}/transfer", {"to": {"account": tilda.id}})
+        refused("TRANSFER_PENDING", lambda: ursa.raw("post", f"deployments/{d}/transfer",
+                                                     {"to": {"account": tilda.id}}, approve=False),
+                "a second offer while one waits")
+        eq([x.get("id") for x in tilda.get("deployments").get("offered", [])], [d], "the offer waits for tilda")
+        ursa.raw("delete", f"deployments/{d}/transfer", {})
+        eq(tilda.get("deployments").get("offered", []), [], "the cancelled offer")
+        self.check(w, s)
+
+
 def _grants(w, node=None):
     """`GET /deployers` as the operator, each grant without its time of granting."""
     got = ops(w, "GET", "deployers", node=node)
@@ -261,3 +397,22 @@ class DeployerGrants(DeepCase):
         s["read"] = _grants(w)
         eq(len(s["read"]["grants"]), 2, f"the grants after a revocation and a grant: {s['read']['grants']}")
         self.check(w, s)
+
+
+# What no case in this file seeds yet, and why (the matrix lists it as not covered).
+
+not_covered("Deployments", "A deployment's customer accepting its offer on the consent page",
+            "the page is approved in a browser, and a consent request lives in one node's memory for minutes; what it "
+            "logs is the `UpgradeApp` that `POST /apps/{app}/upgrade` without a version logs, which "
+            "`deployment-offer-upgrades` covers with `GET /apps/{app}/update`'s `source: deployment`. "
+            "`a_customer_accepts_its_deployments_offer_on_the_page` (`consent_page.rs`) covers the page on one build")
+
+not_covered("Deployments", "A customer's instance outside every deployment on a granted cluster, refused at create and "
+            "on an upgrade into a deployer's package (`403 DEPLOY_NOT_GRANTED`; `CreateApp { offers_only }` and "
+            "`UpgradeApp` at apply, `Feature::OffersOnly`)",
+            "a refusal that stores nothing, on a granted cluster, which the open upgrade-path cluster is not and cannot "
+            "become without turning every case that installs after the switch red; an entry without `offers_only` "
+            "replays as it applied below cluster version 1.0.0-rc.36. "
+            "`on_a_granted_cluster_a_customer_creates_only_from_an_offer` (`deployments.rs`) and "
+            "`system::tests::on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers` and "
+            "`..._keeps_out_of_a_deployers_package` (the replay) cover it on one build")

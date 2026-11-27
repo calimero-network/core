@@ -8,8 +8,8 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.app_upgrade_body import AppUpgradeBody
-from ...models.app_upgrade_response_200 import AppUpgradeResponse200
 from ...models.error import Error
+from ...models.upgrade_applied import UpgradeApplied
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[AppUpgradeResponse200, Error]]:
+) -> Optional[Union[Error, UpgradeApplied]]:
     if response.status_code == 200:
-        response_200 = AppUpgradeResponse200.from_dict(response.json())
+        response_200 = UpgradeApplied.from_dict(response.json())
 
         return response_200
 
@@ -57,6 +57,11 @@ def _parse_response(
         response_403 = Error.from_dict(response.json())
 
         return response_403
+
+    if response.status_code == 404:
+        response_404 = Error.from_dict(response.json())
+
+        return response_404
 
     if response.status_code == 409:
         response_409 = Error.from_dict(response.json())
@@ -86,7 +91,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[AppUpgradeResponse200, Error]]:
+) -> Response[Union[Error, UpgradeApplied]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -100,7 +105,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: AppUpgradeBody,
-) -> Response[Union[AppUpgradeResponse200, Error]]:
+) -> Response[Union[Error, UpgradeApplied]]:
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
@@ -115,7 +120,10 @@ def sync_detailed(
     offers for its package (naming no version accepts that offer): another version, another package or a
     `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second
     approver, an update the log cannot classify (a part's release no longer installed) is `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release
+    declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed
+    by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409
+    LINEAGE_OLDER_RELEASE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -130,7 +138,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppUpgradeResponse200, Error]]
+        Response[Union[Error, UpgradeApplied]]
     """
 
     kwargs = _get_kwargs(
@@ -150,7 +158,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: AppUpgradeBody,
-) -> Optional[Union[AppUpgradeResponse200, Error]]:
+) -> Optional[Union[Error, UpgradeApplied]]:
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
@@ -165,7 +173,10 @@ def sync(
     offers for its package (naming no version accepts that offer): another version, another package or a
     `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second
     approver, an update the log cannot classify (a part's release no longer installed) is `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release
+    declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed
+    by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409
+    LINEAGE_OLDER_RELEASE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -180,7 +191,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppUpgradeResponse200, Error]
+        Union[Error, UpgradeApplied]
     """
 
     return sync_detailed(
@@ -195,7 +206,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: AppUpgradeBody,
-) -> Response[Union[AppUpgradeResponse200, Error]]:
+) -> Response[Union[Error, UpgradeApplied]]:
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
@@ -210,7 +221,10 @@ async def asyncio_detailed(
     offers for its package (naming no version accepts that offer): another version, another package or a
     `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second
     approver, an update the log cannot classify (a part's release no longer installed) is `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release
+    declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed
+    by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409
+    LINEAGE_OLDER_RELEASE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -225,7 +239,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[AppUpgradeResponse200, Error]]
+        Response[Union[Error, UpgradeApplied]]
     """
 
     kwargs = _get_kwargs(
@@ -243,7 +257,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: AppUpgradeBody,
-) -> Optional[Union[AppUpgradeResponse200, Error]]:
+) -> Optional[Union[Error, UpgradeApplied]]:
     """Upgrade an app instance
 
      To a release (`version`, of the app's own package unless `package` names another) or a `bundle`,
@@ -258,7 +272,10 @@ async def asyncio(
     offers for its package (naming no version accepts that offer): another version, another package or a
     `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second
     approver, an update the log cannot classify (a part's release no longer installed) is `409
-    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+    FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release
+    declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed
+    by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409
+    LINEAGE_OLDER_RELEASE`, before the step-up.
 
     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers
     `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over
@@ -273,7 +290,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[AppUpgradeResponse200, Error]
+        Union[Error, UpgradeApplied]
     """
 
     return (

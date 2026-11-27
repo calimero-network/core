@@ -7,6 +7,7 @@ import random
 
 from rv2 import CliError
 from upgrade_deep import DeepCase, Failed, check, eq, person, refused, release_key, scratch, until
+from upgrade_deep import not_covered
 from upgrade_path import OLD_JOB, case
 
 PIPELINE = "fanout"
@@ -165,3 +166,10 @@ class Pipelines(DeepCase):
         check(not any(st["cached"] for st in s["runs"][3]["summary"]["steps"].values()), "a new file ran its steps")
         got = pax.cli("cloud", "compute", "pipeline", "receipt", s["app"], s["runs"][3]["id"], "--verify")
         check(got["verified"] is True, f"the receipt of the run on the new release: {got}")
+
+
+# What no case in this file seeds yet, and why (the matrix lists it as not covered).
+
+not_covered("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
+            "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
+            "is covered, the stream itself by the cluster tests")

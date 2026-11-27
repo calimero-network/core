@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.org_settings_body import OrgSettingsBody
-from ...models.org_settings_response_200 import OrgSettingsResponse200
+from ...models.org_settings_set import OrgSettingsSet
 from typing import cast
 
 
@@ -37,9 +37,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, OrgSettingsResponse200]]:
+) -> Optional[Union[Error, OrgSettingsSet]]:
     if response.status_code == 200:
-        response_200 = OrgSettingsResponse200.from_dict(response.json())
+        response_200 = OrgSettingsSet.from_dict(response.json())
 
         return response_200
 
@@ -86,7 +86,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, OrgSettingsResponse200]]:
+) -> Response[Union[Error, OrgSettingsSet]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -100,7 +100,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient,
     body: OrgSettingsBody,
-) -> Response[Union[Error, OrgSettingsResponse200]]:
+) -> Response[Union[Error, OrgSettingsSet]]:
     """Change the organization's settings
 
      `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an
@@ -116,14 +116,14 @@ def sync_detailed(
 
     Args:
         org (str):
-        body (OrgSettingsBody):
+        body (OrgSettingsBody): The request body of `POST /orgs/{org}/settings`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgSettingsResponse200]]
+        Response[Union[Error, OrgSettingsSet]]
     """
 
     kwargs = _get_kwargs(
@@ -143,7 +143,7 @@ def sync(
     *,
     client: AuthenticatedClient,
     body: OrgSettingsBody,
-) -> Optional[Union[Error, OrgSettingsResponse200]]:
+) -> Optional[Union[Error, OrgSettingsSet]]:
     """Change the organization's settings
 
      `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an
@@ -159,14 +159,14 @@ def sync(
 
     Args:
         org (str):
-        body (OrgSettingsBody):
+        body (OrgSettingsBody): The request body of `POST /orgs/{org}/settings`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgSettingsResponse200]
+        Union[Error, OrgSettingsSet]
     """
 
     return sync_detailed(
@@ -181,7 +181,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient,
     body: OrgSettingsBody,
-) -> Response[Union[Error, OrgSettingsResponse200]]:
+) -> Response[Union[Error, OrgSettingsSet]]:
     """Change the organization's settings
 
      `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an
@@ -197,14 +197,14 @@ async def asyncio_detailed(
 
     Args:
         org (str):
-        body (OrgSettingsBody):
+        body (OrgSettingsBody): The request body of `POST /orgs/{org}/settings`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, OrgSettingsResponse200]]
+        Response[Union[Error, OrgSettingsSet]]
     """
 
     kwargs = _get_kwargs(
@@ -222,7 +222,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient,
     body: OrgSettingsBody,
-) -> Optional[Union[Error, OrgSettingsResponse200]]:
+) -> Optional[Union[Error, OrgSettingsSet]]:
     """Change the organization's settings
 
      `allowGuests` (default on): whether its instances take guests, accounts named on one instance (an
@@ -238,14 +238,14 @@ async def asyncio(
 
     Args:
         org (str):
-        body (OrgSettingsBody):
+        body (OrgSettingsBody): The request body of `POST /orgs/{org}/settings`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, OrgSettingsResponse200]
+        Union[Error, OrgSettingsSet]
     """
 
     return (

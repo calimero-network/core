@@ -1,6 +1,10 @@
 //! `merod`: the Calimero node. v1's command line (`--home`, `--node`, `init`,
 //! `run`, `config`, `kms`, and `attest`) over the node (`calimero-node`):
 //! attested, one Raft log per app.
+//!
+//! Spec: [merod CLI reference](https://calimero-network.github.io/core/operate/merod/),
+//! [Configuration](https://calimero-network.github.io/core/operate/config/).
+//! Crate guide: [`crates/merod/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/merod/AGENTS.md).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -599,8 +603,12 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
         recovery_dir: args.recovery_dir.clone(),
         recover_from: args.recover_from.clone(),
         restore_from: args.restore_from.clone(),
-        raft: calimero_log::Config::default(),
+        raft: calimero_log::Config {
+            snapshot_scale_bytes: args.snapshot_scale_bytes,
+            ..calimero_log::Config::default()
+        },
         read_wait: std::time::Duration::from_secs(2),
+        sys_read_lease: std::time::Duration::from_millis(args.sys_read_lease_ms.unwrap_or(0)),
         refresh_rotate_after: calimero_node::api::REFRESH_ROTATE_AFTER,
         tee_release: args.tee_release.clone(),
         tee_profile: args.tee_profile.clone(),

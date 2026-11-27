@@ -57,7 +57,7 @@ pub struct QuoteBody {
     pub rtmr2: String,
     /// Runtime Measurement Register 3 (48 bytes)
     pub rtmr3: String,
-    /// Report data (64 bytes): nonce[32] || app_hash[32]
+    /// Report data (64 bytes): `nonce[32] || app_hash[32]`
     pub reportdata: String,
     /// Optional second TEE TCB SVN (16 bytes) - TDX 1.5+
     #[serde(skip_serializing_if = "Option::is_none")]

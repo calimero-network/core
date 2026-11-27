@@ -405,6 +405,67 @@ fn only_public_addresses() {
     }
 }
 
+/// IPv6 special-purpose ranges (the IANA IPv6 Special-Purpose Address Registry)
+/// that are not globally reachable, and IPv6 forms that embed an IPv4 address,
+/// are classified like the address or range they stand for.
+#[test]
+fn ipv6_special_purpose_and_embedded_ipv4_addresses_are_not_public() {
+    for (addr, public) in [
+        // IPv4-compatible (deprecated): the embedded IPv4 decides.
+        ("::127.0.0.1", false),
+        ("::10.0.0.1", false),
+        ("::169.254.169.254", false),
+        ("::192.168.1.1", false),
+        ("::1.1.1.1", true),
+        // IPv4-mapped: the embedded IPv4 decides.
+        ("::ffff:127.0.0.1", false),
+        ("::ffff:1.1.1.1", true),
+        ("::", false),
+        ("::1", false),
+        // Site-local (deprecated), fec0::/10.
+        ("fec0::1", false),
+        ("feff:ffff::1", false),
+        // NAT64, 64:ff9b::/96 and 64:ff9b:1::/48.
+        ("64:ff9b::1.1.1.1", false),
+        ("64:ff9b:1::1", false),
+        // Discard-only, 100::/64, and the dummy prefix 100:0:0:1::/64.
+        ("100::1", false),
+        ("100:0:0:1::1", false),
+        // IETF protocol assignments, 2001::/23: Teredo 2001::/32,
+        // benchmarking 2001:2::/48, ORCHIDv2 2001:20::/28 among them.
+        ("2001::1", false),
+        ("2001:0:4136:e378:8000:63bf:f5ff:fffe", false),
+        ("2001:2::1", false),
+        ("2001:20::1", false),
+        ("2001:1ff::1", false),
+        // 6to4, 2002::/16.
+        ("2002:a00:1::1", false),
+        ("2002:101:101::1", false),
+        // Documentation, 2001:db8::/32 and 3fff::/20.
+        ("2001:db8::1", false),
+        ("3fff::1", false),
+        ("3fff:fff::1", false),
+        // Segment Routing SIDs, 5f00::/16.
+        ("5f00::1", false),
+        // Reserved, outside the global unicast 2000::/3.
+        ("400::1", false),
+        ("4000::1", false),
+        // Unique local, link-local, multicast.
+        ("fc00::1", false),
+        ("fe80::1", false),
+        ("ff02::1", false),
+        // Global unicast stays public.
+        ("2001:200::1", true),
+        ("2001:4860:4860::8888", true),
+        ("2606:4700::1111", true),
+        ("2a00:1450:4001::1", true),
+        ("3ffe::1", true),
+        ("3fff:1000::1", true),
+    ] {
+        assert_eq!(is_public(addr.parse::<IpAddr>().unwrap()), public, "{addr}");
+    }
+}
+
 #[test]
 fn the_operator_config_is_checked_at_start() {
     let off = OutboundSettings::default();
@@ -668,6 +729,7 @@ fn a_counted_run_counts_only_the_requests_it_sent() {
             Some(approving(&declared())),
             "ctx".to_owned(),
             Arc::clone(&sent),
+            Arc::default(),
         )
         .unwrap();
     let _answer = approved
@@ -684,6 +746,7 @@ fn a_counted_run_counts_only_the_requests_it_sent() {
             None,
             "ctx".to_owned(),
             Arc::clone(&sent),
+            Arc::default(),
         )
         .unwrap();
     let _refused = unapproved
@@ -1000,6 +1063,93 @@ fn an_instances_own_value_wins_for_its_bound_name_only() {
     assert!(!format!("{owned:?}").contains("owners-own"));
 }
 
+/// Every request a run hands the node lands in its instance's audit, sent or refused,
+/// with the host, the path without its query, the name of the credential binding the
+/// node attached (or refused) and the sizes: never the secret's value, a body, a query
+/// string or a header.
+#[test]
+fn the_audit_records_sent_and_refused_requests_without_values() {
+    let fake = Arc::new(Fake::default());
+    let audit = Arc::new(OutboundAudit::default());
+    let run_of = |app: AppIdentity, provider: Option<Arc<dyn SecretProvider>>| {
+        OutboundService::with_parts(&[HOST], provider, fake.clone())
+            .for_run_counted(
+                app,
+                vec![VERIFY.to_owned()],
+                Some(approving(&declared())),
+                "instance-1".to_owned(),
+                Arc::default(),
+                Arc::clone(&audit),
+            )
+            .expect("the app declares a URL")
+    };
+    let run = run_of(forms(), Some(Arc::new(OneSecret)));
+    // Sent: the node attaches the bound body field.
+    let body = "response=tok-private";
+    let request = post(&format!("{VERIFY}?remoteip=10.1.2.3"), body);
+    let _answer = run.send(&borsh::to_vec(&request).unwrap()).expect("sent");
+    // Refused: the app sets the bound field itself.
+    let own_field = post(VERIFY, "secret=guessed&response=tok-private");
+    let _e = run
+        .send(&borsh::to_vec(&own_field).unwrap())
+        .expect_err("the node sets the bound field");
+    // Refused: a required binding with no value on this node.
+    let mut required = forms();
+    for binding in required.secrets.values_mut() {
+        binding.required = true;
+    }
+    let _e = run_of(required, None)
+        .send(&borsh::to_vec(&post(VERIFY, body)).unwrap())
+        .expect_err("no value for a required binding");
+    // Refused: the retired placeholder, which names no binding.
+    let named = post(VERIFY, "secret={{secret:NOT_BOUND}}");
+    let _e = run
+        .send(&borsh::to_vec(&named).unwrap())
+        .expect_err("a placeholder");
+    let elsewhere = post("https://challenges.cloudflare.com/other", "");
+    let _e = run
+        .send(&borsh::to_vec(&elsewhere).unwrap())
+        .expect_err("not declared");
+    let _e = run.send(b"\xff").expect_err("malformed");
+
+    let entries = audit.entries("instance-1");
+    assert_eq!(entries.len(), 6, "{entries:?}");
+    let sent = &entries[0];
+    assert_eq!(sent.method, "POST");
+    assert_eq!(sent.host, HOST);
+    assert_eq!(sent.path, "/turnstile/v0/siteverify");
+    assert_eq!(sent.status, Some(200));
+    assert_eq!(sent.failure, None);
+    assert_eq!(sent.secrets, ["TURNSTILE_SECRET"]);
+    assert_eq!(sent.request_bytes, body.len() as u64);
+    assert!(sent.response_bytes > 0);
+    for refused in &entries[1..3] {
+        assert_eq!(refused.failure, Some(AuditFailure::Secret), "{refused:?}");
+        assert_eq!(refused.secrets, ["TURNSTILE_SECRET"], "{refused:?}");
+        assert_eq!(refused.status, None);
+    }
+    assert_eq!(entries[3].failure, Some(AuditFailure::Secret));
+    assert!(entries[3].secrets.is_empty(), "{:?}", entries[3]);
+    assert_eq!(entries[4].failure, Some(AuditFailure::Refused));
+    assert_eq!(entries[4].path, "/other");
+    assert!(entries[4].secrets.is_empty());
+    assert_eq!(entries[5].failure, Some(AuditFailure::Malformed));
+
+    let json = serde_json::to_string(&entries).unwrap();
+    for leak in [
+        SECRET,
+        "guessed",
+        "remoteip",
+        "10.1.2.3",
+        "tok-private",
+        "NOT_BOUND",
+        "Content-Type",
+    ] {
+        assert!(!json.contains(leak), "{leak} in {json}");
+    }
+    assert!(audit.entries("instance-2").is_empty());
+}
+
 #[test]
 fn egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again() {
     use std::sync::atomic::AtomicBool;
@@ -1015,9 +1165,12 @@ fn egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again()
         .expect("the app declares a URL");
     let off = Arc::new(AtomicBool::new(true));
     let switch = Arc::clone(&off);
+    let audit = Arc::new(OutboundAudit::default());
     let gated = egress_gated(
         run,
         Arc::new(move || switch.load(Ordering::SeqCst).then_some("its organization")),
+        Arc::clone(&audit),
+        "ctx".to_owned(),
     );
     let request = borsh::to_vec(&post(VERIFY, "response=tok")).unwrap();
 
@@ -1034,6 +1187,13 @@ fn egress_off_refuses_every_request_whatever_was_approved_until_it_is_on_again()
         fake.0.lock().unwrap().is_empty(),
         "nothing reached the transport"
     );
+    // The owner's audit names the refusal as egress off, with the endpoint.
+    let entries = audit.entries("ctx");
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].failure, Some(AuditFailure::EgressOff));
+    assert_eq!(entries[0].host, HOST);
+    assert_eq!(entries[0].path, "/turnstile/v0/siteverify");
+    assert_eq!(entries[0].status, None);
 
     // Asked again for each request: on again, the approved request goes out.
     off.store(false, Ordering::SeqCst);
@@ -1168,6 +1328,45 @@ fn a_secret_echoed_in_a_common_encoding_is_redacted_from_a_failure() {
         Vec::<&str>::new(),
         "encodings of the secret reached the app and the log: {reason}"
     );
+}
+
+#[test]
+fn the_audit_records_a_transport_failure_by_kind_never_its_words() {
+    // An owner reads the audit: like the guest and the log, it learns only that
+    // the request failed in transit, never what the transport said about it.
+    let audit = Arc::new(OutboundAudit::default());
+    let run = OutboundService::with_parts(
+        &[HOST],
+        Some(Arc::new(Awkward)),
+        Arc::new(EchoesEncoded { fail: true }),
+    )
+    .for_run_counted(
+        forms(),
+        vec![VERIFY.to_owned()],
+        Some(approving(&declared())),
+        "ctx".to_owned(),
+        Arc::default(),
+        Arc::clone(&audit),
+    )
+    .expect("the app declares a URL");
+    let request = post(VERIFY, "response=tok");
+    let _e = run
+        .send(&borsh::to_vec(&request).unwrap())
+        .expect_err("the transport failed");
+
+    let entries = audit.entries("ctx");
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0].failure, Some(AuditFailure::Failed));
+    assert_eq!(entries[0].status, None);
+    assert_eq!(
+        entries[0].secrets,
+        ["TURNSTILE_SECRET"],
+        "attached, then failed"
+    );
+    assert_eq!(entries[0].response_bytes, 0);
+    let json = serde_json::to_string(&entries).unwrap();
+    assert_eq!(leaked(&json), Vec::<&str>::new(), "{json}");
+    assert!(!json.contains("upstream refused"), "{json}");
 }
 
 /// An honest upstream that answers what it was sent, transformed: a model asked to repeat

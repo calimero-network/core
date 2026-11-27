@@ -1,0 +1,20 @@
+error[E0277]: `u64` travels as an app's JSON but has no ABI shape: it does not implement `AbiType`
+ --> tests/ui/alias_u64.rs:8:16
+  |
+8 |     pub until: Millis,
+  |                ^^^^^^ derive `AbiType` (a serde type) or `Record` for `u64`
+  |
+  = help: the trait `calimero_sdk::AbiType` is not implemented for `u64`
+  = note: every type in an app method's parameters or result, an error's or event's fields, or a field of one of those, is described in the ABI, so clients know its JSON
+  = note: a bare u64/i64 field would reach JavaScript as a number exact only up to 2^53: `#[derive(AbiType)]` refuses it and names it; write it `#[serde(with = "calimero_sdk::json::u64_str")]` (`i64_str`, `opt_u64_str`, ...), a decimal string; u128, i128, usize and isize have no JSON form: use u32 or u64
+  = note: a type alias of u64 or i64 is not converted: use the integer type itself, with its `with`
+  = help: the following other types implement trait `calimero_sdk::AbiType`:
+            BlobRef
+            ComputeOutcome
+            ComputeOutput
+            ComputeStatus
+            ComputeUsage
+            Mark
+            RunId
+            Span
+          and $N others

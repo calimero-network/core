@@ -83,18 +83,16 @@ impl Rig {
             n.node.set_compute_limits(test_limits());
         }
         let (alice, pk) = signed_up(&c, 0, "alice").await;
+        let _org = alice.orgs().create("alice org", None, None).await.unwrap();
         let both = common::components("fixture-compute");
         let compute = both.compute.expect("a compute component");
         let key = ed25519_dalek::SigningKey::from_bytes(&PUBLISHER);
         let _installed = alice
             .packages()
-            .upload(mpk_with(
-                "com.test.compute",
-                "1.0.0",
-                &both.app,
-                Some(&compute),
-                &key,
-            ))
+            .upload(
+                mpk_with("com.test.compute", "1.0.0", &both.app, Some(&compute), &key),
+                None,
+            )
             .await
             .unwrap();
         let app = alice
@@ -166,49 +164,46 @@ impl Rig {
 
     /// Waits until the run's record is no longer active, and its result method recorded.
     async fn outcome(&self, run: &str) -> Value {
-        let started = Instant::now();
-        loop {
-            let v = self
-                .alice
-                .apps()
-                .view(
-                    &self.app,
-                    "outcome",
-                    Some(json!({ "run": run })),
-                    Some(ViewsRequestConsistency::Strong),
-                    None,
-                )
-                .await
-                .unwrap();
-            if let Some(text) = v.result.as_str() {
-                return serde_json::from_str(text).unwrap();
-            }
-            assert!(started.elapsed() < WAIT, "run {run} did not end");
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        let text =
+            crate::harness::poll::eventually(WAIT, &format!("run {run} did not end"), || async {
+                let v = self
+                    .alice
+                    .apps()
+                    .view(
+                        &self.app,
+                        "outcome",
+                        Some(json!({ "run": run })),
+                        Some(ViewsRequestConsistency::Strong),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                v.result.as_str().map(str::to_owned).ok_or(v.result)
+            })
+            .await;
+        serde_json::from_str(&text).unwrap()
     }
 
-    async fn until(&self, what: &str, mut ready: impl FnMut() -> bool) {
-        let started = Instant::now();
-        while !ready() {
-            assert!(started.elapsed() < WAIT, "{what}");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+    async fn until(&self, what: &str, ready: impl FnMut() -> bool) {
+        crate::harness::poll::until(WAIT, what, ready).await;
     }
 
     /// The leader's metrics once every series in `names` shows: it counts a run's usage after
     /// the final commits and the job node drops the run, so the outcome is visible first.
     async fn metrics_with(&self, names: &[&str]) -> String {
-        let started = Instant::now();
-        loop {
+        crate::harness::poll::eventually(WAIT, &format!("{names:?} in the metrics"), || async {
             let metrics = self.metrics().await;
             if names.iter().all(|n| metrics.contains(n)) {
-                return metrics;
+                return Ok(metrics);
             }
-            let seen: Vec<&str> = metrics.lines().filter(|l| l.contains("compute")).collect();
-            assert!(started.elapsed() < WAIT, "{names:?} not in {seen:#?}");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+            let seen: Vec<String> = metrics
+                .lines()
+                .filter(|l| l.contains("compute"))
+                .map(str::to_owned)
+                .collect();
+            Err(seen)
+        })
+        .await
     }
 
     async fn metrics(&self) -> String {
@@ -1244,18 +1239,12 @@ async fn a_slow_failing_output_fetch_does_not_lose_an_attempt_whose_job_node_ans
 }
 
 async fn until_ended(rig: &Rig, run: &str, secs: u64) -> RunRecord {
-    let started = Instant::now();
-    loop {
-        let rec = rig.record(run);
-        if !rec.state.is_active() {
-            return rec;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(secs),
-            "run {run} still active after {secs} s"
-        );
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+    crate::harness::poll::found(
+        Duration::from_secs(secs),
+        &format!("run {run} still active after {secs} s"),
+        || Some(rig.record(run)).filter(|rec| !rec.state.is_active()),
+    )
+    .await
 }
 
 fn failed(reason: FailedReason) -> FinalOutcome {
@@ -1562,8 +1551,7 @@ async fn a_result_method_can_start_the_next_run() {
     let rig = Rig::start(&[JOB_A]).await;
     let run = rig.begin("startDigestThen", json!({ "inputs": [] })).await;
     until_ended(&rig, &run, 60).await;
-    let started = Instant::now();
-    let next = loop {
+    let next = crate::harness::poll::eventually(WAIT, "the result method ran", || async {
         let v = rig
             .alice
             .apps()
@@ -1576,12 +1564,9 @@ async fn a_result_method_can_start_the_next_run() {
             )
             .await
             .unwrap();
-        if let Some(text) = v.result.as_str() {
-            break text.to_owned();
-        }
-        assert!(started.elapsed() < WAIT, "the result method did not run");
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    };
+        v.result.as_str().map(str::to_owned).ok_or(v.result)
+    })
+    .await;
     assert!(!next.starts_with("error"), "{next}");
     let record = until_ended(&rig, &next, 60).await;
     assert_eq!(record.state, RunState::Done);
@@ -1849,15 +1834,15 @@ impl Rig {
     /// The `queue` of the run in `view` (the single-run or the list view) once it shows one in
     /// `state`.
     async fn queue_in(&self, who: &Client, run: &str, state: &str) -> Value {
-        let started = Instant::now();
-        loop {
+        crate::harness::poll::eventually(WAIT, &format!("a queue in {state}"), || async {
             let shown = who.apps().run(&self.app, run).await.map(wire).unwrap();
             if shown["queue"]["state"] == state {
-                return shown["queue"].clone();
+                Ok(shown["queue"].clone())
+            } else {
+                Err(shown)
             }
-            assert!(started.elapsed() < WAIT, "no queue in {state}: {shown}");
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        }
+        })
+        .await
     }
 }
 
@@ -1959,6 +1944,8 @@ impl Rig {
     }
 }
 
+/// A run's output is not downloadable as a blob until it is published, and once published it is the
+/// exact plaintext the run wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_published_output_downloads_as_exactly_the_plaintext_the_run_wrote() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2139,6 +2126,8 @@ fn raw_id(id: &str) -> [u8; 32] {
     <[u8; 32]>::try_from(hex::decode(id).unwrap()).unwrap()
 }
 
+/// A logged entry pins the ids it stores until it commits: a blob collection that runs between a
+/// publish's push and its commit must not delete the bytes the entry is about to register.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_collection_between_a_publishes_push_and_its_commit_leaves_the_bytes() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2158,6 +2147,8 @@ async fn a_collection_between_a_publishes_push_and_its_commit_leaves_the_bytes()
         .await;
 }
 
+/// A peer asked to delete a blob's bytes while a publish of the same content is between its push and
+/// its commit keeps them: the leader's pin counts as in use.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_peer_asked_to_delete_between_a_publishes_push_and_its_commit_keeps_the_bytes() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2192,6 +2183,8 @@ async fn a_peer_asked_to_delete_between_a_publishes_push_and_its_commit_keeps_th
     }
 }
 
+/// A peer's delete that finished its checks before a publish stored the same bytes gives up when the
+/// put lands (`BlobGuards::put`), so the published blob still downloads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_peers_delete_that_checked_before_a_publish_stored_its_bytes_keeps_them() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2283,6 +2276,8 @@ async fn a_publish_apply_refuses_keeps_no_charge_and_no_bytes() {
     .await;
 }
 
+/// Only an output of this app's done runs publishes: an uploaded file, an unknown id or another app's
+/// output is refused.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn only_an_output_of_this_apps_done_runs_publishes() {
     let rig = Rig::start(&[JOB_A]).await;
@@ -2323,6 +2318,8 @@ async fn only_an_output_of_this_apps_done_runs_publishes() {
     assert_eq!(e.code(), Some("NOT_SUPPORTED"), "{e}");
 }
 
+/// A published output stays downloadable through its grant after the app's leader stops and another
+/// node leads.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_published_blob_survives_a_leader_change() {
     let mut rig = Rig::start(&[JOB_A]).await;
@@ -2586,11 +2583,15 @@ impl Case<'_> {
                 !self.rig.holds_bytes(&again)
             })
             .await;
-        let started = Instant::now();
-        while self.rig.charged().await != baseline {
-            assert!(started.elapsed() < WAIT, "the quota charge is not released");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        crate::harness::poll::eventually(WAIT, "the quota charge is released", || async {
+            let charged = self.rig.charged().await;
+            if charged == baseline {
+                Ok(())
+            } else {
+                Err(charged)
+            }
+        })
+        .await;
     }
 
     async fn run(&self, up: Via, del: Via, baseline: u64) {
@@ -2615,11 +2616,15 @@ impl Case<'_> {
                 self.nodes_with_bytes(&id) == 0
             })
             .await;
-        let started = Instant::now();
-        while self.rig.charged().await != baseline {
-            assert!(started.elapsed() < WAIT, "the quota charge is not released");
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        crate::harness::poll::eventually(WAIT, "the quota charge is released", || async {
+            let charged = self.rig.charged().await;
+            if charged == baseline {
+                Ok(())
+            } else {
+                Err(charged)
+            }
+        })
+        .await;
     }
 }
 

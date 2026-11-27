@@ -235,8 +235,7 @@ async fn another_accounts_session_is_neither_listed_nor_ended() {
 /// A flood of sign-in begins from one sealed session never stops another
 /// client's sign-in on the same node: the flooding session holds at most
 /// `MAX_CEREMONIES_PER_SESSION` open ceremonies, its next begin displacing
-/// its own oldest, so the pool other callers share stays open (review
-/// finding D1: 10,000 begins, about 33 a second, used to lock everyone out).
+/// its own oldest, so the pool other callers share stays open.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in() {
     use calimero_client::Passkey;
@@ -250,7 +249,7 @@ async fn a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in() {
     let flooding = &flood;
     let begun: Vec<Value> =
         futures_util::stream::iter(0..calimero_node::api::MAX_PENDING_CHALLENGES)
-            .map(|_| async move { flooding.auth().login_begin(None).await.map(wire) })
+            .map(|_| async move { flooding.auth().login_begin(None, None).await.map(wire) })
             .buffer_unordered(16)
             .collect::<Vec<_>>()
             .await
@@ -282,4 +281,101 @@ async fn a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("UNKNOWN_CHALLENGE"), "{e}");
+}
+
+/// A step-up signed with a stale copy of the passkey, whose counter is behind
+/// the node's (two processes sharing one passkey file sign with the same
+/// count), is refused with what went wrong, `403 SIGN_COUNT_REPLAYED`, and not
+/// a `401`: the client would take that for an expired session, spend a
+/// refresh, and send the spent challenge again (`400 UNKNOWN_CHALLENGE`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_passkey_counter_is_named_and_spends_no_refresh() {
+    let c = Cluster::start(1).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let mut stale = SoftAuthenticator::from_json(&pk.to_json()).unwrap();
+    let key = |label: &str| {
+        calimero_client::Request::new(reqwest::Method::POST, "auth/apikeys")
+            .json(json!({ "label": label }))
+    };
+    let _made = alice
+        .transport()
+        .confirmed(key("first"), &mut pk)
+        .await
+        .unwrap();
+    let before = alice.transport().session().await.unwrap();
+
+    let e = alice
+        .transport()
+        .confirmed(key("second"), &mut stale)
+        .await
+        .unwrap_err();
+    let calimero_client::Error::Api { status, code, .. } = &e else {
+        panic!("not the node's answer: {e}");
+    };
+    assert_eq!(
+        (*status, code.as_str()),
+        (403, "SIGN_COUNT_REPLAYED"),
+        "{e}"
+    );
+    let after = alice.transport().session().await.unwrap();
+    assert_eq!(
+        after.session_token, before.session_token,
+        "no refresh spent"
+    );
+
+    // The current passkey still approves.
+    let _made = alice
+        .transport()
+        .confirmed(key("third"), &mut pk)
+        .await
+        .unwrap();
+}
+
+/// A sign-up's name is held with its ceremony until the challenge expires, so
+/// it is bounded: one past `MAX_ACCOUNT_NAME_CHARS` is refused `400` before
+/// anything is held, a body past `MAX_PASSKEY_CEREMONY_BYTES` is refused
+/// `413`, and a name at the limit still begins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_sign_up_name_past_the_limit_is_refused_and_nothing_is_held() {
+    use calimero_node::api::{MAX_ACCOUNT_NAME_CHARS, MAX_PASSKEY_CEREMONY_BYTES};
+
+    let c = Cluster::start(1).await;
+    let held = || {
+        c.nodes[0]
+            .as_ref()
+            .unwrap()
+            .node
+            .challenges
+            .lock()
+            .unwrap()
+            .len()
+    };
+    let client = c.client(0);
+
+    let long = "n".repeat(MAX_ACCOUNT_NAME_CHARS + 1);
+    let e = client
+        .auth()
+        .register_begin(Some(&long), None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.code(), Some("NAME_TOO_LONG"), "{e}");
+    assert!(e.to_string().starts_with("400"), "{e}");
+    assert_eq!(held(), 0, "a refused begin holds nothing");
+
+    let huge = "n".repeat(MAX_PASSKEY_CEREMONY_BYTES);
+    let e = client
+        .auth()
+        .register_begin(Some(&huge), None, None)
+        .await
+        .unwrap_err();
+    assert!(e.to_string().starts_with("413"), "{e}");
+    assert_eq!(held(), 0, "a refused begin holds nothing");
+
+    let fits = "é".repeat(MAX_ACCOUNT_NAME_CHARS);
+    let _begun = client
+        .auth()
+        .register_begin(Some(&fits), None, None)
+        .await
+        .expect("a name at the limit begins");
+    assert_eq!(held(), 1);
 }

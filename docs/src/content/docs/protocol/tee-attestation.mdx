@@ -68,7 +68,10 @@ quote at a time, on its blocking pool rather than the workers that run Raft and
 the API, and lets a few more requests wait for it; past that it answers
 `503 BUSY` with `Retry-After: 1` at once (`MAX_CONCURRENT_QUOTES`,
 `MAX_QUEUED_QUOTES`, `QUOTE_WAIT`; [Limits](/protocol/limits/#node-limits)).
-A client sends the request again after the delay.
+A client sends the request again after the delay. The cluster's own nodes
+attesting each other queue apart from anyone else and pass the anonymous
+queue, so requests nobody vouches for cannot keep a restarted node from
+rejoining (`MAX_QUEUED_PEER_QUOTES`, `PEER_QUOTE_WAIT`).
 
 ## What the verifier checks
 
@@ -358,3 +361,75 @@ A TDX node produces quotes through the kernel's TSM configfs interface
 accepts only with `allowMock`; `meroctl node add … --allow-mock` keeps that
 permission for one saved node only. A node without `--dev` always produces
 real quotes and refuses mock quotes from its peers.
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src`
+unless another crate is named. The design and its reasons are above; a module's own detail is in its
+`//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Receipts
+
+Every `/intents` and `/views` answer carries a `Receipt` signed by the answering node's receipt key
+(Ed25519, made on the node's first start and kept in `<data_dir>/signing-key` wrapped under K_r,
+`signing_key.rs`: a restart keeps it, only the release whose mero-kms gives that K_r opens it), over
+`(app, index, SHA-256(JCS(result)), node)`.
+The key is attested on its own (`GET /attestation?purpose=receipts`, report data `nonce ||
+receipt_key_binding`), and `GET /apps/{app}/attestation` gathers every replica's
+(`Client::verify_app_cluster`).
+
+### KMS evidence
+
+`GET /attestation?purpose=kms` adds `kms` (`config.kms_keys`: the KMS quote merod accepted for its
+storage key, and the boot script's record for the data disk's, `--kms-disk-evidence`) and binds it
+(`kms_report_data`).
+Without a record, or without `purpose=kms`, the answer is the plain transport form.
+
+### Orchestrator attestation
+
+`GET /attestation?purpose=orchestrator` on a replica binds the transport key and
+`Node::cluster_identity` (`orchestrator_report_data`) and carries `clusterIdentity`; a job node
+answers `404 NOT_FOUND`.
+
+### Release attestations
+
+Code: `attest.rs`, `release_attestation`, `serve_release`.
+
+A quote over a manager's nonce and `ReleaseClaim`, for `merod attest` before the node has any key.
+Not a route of a running node: `serve_release` is its own tiny server (that one route, through its
+own `Quoter`), run only by `merod attest --serve`.
+
+### Quotes
+
+Code: `attest::Quoter`.
+
+Every quote a serving process makes goes through its one `Quoter` (`Node::quoter` for `/attestation`
+and the recovery disk's attestation, a job node's, a waiting node's, `serve_release`'s).
+A TDX quote blocks its thread in the kernel for about a second and anyone may ask for one, so it
+runs on the blocking pool (`spawn_blocking`), `MAX_CONCURRENT_QUOTES` (1) at a time;
+`MAX_QUEUED_QUOTES` (8) more wait, each at most `QUOTE_WAIT` (3 s), and anything past that answers
+`503 BUSY` with `Retry-After: 1` at once (`ApiError::busy`).
+The slot is released only when the quote returns, even if its caller went away.
+A node attesting a peer of its cluster (`PeerAttestor`: opening a sealed channel, identifying a
+caller, checking a registered node) sends `x-calimero-peer-attest`, an HMAC over the request's
+nonce under a key derived from K_c (`peer_attest_tag`, label `calimero.attest-peer.v1|<cluster>`).
+A request whose header the node computes alike takes `Lane::Peer`: `MAX_QUEUED_PEER_QUOTES` (8)
+places of its own, at most `PEER_QUOTE_WAIT` (10 s), and the slot before every anonymous request
+but the one already waiting for it (only one anonymous request waits for the slot at a time), so a
+full anonymous queue delays a peer by about two quotes. Any other request, or one from a node of an
+older release that sends no header, takes `Lane::Anyone` as before; the response is the same.
+The recovery disk's own attestation also takes `Lane::Peer`.
+`/attestation` takes it after `?app=`'s lookup, which, in the clear and without a credential, is
+judged as an anonymous `GET /apps/{app}` (fresh system state; an app anyone may not reach answers
+`404` as an unknown id).
+Mock quotes take the same path.
+
+### Peers' quotes
+
+Are judged like a client's (`calimero_client::Measurements`): in TDX mode the signed mero-tee
+release the peer names, profiles from `--peer-profiles` (default: this node's `MERO_TEE_PROFILE`),
+floor `--peer-min-release` (merod refuses one below `DEFAULT_MIN_RELEASE`,
+`attest::configured_min_release`).
+Debug peers are trusted only by a debug node, and `run` measures that first: on TDX it reads its own
+registers and refuses to start unless they match `MERO_TEE_PROFILE` in the signed `MERO_TEE_VERSION`
+release (`attest::check_own_profile`).

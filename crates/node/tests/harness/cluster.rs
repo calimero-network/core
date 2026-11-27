@@ -127,8 +127,10 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
             election_min_ms: 500,
             election_max_ms: 1000,
             snapshot_every: 200,
+            snapshot_scale_bytes: None,
         },
         read_wait: Duration::from_secs(2),
+        sys_read_lease: Duration::ZERO,
         // Every refresh exchanges its token in the log, as the tests of
         // rotation and reuse expect; `tests/it/refresh.rs` runs the production
         // `api::REFRESH_ROTATE_AFTER`.

@@ -153,7 +153,7 @@ final class CoreRc10ParityTests: XCTestCase {
     func testRevokingAKeyIsApprovedAndAnUpgradeKeyNamesItsApp() async throws {
         let node = FakeCloudNode { request in
             if request.json?["confirm"] == nil { return .error(412, "CONFIRM_REQUIRED", details: Self.stepUp) }
-            return .json(["keyId": "k1", "key": "cal_up"])
+            return .json(["keyId": "k1", "key": "cal_up", "then": []])
         }
         node.install()
         let cloud = client()
@@ -236,7 +236,8 @@ final class CoreRc10ParityTests: XCTestCase {
             case "/auth/me":
                 return .json([
                     "accountId": "acc_new", "name": "new", "passkeys": [], "orgs": [], "via": "session",
-                    "passkeyId": .null, "approvedReleases": [], "outboundApprovals": [:],
+                    "passkeyId": .null, "approvedReleases": [], "outboundApprovals": [:], "app": .null,
+                    "origin": .null, "recoveryCode": false, "recoveryPending": .null,
                 ])
             case "/orgs/o1/recovery/start": return .json(["startedAt": 100, "readyAt": 259_300])
             case "/orgs/o1/recovery/finish":

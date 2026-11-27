@@ -55,6 +55,11 @@ def _parse_response(
 
         return response_403
 
+    if response.status_code == 404:
+        response_404 = Error.from_dict(response.json())
+
+        return response_404
+
     if response.status_code == 421:
         response_421 = Error.from_dict(response.json())
 
@@ -96,7 +101,7 @@ def sync_detailed(
     Args:
         org (str):
         team (str):
-        body (TeamUpdateBody):
+        body (TeamUpdateBody): The request body of `POST /orgs/{org}/teams/{team}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -138,7 +143,7 @@ def sync(
     Args:
         org (str):
         team (str):
-        body (TeamUpdateBody):
+        body (TeamUpdateBody): The request body of `POST /orgs/{org}/teams/{team}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -175,7 +180,7 @@ async def asyncio_detailed(
     Args:
         org (str):
         team (str):
-        body (TeamUpdateBody):
+        body (TeamUpdateBody): The request body of `POST /orgs/{org}/teams/{team}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -215,7 +220,7 @@ async def asyncio(
     Args:
         org (str):
         team (str):
-        body (TeamUpdateBody):
+        body (TeamUpdateBody): The request body of `POST /orgs/{org}/teams/{team}`.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

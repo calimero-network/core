@@ -4,6 +4,11 @@
 //!
 //! This crate is pure logic. Accounts, credentials and revocations are stored
 //! by the caller (the node keeps them in the system group).
+//!
+//! Spec: [Accounts,
+//! passkeys & sessions](https://calimero-network.github.io/core/protocol/identities/),
+//! [Sessions and authority](https://calimero-network.github.io/core/protocol/sessions-and-authority/).
+//! Crate guide: [`crates/identity/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/identity/AGENTS.md).
 
 use ring::digest::{digest, SHA256};
 use ring::rand::SystemRandom;
@@ -85,6 +90,10 @@ pub struct SessionClaims {
     /// the cluster's own origins and served frontends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// The registration of `origin` the session was opened under: the origin
+    /// registered anew does not bring the session back.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub registration: String,
     /// The node that issued and signed the token.
     pub node: u64,
     /// That node's signing key (Ed25519, base64url): the key its attestation
@@ -297,6 +306,19 @@ mod tests {
     }
 
     #[test]
+    fn a_credential_id_past_webauthns_bound_is_refused() {
+        let mut auth = SoftAuthenticator::new("localhost", "http://localhost:3000");
+        let challenge = random::<32>();
+        auth.set_credential_id(vec![7; webauthn::MAX_CREDENTIAL_ID_BYTES]);
+        assert!(verify_registration(&rp(), &challenge, &auth.register(&challenge)).is_ok());
+        auth.set_credential_id(vec![7; webauthn::MAX_CREDENTIAL_ID_BYTES + 1]);
+        assert_eq!(
+            verify_registration(&rp(), &challenge, &auth.register(&challenge)),
+            Err(Error::Malformed("credential id"))
+        );
+    }
+
+    #[test]
     fn refuses_wrong_challenge_origin_and_tampering() {
         let mut auth = SoftAuthenticator::new("localhost", "http://localhost:3000");
         let challenge = random::<32>();
@@ -321,6 +343,46 @@ mod tests {
         sig[last] ^= 1;
         a.signature = b64url(&sig);
         assert!(verify_assertion(&rp(), &[4; 32], &cred, &a).is_err());
+    }
+
+    #[test]
+    fn refuses_a_ceremony_made_in_a_cross_origin_frame() {
+        const OURS: &str = "http://localhost:3000";
+        // (crossOrigin, topOrigin, accepted): a top-level page on our origin,
+        // or an older browser that names neither, is accepted; a ceremony a
+        // frame on another site ran is not.
+        let cases: [(Option<bool>, Option<&str>, bool); 6] = [
+            (Some(false), None, true),
+            (None, None, true),
+            (Some(false), Some(OURS), true),
+            (Some(true), None, false),
+            (Some(true), Some("https://evil.example"), false),
+            (None, Some("https://evil.example"), false),
+        ];
+        let refused = Err(Error::Mismatch("cross-origin frame"));
+        for (cross, top, accepted) in cases {
+            let case = format!("crossOrigin {cross:?}, topOrigin {top:?}");
+            let mut auth = SoftAuthenticator::new("localhost", OURS);
+            auth.set_frame(cross, top);
+            let challenge = random::<32>();
+            let reg = verify_registration(&rp(), &challenge, &auth.register(&challenge));
+            assert_eq!(reg.is_ok(), accepted, "registration, {case}: {reg:?}");
+            if !accepted {
+                assert_eq!(reg.map(|_| ()), refused, "registration, {case}");
+            }
+
+            // The assertion, from a passkey registered on a top-level page.
+            let mut auth = SoftAuthenticator::new("localhost", OURS);
+            let challenge = random::<32>();
+            let cred = verify_registration(&rp(), &challenge, &auth.register(&challenge)).unwrap();
+            auth.set_frame(cross, top);
+            let a = auth.assert(&[6; 32]);
+            let got = verify_assertion(&rp(), &[6; 32], &cred, &a);
+            assert_eq!(got.is_ok(), accepted, "assertion, {case}: {got:?}");
+            if !accepted {
+                assert_eq!(got.map(|_| ()), refused, "assertion, {case}");
+            }
+        }
     }
 
     #[test]
@@ -411,6 +473,7 @@ mod tests {
             passkey: Some("cred".into()),
             app: None,
             origin: None,
+            registration: String::new(),
             node: 3,
             key: b64url(&public),
         };

@@ -29,7 +29,7 @@ from ...models.consent_page_create_body_type_6 import ConsentPageCreateBodyType6
 from ...models.consent_page_create_body_type_7 import ConsentPageCreateBodyType7
 from ...models.consent_page_create_body_type_8 import ConsentPageCreateBodyType8
 from ...models.consent_page_create_body_type_9 import ConsentPageCreateBodyType9
-from ...models.consent_page_create_response_200 import ConsentPageCreateResponse200
+from ...models.consent_request_made import ConsentRequestMade
 from ...models.error import Error
 from typing import cast
 from typing import cast, Union
@@ -123,9 +123,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[ConsentPageCreateResponse200, Error]]:
+) -> Optional[Union[ConsentRequestMade, Error]]:
     if response.status_code == 200:
-        response_200 = ConsentPageCreateResponse200.from_dict(response.json())
+        response_200 = ConsentRequestMade.from_dict(response.json())
 
         return response_200
 
@@ -167,7 +167,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[ConsentPageCreateResponse200, Error]]:
+) -> Response[Union[ConsentRequestMade, Error]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -203,7 +203,7 @@ def sync_detailed(
         "ConsentPageCreateBodyType8",
         "ConsentPageCreateBodyType9",
     ],
-) -> Response[Union[ConsentPageCreateResponse200, Error]]:
+) -> Response[Union[ConsentRequestMade, Error]]:
     """Ask the account's owner to approve
 
      From an app's frontend: an instance of a release or a deployment's offer (`install`: the install
@@ -237,7 +237,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ConsentPageCreateResponse200, Error]]
+        Response[Union[ConsentRequestMade, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -278,7 +278,7 @@ def sync(
         "ConsentPageCreateBodyType8",
         "ConsentPageCreateBodyType9",
     ],
-) -> Optional[Union[ConsentPageCreateResponse200, Error]]:
+) -> Optional[Union[ConsentRequestMade, Error]]:
     """Ask the account's owner to approve
 
      From an app's frontend: an instance of a release or a deployment's offer (`install`: the install
@@ -312,7 +312,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ConsentPageCreateResponse200, Error]
+        Union[ConsentRequestMade, Error]
     """
 
     return sync_detailed(
@@ -348,7 +348,7 @@ async def asyncio_detailed(
         "ConsentPageCreateBodyType8",
         "ConsentPageCreateBodyType9",
     ],
-) -> Response[Union[ConsentPageCreateResponse200, Error]]:
+) -> Response[Union[ConsentRequestMade, Error]]:
     """Ask the account's owner to approve
 
      From an app's frontend: an instance of a release or a deployment's offer (`install`: the install
@@ -382,7 +382,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[ConsentPageCreateResponse200, Error]]
+        Response[Union[ConsentRequestMade, Error]]
     """
 
     kwargs = _get_kwargs(
@@ -421,7 +421,7 @@ async def asyncio(
         "ConsentPageCreateBodyType8",
         "ConsentPageCreateBodyType9",
     ],
-) -> Optional[Union[ConsentPageCreateResponse200, Error]]:
+) -> Optional[Union[ConsentRequestMade, Error]]:
     """Ask the account's owner to approve
 
      From an app's frontend: an instance of a release or a deployment's offer (`install`: the install
@@ -455,7 +455,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[ConsentPageCreateResponse200, Error]
+        Union[ConsentRequestMade, Error]
     """
 
     return (

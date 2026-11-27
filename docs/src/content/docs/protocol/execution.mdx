@@ -1,5 +1,5 @@
 ---
-title: Application execution
+title: App execution
 description: How the leader runs one call of a calimero:app component — the state it runs over, what the host hands the run, what comes out, and what the node refuses.
 sidebar:
   order: 5
@@ -7,7 +7,7 @@ sidebar:
 
 import SeqDiagram from '../../../components/SeqDiagram.astro';
 
-An **application** is a `calimero:app` component: a WASM component, built with
+An **app** is a `calimero:app` component: a WASM component, built with
 `calimero-sdk`, that defines a state machine: its data types and the methods
 that change them. An **execution** (a *run*) is one call of one method. On a
 cluster, only the app group's **leader** runs calls; the other replicas apply
@@ -93,10 +93,25 @@ confirm methods ([Build](/build/)). On a cluster, a call to
 
 A run reads the app's state as an ordered, immutable version (`StateView`);
 its writes stay in the run. When it ends, they become the outcome's **diff**,
-which every replica applies. If the run trapped or the app returned an error,
-the diff is empty and the entry is still logged with its status
-(`422 APP_ERROR` with `details.{code, fields}`, `422 TRAP` with
-`details.{kind, detail}`).
+which every replica applies. Each run gets a fresh instance of the component
+from a pool of precompiled ones, dropped when the run ends, so nothing in a
+module's memory or globals carries from one caller to the next.
+
+A run ends with one status, the same whichever engine ran it:
+
+| Status | The caller gets | In the log |
+| --- | --- | --- |
+| `Ok` | the result, and the events the caller is in the audience of | the diff, events, xcalls, started actions and compute starts |
+| `AppError { code, message }` (the method returned an error) | `422 APP_ERROR`, `details.{code, fields}` | logged, nothing else kept |
+| Trap `OutOfFuel`, `OutOfMemory`, `StackOverflow`, `Fault` (a guest panic, an out-of-bounds access, `unreachable`, a host panic), `HostDenied` (a call the run's kind may not make) | `422 TRAP`, `details.{kind, detail}` | logged, nothing else kept |
+| Trap `Timeout` (the wall clock ran out) or `Unavailable` (the node had no instance slot, memory or file bytes for it) | `503 TIMEOUT`, `details.retryAfter` | not logged |
+
+A logged failure spends the call's idempotency key, so a retry with the key
+answers the same failure. A timeout depends on the node's load, not on the call,
+so it is not logged and the key stays unspent: the client retries with the same
+key. Outbound requests a run made are logged whatever its status, because they
+left the node ([below](#outbound-http-from-component-calls)). A trap's `detail`
+is a fixed text, never data from the guest.
 
 ## What the host offers a cloud run
 
@@ -105,20 +120,55 @@ The `calimero:app` world (`crates/app-wit/wit/calimero-app.wit`):
 | Interface | What it does on a cluster |
 | --- | --- |
 | `storage` | The app's replicated state: `get`, `put`, `delete`, the commutative `add`, ordered `range` |
-| `context` | The caller, the app's id and owner, its organization, the caller's role and teams there (`org-role-strict` on a read index), the applied index, unique ids, and starting an [action](#actions-component-apps) |
+| `context` | The caller, the app's id and owner, its organization, the caller's role and teams there (`org-role-strict` answers as `org-role`, from the node's replica of the system state), the applied index, unique ids, and starting an [action](#actions-component-apps) |
 | `events` | Emit an event to an audience (`all`, the caller, listed accounts, a team, the org's members or admins); a removed member stops receiving at once |
 | `blobs`, `files` | The app's [blobs](/protocol/blobs/) and sealed files |
 | `search` | The app's own full-text indexes, in views |
 | `xcall` | Send a call into another app (outbox), or call or view one synchronously |
 | `runs` | Start or cancel a [compute run](/protocol/compute-actions/) on a job node, the uploader of a sealed file, publish a done run's output (logged writes only) |
-| `rebuild` | A migration's new key space; migrations are refused today (`MigrationsNotSupported`), so no run gets it |
+| `rebuild` | A migration's new key space; migrations are refused (`MigrationsNotSupported`), so no run gets it |
 | `action` | Inside an action: its key, and views and calls of the app |
-| `wasi:clocks`, `wasi:random` | The leader's wall clock and randomness, read once: followers apply the result |
+| `wasi:clocks`, `wasi:random` | The run's clock and randomness, served by the host ([Time and randomness](#time-and-randomness)) |
+| `wasi:cli/stdout`, `stderr` | The app's log ([Logging](/build/host-functions/#logging)); `wasi:cli/environment` is empty: no variables, no arguments |
 | `wasi:http` | Outbound HTTPS, from actions and as recorded requests of a call (below) |
 
 A package may also ship a **compute component** (world `compute`: `files`,
 `job` and WASI's clocks and randomness, no storage, no network), which job
 nodes run outside the log ([Compute actions](/protocol/compute-actions/)).
+
+A component imports this world and nothing else. Its WASI interfaces are
+pinned to 0.2.12 and `calimero:app` is 0.5.7; an import at an older patch of
+the same minor (`wasi:*@0.2.z`, `calimero:app/*@0.5.z`) links as well, so an
+app built before a patch keeps installing and running. Nine WASI interfaces
+that Rust's standard library on `wasm32-wasip2` imports whatever the app does
+are accepted and served by stubs that refuse:
+`wasi:cli/{stdin, exit, terminal-input, terminal-output, terminal-stdin,
+terminal-stdout, terminal-stderr}` and `wasi:filesystem/{types, preopens}`.
+Stdin is empty, no terminal is present, preopens lists no directory, every
+filesystem function fails and `exit` traps `Fault`. Nothing reaches the node's
+operating system. Any other import, `wasi:sockets` among them, is refused when
+the bundle is uploaded or installed (`400 BAD_BUNDLE`).
+
+## Kinds of run
+
+`handle(kind, method, args)` is the component's one export; the kind says what
+the run may do. A host call the kind does not allow traps `HostDenied`.
+
+| Kind | Runs as | Logged | May |
+| --- | --- | --- | --- |
+| `init` | The app's owner | Yes | Read and write state, emit events, `xcall.send`, `unique-id`, create files, start and cancel compute runs, publish outputs |
+| `call` | The caller: an account, an API key, or `public` (not signed in; `context.visitor` names a visitor through a public link) | Yes | All `init` may, plus synchronous xcalls, `start-action` and outbound HTTP |
+| `timer` | `system` | Yes | All a call may |
+| `xcall-deliver` | `app(source)`, or the person the sending app served, with their grant ([Cross-app calls](/protocol/xcall/)) | Yes | All `init` may, plus outbound HTTP; no synchronous xcall, so a chain of them is one hop |
+| `view` | The caller | No | Read state, search, `xcall.view`; any write, event or outbound request traps |
+| `action` | Whoever started it | Its calls are | No state: `action.view`, `action.call`, synchronous xcalls, outbound HTTP |
+
+`blobs.*` work in every kind but an action; `files.info` and `runs.uploader` in
+every kind; `files.open` only in a compute run, which is an `action` run on a
+job node ([Compute actions](/protocol/compute-actions/)). A method's kind and
+whom it admits come from the [ABI](/build/app-abi/#what-the-node-enforces), which
+the node checks before it calls `handle`: a view never runs as a write, and a
+`confirm` method never runs as a view.
 
 ## Storage
 
@@ -129,6 +179,24 @@ the app's group, sealed on disk. Per-caller data is rows keyed by
 an app's keys. (SDK 0.12 apps had a private and a host space beside the shared
 one; they are gone with that SDK.)
 
+- **Keys** are at most 1 KiB; a longer one traps `HostDenied`. Values have no
+  cap of their own: the run's bytes and the entry size bound them
+  ([Limits](/protocol/limits/#execution-limits)).
+- **`add(key, delta)`** changes an integer without the guest reading it: the
+  value is a shortest-form CBOR integer (an absent key is 0), the sum is stored
+  the same way, and the add counts as one write. A value that is not such an
+  integer, or a sum that overflows, traps `HostDenied`. The log records the
+  summed value.
+- **A range cursor** reads the state as of when it opened: the committed state
+  plus the run's writes made before then, never writes made after. `get` and the
+  diff see the newest writes. So a scan that moves records ahead of itself (an
+  update that changes their index key) never meets them again, where it could
+  otherwise loop until it ran out of fuel.
+- **The checked writes** (`put-checked`, `delete-checked`, `add-checked`) answer a
+  write past the run's write count or bytes as `limit-exceeded { limit, max,
+  attempted }`, write nothing for it, and let the run go on; `put`, `delete` and
+  `add` trap instead, for components built before them.
+
 ## What the node checks after the run
 
 Before a run's outcome becomes an entry, the node applies these host-side
@@ -138,7 +206,7 @@ rules:
   reaches the app's views only: a call to any other method is refused with `403`
   before it runs, so no run burns the developer's fuel uncounted.
 - **Entry size**: an entry over the log's cap is logged trapped (`HostDenied`),
-  and arguments over 512 KiB are `413 ARGS_TOO_LARGE`.
+  and arguments over 512 KiB, a call's or a view's, are `413 ARGS_TOO_LARGE`.
 - **Conflicts**: a run built on a state another entry has since moved past, or
   on a bundle an upgrade replaced, commits as a no-op and runs again.
 
@@ -159,23 +227,24 @@ A component sends HTTPS from an action, or as recorded requests of a call
 
 ## Actions (component apps)
 
-A `calimero:app` component calls out from an **action** (spec
-`app-runtime-v0.14` D12, S9): an `#[app::action]` method that runs outside the
-log, on the app's leader. A call can also make recorded requests itself
+A `calimero:app` component calls out from an **action**: an `#[app::action]`
+method that runs outside the log, on the app's leader. A call can also make recorded requests itself
 (below), never a view.
 
-- **Start** (D17). A client calls the action's method through `/intents`, or a
+- **Start**. A client calls the action's method through `/intents`, or a
   call or timer runs `env::start_action(method, &args)`. Either way an entry
   logs that it started, under a key (`a.<term>.<seq>.<n>`), and the answer is
   `{ "actionId" }`.
 - **Run**. The leader runs pending actions in a bounded pool, with a 10 s
-  budget and the starter as caller (D13). An action has no storage. It reads
+  budget and the starter as caller. An action has no storage. It reads
   with `ctx.view`, writes with `ctx.call`, and sends HTTP with `ctx.fetch`
   over `wasi:http`. Each `ctx.call` is its own log entry under a key derived
   from the action's key, the method, the arguments' hash and an occurrence
-  count (D27), so a retried action's calls replay. A method marked
+  count, so a retried action's calls replay, while two identical calls in one
+  run are two writes and a retry that takes another path gets new keys rather
+  than another call's stored result. A method marked
   `#[app::allow(action)]` is reachable only from the app's own actions.
-- **Outbound** (S9, R14). A request leaves only through the same gate as
+- **Outbound**. A request leaves only through the same gate as
   above. The URL must sit under a prefix the signed release's manifest
   declares, whoever governance gives outbound approvals (the app's organization, or the operator) must have approved it, the operator's hosts apply, and
   an action run sends at most 8 requests (`MAX_HTTP_REQUESTS`). A credential the
@@ -183,7 +252,7 @@ log, on the app's leader. A call can also make recorded requests itself
   the node, never placed by the app, and redacted from the response
   ([Secrets](/protocol/secrets/)). Bodies are bounded in-memory buffers, so a guest
   cannot block a node thread.
-- **End** (D22). Success, or an app error, a fault or out-of-fuel, ends the
+- **End**. Success, or an app error, a fault or out-of-fuel, ends the
   action at once. A timeout is retried with backoff, 5 attempts in all. The
   end is logged. A failure sends an `ActionFailed { actionId, method, reason }`
   event to the starter and runs the app's `onActionFailed` as the starter. A
@@ -192,7 +261,7 @@ log, on the app's leader. A call can also make recorded requests itself
 ## Outbound HTTP from component calls
 
 A component's call, timer or xcall delivery may send requests itself (up to 8 per run)
-(`env::fetch`; spec D76), for a check that belongs in the same request as the
+(`env::fetch`), for a check that belongs in the same request as the
 write it guards, such as a captcha service verifying a Turnstile token:
 
 - **The same gate as actions.** A URL the signed release declares under
@@ -217,6 +286,49 @@ write it guards, such as a captcha service verifying a Turnstile token:
 fixture's `setHumanTurnstile` reaches it with a synchronous xcall, so the
 token is checked and the form written in one request.
 
+## Time and randomness
+
+The host serves `wasi:clocks` and `wasi:random` itself, never from the node's
+operating system, by the kind of run:
+
+| Run | Wall clock | Monotonic clock | Randomness |
+| --- | --- | --- | --- |
+| `init`, call, timer, xcall delivery | The entry's timestamp | Fixed at the entry's timestamp | ChaCha20 seeded for the run by the leader; followers see only the diff |
+| View | The timestamp of the newest entry applied where it reads | Fixed at that timestamp | The node's CSPRNG, not recorded |
+| Action | The node's clock, rounded down to the second | Fixed at the action's start | The node's CSPRNG, not recorded |
+| Compute run | The timestamp of the entry that started it | Fixed at that timestamp | ChaCha20 from the run's seed, so the run repeats exactly |
+
+The monotonic clock never moves within a run, and a guest's sleep or poll is
+ready at once, so no guest code can measure elapsed time: a run cannot time
+other tenants' work, and a sleep never holds a node thread. A request for more
+than 1 MiB of random bytes in one call traps `HostDenied`; the SDK asks in
+pieces.
+
+The leader stamps each entry with the later of its own clock and the last
+applied entry's timestamp plus 1 ms, so an app's timestamps never go backwards,
+even across a leader change. Idempotency expiry reads these timestamps, never
+a node's local clock, so every replica drops the same records.
+
+## Timers
+
+An `#[app::every("…")]` method is a timer. The app's leader looks for due
+ticks every 100 ms (`TIMER_POLL`). A timer's slots fall at the timestamp of the
+app's `init` entry plus whole multiples of its interval, and the leader
+proposes the latest due slot (`componentTick`). The tick runs as `system`;
+`env::timer()` gives its `scheduled` slot and the `previous` one applied, as
+decimal strings on the wire.
+
+- **Once per slot.** A replica applies a tick only if its slot is later than
+  the timer's last applied one, so a tick that two leaders propose around a
+  failover runs once.
+- **Failures count.** A tick that traps or returns an app error is logged with
+  its status and its slot counts as applied: it is not retried, and `previous`
+  stays right. A tick that times out is not logged, and the next poll proposes
+  the slot again, or a later one if it is due by then.
+- **No bursts.** Slots missed while no leader ran collapse into one catch-up
+  tick for the latest of them. An app that must cover every slot loops over the
+  gap from `previous` to `scheduled`.
+
 ## Determinism is not what converges
 
 Only the leader runs, so the clock, randomness, outbound responses and search
@@ -224,14 +336,153 @@ answers cannot make replicas disagree. Runs are still bounded and
 transactional: a call or view gets 200 000 000 fuel, 64 MiB of memory and 2 s
 of wall clock, an action 10 s, and one run writes at most 10 000 keys and
 1 MiB ([Limits](/protocol/limits/#execution-limits)); a trap or an app error
-leaves an empty diff. Fuel pays for host work too: each storage access, range
-batch, search and byte a host call moves costs fuel
+leaves an empty diff. Fuel pays for host work too, always: every host call, and
+each storage access, range batch, search and byte a call is handed or moves,
+costs fuel where the call happens, refused calls included
 ([What host work costs](/protocol/limits/#what-host-work-costs)), so a run
-cannot make the node read or search without bound for little fuel.
+cannot make the node read, copy or search without bound for little fuel, nor
+spend the fuel its host calls already owe.
 
 ## Views and upgrades
 
 A **view** runs the same way against a replica's applied state, with search
-available, and its writes are discarded ([Reads](/protocol/reads/)). An
+available; a write traps `HostDenied` ([Reads](/protocol/reads/)). An
 **upgrade** swaps the bundle; a named migration is refused
 `MigrationsNotSupported` ([Upgrades](/protocol/upgrades/)).
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src` unless another crate is named.
+The design and its reasons are above; a module's own detail is in its `//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Reserved methods
+
+Code: `node::reserved_method`, `HOST_METHODS`.
+
+The node's own commands (`__upgrade`, `__blob`, `__blob_forget`, `__blob_revoke`, `__pipeline_start`, `__pipeline_cancel`, `__secret_set`, `__secret_clear`) run only for a `CallRequest::host` request, which only the API builds.
+`/intents` and `/views` refuse a `__` method (`400 RESERVED_METHOD`), and the leader refuses one named by an xcall or follow-up.
+
+### Outbound HTTPS
+
+Code: `calimero-outbound`.
+
+- `Config::outbound` comes from `--settings` (`[outbound]`).
+- `Node::outbound_for` hands a client only to `call_local`'s runs (not a read-only member's) and to actions (`NodeHttp`), for a signed release that declares prefixes.
+- Identity is (package, pinned signer); approvals are `Org/Account::outbound_approvals[signer]`, set by `SetOutboundApproval` and merged at apply by `merge_approval`.
+- The request is made inside the propose lock on its own thread (`run_blocking`); a leader-race re-run sends it again.
+
+#### The egress switch
+
+- `SystemCmd::SetEgress { org, app?, egress }` is ungated: an earlier release cannot decode it (a hard cutover).
+- It sets `Org::egress_off` or `AppRecord::egress_off`, read through `SystemState::egress_off`; the consent args are `system::egress_args`.
+- `outbound_for` wraps every client in `calimero_outbound::egress_gated`, which reads the system state before each request and refuses `EgressOff:`.
+- `SetOutboundApproval` for an org whose switch is off is `409 EGRESS_OFF`; `api::refuse_egress_off` answers it before the passkey, also on the consent page's `outbound`.
+- Turning egress on goes only through the consent page (`setEgress`, `consent_page::orgs::egress`, a red `egressOn` attention); other principals get `403 CONSENT_PAGE_REQUIRED` (`Principal::consent_page`).
+- `GET /apps/{app}/egress` answers `egress`, `offBy` and `summary` (`egress::NO_EGRESS`); `GET /orgs/{org}` answers `egressOff`.
+
+### Engine and host
+
+Code: `node/component.rs`.
+
+- One `WasmtimeEngine` per node (`Node::app_engine`) caches compiled artifacts under `<data_dir>/components`, each with a MAC under a key derived from K_c.
+- At start the engine deletes another wasmtime's or configuration's artifacts.
+- `Node::sweep_component_cache` runs every `COMPONENT_CACHE_SWEEP_EVERY` (1 h, the first an hour after start).
+  It deletes artifacts of bundles no app uses and this node does not keep prepared, once unmodified for an hour.
+- `Node::prepared_for` prepares a bundle once, single-flight.
+
+### Component state
+
+Code: `component::ComponentState`.
+
+- Stored keys, generation prefix included, are hidden rows `rows::CKV`, sealed and HMAC-keyed.
+- Each replica also keeps them in memory as `component::Kv`, an `imbl::OrdMap`, so a run's `StateView` is an O(1) clone with ordered `range` scans.
+- `apply` writes the next version sharing all it does not change, so a write while a run holds the previous one copies O(log n) nodes.
+- `restore` (a restart, a snapshot install) reads it back from the rows.
+- `ComponentHead` (`last_ts_ms`, `last_id`, `install_ts_ms`, `timers`, the idempotency rings) lives in the group's `Head`.
+- `last_write_ms` (`ComponentHead::note_write`) is the time of the newest call with a diff or files, or of an uploaded blob or file; it is left out at zero.
+
+### Calls
+
+`Node::call_component` runs inside `Group::propose_led`, off the async workers (`node::off_workers`, which every run uses).
+`base_index` is the app's last entry (`AppState::last_index`), and answers carry the node's receipt.
+
+### ABI gate
+
+Code: `Node::abi_gate`, `abi_check`.
+
+- It reads the ABI of the bundle the group runs; `/intents` takes `view` and `confirm` from it, and `AppRecord::confirm_methods` is always empty.
+- A `compute` or `computeResult` method is `WrongKind` on `/intents` and `/views` for every caller, System included.
+
+### Unique ids
+
+- In `Node::next_id`, `id_term` is the term `propose_led`'s leadership check found; `id_seq` is a per-term counter continuing from `max(memory, AppState last_id)`.
+- A deposed leader's entry never commits, or applies as a no-op through `base_index`.
+- A leader restored into its old term catches up with its own log before its first proposal, so the counter continues past every entry it appended.
+
+### Time and timers
+
+`Node::app_clock` adds `Config::clock_offset_ms`; tests move it with `Node::advance_clock` (feature `testing`).
+`lib.rs` polls every `node::TIMER_POLL`, and `Node::tick_timers` proposes each due slot as `ComponentCmd::Tick`.
+
+### Events
+
+A component's `EventRecord` carries its `audience` and caller.
+The stream (`api::local_events`, or a peer's `internal/events`) and a call's answer check `SystemState::receives` when they send it.
+
+- The stream judges on fresh system state, since an event made after a removal committed can reach a replica that has not applied it.
+- A read-index round, applied here (`Node::sys_caught_up`), covers the backlog and then each batch of up to `api::MAX_EVENT_BATCH` live events.
+- A replica that cannot catch up within `Config::read_wait` ends the stream; the subscriber resumes from its last id.
+- Every stream `gate` lets open also re-judges its principal before each batch (`api::still_admitted`, `Principal::admitted_on`).
+  A session token's own expiry does not end a stream, as it is refreshed.
+
+### The usage book
+
+Code: `component::RunUsage`, `DayUsage`.
+
+- `componentInit`, `componentCall` and `componentTick` outcomes carry `usage { fuel, wallMs, writes, bytesWritten, events }`, measured by the leader (`Outcome::from_host`); a `HostDenied` replacement keeps fuel, wall time and writes.
+- Apply adds it to `ComponentHead::usage` (a `UsageBook`) per UTC day of the entry's `ts_ms`; followers never measure, so every replica's book is the same.
+- Pruning keeps `USAGE_DAYS` back from the earlier of that day and the day after the newest held, so a far-future stamp never erases real days.
+- Not counted: timeouts (never logged), views, actions and compute runs.
+- The API gives every figure as a decimal string, so no client loses precision on a 64-bit value.
+
+### What a component sees
+
+- `component::SysDirectory` answers the org, owner and the caller's role and teams; `orgs-of` answers only the app's own organization, so an app learns nothing of the caller's other organizations.
+- The host refuses event handlers and TEE runs to a component, and an xcall into a wasmer app is a dead letter.
+
+### Apply reads through the batch
+
+Code: `component.rs`: `outgoing_in`, `action_in`, `replay_in`.
+
+A host row an entry's apply reads comes from its `StateTx`, never the group's committed state.
+A catching-up replica applies many entries in one batch and must end where its leader, which applied them one at a time, did.
+A row that cannot be read or decoded (`decode_in`, `get_json`) fails the batch (`StateTx::fail`) instead of reading as absent, so that replica stops on the entry rather than apply it differently.
+
+### Actions
+
+Code: `component/action.rs`.
+
+- `abi_check` lets an account or API key start one; the outcome carries `ActionOut { id: a.<term>.<seq>.0 }`.
+- Apply records it pending (`rows::CACT ‖ id`, `ActionsHead::pending`, at most `MAX_PENDING_ACTIONS`) with the starter's `Caller` and the entry time.
+- `Node::run_actions` runs pending ones from the leader's timer poll, at most `MAX_ACTION_WORKERS` at once (the `action_slots` semaphore).
+- `attempt_action` runs on a blocking thread with `kind = action`, `Budget::action` and a monotonic clock from the start.
+- `NodeAction` serves `view` (`Node::view`, strong, with `ViewRequest::action`) and `call` (`call_component` with the key derived from the action's key, method, arguments and occurrence and `CallRequest::action`); the action's key in either is what alone reaches `allow(action)` methods, and only the node's action runner sets it.
+- The end is `componentActionEnd`; a timeout retries (`action_retry`, `retry_after_ms`) until `MAX_ATTEMPTS`.
+- `ActionFailed` is an event with an `Accounts` audience.
+- An end another leader logged first changes nothing.
+
+### Outbound HTTP from calls
+
+Code: `RunExtras::outbound`, `TimedHttp`.
+
+- Each response is awaited at most `CALL_FETCH_TIMEOUT`, and never past the run's deadline.
+- The exchange is recorded as `component::HttpRecord` in `Outcome::http`, bodies cut to 64 KiB with their lengths.
+
+### A run's deadline covers its host calls
+
+Wasmtime's epoch deadline is checked only while guest code runs, so a run waiting in a host call would wait as long as the host does: a sync xcall up to `SYNC_XCALL_WAIT`, past a 2 s budget.
+
+- `run_with` and the action runner take `deadline = now + budget.wall_clock` and hand it to `HostCore::with_deadline`.
+- Every host that waits honours it: `TimedHttp` (actions' outbound included), `NodeXcall` (`wait_all`) and `NodeAction` (`wait`).
+- A wait that reaches the deadline ends the run `Trap(Timeout, WALL_CLOCK_EXCEEDED)`, as an overrun in guest code does.
+- A `Timeout` is never logged (`Outcome::is_retryable`), and replicas apply only logged outcomes, so the deadline changes no entry and needs no gate.

@@ -1,11 +1,13 @@
-//! `meroctl app`: signed packages, v1's applications, from start to install.
-//! Making one (`new`, `build`, `codegen`, `abi`) and shipping it (`key`,
-//! `pack`, `sign`, `inspect`, `publish`) need no node (`make.rs`); an
-//! application is then installed once on the cluster (verified on every
-//! node), and each running copy of it is an instance (`meroctl instance create
-//! --package`). `meroctl package` is the same command. `check` judges a
-//! release against the one it replaces (`app/check.rs`): offline against a
-//! `.mpk`, with a node against an installed version.
+//! `meroctl app` makes and ships an app's signed package (v1's application):
+//! making one (`new`, `build`, `codegen`, `abi`) and shipping it (`signer`,
+//! `pack`, `sign`, `inspect`, `publish`) need no node (`make.rs`); `release`
+//! packs and installs in one step. `meroctl package` ([`PackageCmd`]) handles
+//! the packages installed on the cluster (verified on every node); each
+//! running copy of one is an instance (`meroctl instance create --package`).
+//! `meroctl app install` and the rest of `package`'s commands still parse,
+//! hidden from `app`'s help. `check` judges a release against the one it
+//! replaces (`app/check.rs`): offline against a `.mpk`, with a node against an
+//! installed version.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -69,7 +71,16 @@ pub enum AppCmd {
     /// that is not newer than every release of the package the cluster has
     /// installed, before building anything.
     Release(Box<crate::make::ReleaseArgs>),
-    /// Install an application: `PACKAGE@VERSION` (or `PACKAGE --version V`)
+    /// The packages installed on the cluster (`meroctl package`): hidden
+    /// here, where they parse as before.
+    #[command(flatten)]
+    Package(PackageCmd),
+}
+
+/// `meroctl package`: the packages installed on the cluster.
+#[derive(Debug, Subcommand)]
+pub enum PackageCmd {
+    /// Install a package: `PACKAGE@VERSION` (or `PACKAGE --version V`)
     /// from the node's registry, or a local file with `--path` (a signed
     /// `.mpk`; on a development cluster also a raw `.wasm`, which uploads a
     /// bundle). `PACKAGE` alone installs the latest version `--registry`
@@ -82,6 +93,10 @@ pub enum AppCmd {
         version: Option<String>,
         #[arg(long, conflicts_with = "coords")]
         path: Option<PathBuf>,
+        /// The organization it is installed for (default: your only one). A private
+        /// release, and every upload, is used only by its members.
+        #[arg(long)]
+        org: Option<String>,
         /// The registry a version-less `PACKAGE` is looked up in.
         #[arg(long, env = "CALIMERO_REGISTRY_URL", default_value = DEFAULT_REGISTRY)]
         registry: String,
@@ -90,15 +105,15 @@ pub enum AppCmd {
         #[arg(long, env = "CALIMERO_REGISTRY_API_KEY", hide_env_values = true)]
         registry_api_key: Option<String>,
     },
-    /// Installed applications and their versions.
+    /// Installed packages and their versions.
     #[command(alias = "ls", alias = "list-packages")]
     List,
-    /// One installed application.
+    /// One installed package.
     Get { package: String },
-    /// An application's installed versions.
+    /// A package's installed versions.
     #[command(alias = "list-versions")]
     Versions { package: String },
-    /// An application's newest installed version.
+    /// A package's newest installed version.
     GetLatestVersion { package: String },
     /// The pipelines a version registers (default: the newest installed): name, hash,
     /// worst-case fuel, the modules it pins and the canonical pipeline.
@@ -107,44 +122,27 @@ pub enum AppCmd {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Uninstall one version, or the whole application. Refused while an instance runs it.
+    /// Uninstall one version, or the whole package. Refused while an instance runs it.
     Uninstall {
         package: String,
         #[arg(long)]
         version: Option<String>,
     },
-    /// Push a build to its instances now, then on every save (v1's `app
-    /// watch`). A signed `.mpk` is installed and the instances running its
+    /// Push a build to its instances now, then on every save. A signed `.mpk` is installed and the instances running its
     /// package are updated to its version; a raw `.wasm` (development
     /// clusters) updates the instances named with `--instance`.
-    Watch {
-        #[arg(long)]
-        path: PathBuf,
-        /// The instances to update (default for a `.mpk`: this account's
-        /// instances of its package).
-        #[arg(long = "instance", short = 'i', value_name = "INSTANCE")]
-        contexts: Vec<String>,
-        /// The owner's passkey file that approves each update.
-        #[arg(long)]
-        dev_passkey: PathBuf,
-        /// Push once and exit.
-        #[arg(long)]
-        once: bool,
-        /// How often to look at the file, in milliseconds.
-        #[arg(long, default_value_t = 500)]
-        interval_ms: u64,
-    },
+    Watch(WatchArgs),
     /// The web origins (a developer's own site, a hosting preview) whose
-    /// pages may sign people in to this application, each under its own
-    /// passkey rp-id. Its manager's: the publisher organization's
-    /// `MANAGE_APPLICATION` holders, else whoever installed it first.
+    /// pages may sign people in to this package's frontend, each under its
+    /// own passkey rp-id. Its manager's: the publisher organization's
+    /// holders of the capability to manage apps, else whoever installed it first.
     #[command(subcommand)]
     Origins(OriginsCmd),
 }
 
 #[derive(Debug, Subcommand)]
 pub enum OriginsCmd {
-    /// The origins registered for an application, with their rp-ids and
+    /// The origins registered for a package, with their rp-ids and
     /// whether the cluster serves its frontend there (`served`).
     #[command(alias = "ls")]
     List { package: String },
@@ -159,7 +157,7 @@ pub enum OriginsCmd {
         /// default) or a parent domain of it, never the cluster's.
         #[arg(long)]
         rp_id: Option<String>,
-        /// Have the cluster serve the application's frontend on this origin
+        /// Have the cluster serve the package's frontend on this origin
         /// too (a custom domain: `https://host`, no port). The approval names
         /// it, and every node of the cluster must run this release or later.
         #[arg(long)]
@@ -177,11 +175,34 @@ pub enum OriginsCmd {
     },
 }
 
-/// Install a local file: a `.mpk` as a package, anything else as a raw bundle.
-pub async fn install_file(env: &Env, path: &Path) -> eyre::Result<Value> {
+/// What `package watch` and `dev watch` push, where, and how often.
+#[derive(Debug, clap::Args)]
+pub struct WatchArgs {
+    #[arg(long)]
+    pub path: PathBuf,
+    /// The instances to update (default for a `.mpk`: this account's
+    /// instances of its package).
+    #[arg(long = "instance", short = 'i', value_name = "INSTANCE")]
+    pub contexts: Vec<String>,
+    /// The owner's passkey file that approves each update.
+    #[arg(long)]
+    pub dev_passkey: PathBuf,
+    /// Push once and exit.
+    #[arg(long)]
+    pub once: bool,
+    /// How often to look at the file, in milliseconds.
+    #[arg(long, default_value_t = 500)]
+    pub interval_ms: u64,
+    /// The organization a `.mpk` is installed for (default: your only one).
+    #[arg(long)]
+    pub org: Option<String>,
+}
+
+/// Install a local file: a `.mpk` as a package (for `org`), anything else as a raw bundle.
+pub async fn install_file(env: &Env, path: &Path, org: Option<&str>) -> eyre::Result<Value> {
     let bytes = read_file(path)?;
     if path.extension().is_some_and(|e| e == "mpk") {
-        to_json(&env.client.packages().upload(bytes).await?)
+        to_json(&env.client.packages().upload(bytes, org).await?)
     } else {
         let hash = env.client.packages().bundle_put(bytes).await?.hash;
         Ok(json!({ "bundle": hash }))
@@ -238,16 +259,36 @@ pub async fn run_offline(cmd: AppCmd, home: &Home) -> eyre::Result<Value> {
 }
 
 pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
+    Ok(match cmd {
+        AppCmd::Package(cmd) => run_package(cmd, env).await?,
+        AppCmd::Check(a) => check::run(*a, Some(env)).await?,
+        AppCmd::Release(a) => release(&a, env).await?,
+        AppCmd::New(_)
+        | AppCmd::Build(_)
+        | AppCmd::Codegen { .. }
+        | AppCmd::Abi(_)
+        | AppCmd::Uses(_)
+        | AppCmd::Signer(_)
+        | AppCmd::Pack(_)
+        | AppCmd::Sign(_)
+        | AppCmd::Inspect { .. }
+        | AppCmd::Publish(_) => unreachable!("runs before connecting (main)"),
+    })
+}
+
+/// `meroctl package` (and the same commands under `app`).
+pub async fn run_package(cmd: PackageCmd, env: &Env) -> eyre::Result<Value> {
     let packages = env.client.packages();
     Ok(match cmd {
-        AppCmd::Install {
+        PackageCmd::Install {
             coords,
             version,
             path,
+            org,
             registry,
             registry_api_key,
         } => match (path, coords) {
-            (Some(path), _) => install_file(env, &path).await?,
+            (Some(path), _) => install_file(env, &path, org.as_deref()).await?,
             (None, Some(coords)) => {
                 let (package, version) = match (coords.contains('@'), version) {
                     (false, None) => {
@@ -261,52 +302,34 @@ pub async fn run(cmd: AppCmd, env: &Env) -> eyre::Result<Value> {
                     }
                     (_, version) => split_coords(&coords, version)?,
                 };
-                to_json(&packages.install(&package, &version).await?)?
+                to_json(&packages.install(&package, &version, org.as_deref()).await?)?
             }
             (None, None) => unreachable!("clap requires one"),
         },
-        AppCmd::List => json!({ "packages": packages.list().await?.packages }),
-        AppCmd::Get { package } => to_json(&packages.get(&package).await?)?,
-        AppCmd::Versions { package } => {
+        PackageCmd::List => json!({ "packages": packages.list().await?.packages }),
+        PackageCmd::Get { package } => to_json(&packages.get(&package).await?)?,
+        PackageCmd::Versions { package } => {
             json!({ "package": package, "versions": packages.get(&package).await?.versions })
         }
-        AppCmd::GetLatestVersion { package } => {
+        PackageCmd::GetLatestVersion { package } => {
             json!({ "package": package, "latest": packages.get(&package).await?.latest })
         }
-        AppCmd::Pipelines { package, version } => {
+        PackageCmd::Pipelines { package, version } => {
             let version = match version {
                 Some(v) => v,
                 None => packages.get(&package).await?.latest,
             };
             env.client.package_pipelines(&package, &version).await?
         }
-        AppCmd::Uninstall { package, version } => match version {
+        PackageCmd::Uninstall { package, version } => match version {
             Some(v) => to_json(&packages.version_uninstall(&package, &v).await?)?,
             None => to_json(&packages.uninstall(&package).await?)?,
         },
-        AppCmd::Watch {
-            path,
-            contexts,
-            dev_passkey,
-            once,
-            interval_ms,
-        } => {
-            watch(env, &path, &contexts, &dev_passkey, once, interval_ms, true).await?;
+        PackageCmd::Watch(a) => {
+            watch(env, &a, true).await?;
             return Ok(Value::Null);
         }
-        AppCmd::Origins(cmd) => origins(cmd, env).await?,
-        AppCmd::Check(a) => check::run(*a, Some(env)).await?,
-        AppCmd::Release(a) => release(&a, env).await?,
-        AppCmd::New(_)
-        | AppCmd::Build(_)
-        | AppCmd::Codegen { .. }
-        | AppCmd::Abi(_)
-        | AppCmd::Uses(_)
-        | AppCmd::Signer(_)
-        | AppCmd::Pack(_)
-        | AppCmd::Sign(_)
-        | AppCmd::Inspect { .. }
-        | AppCmd::Publish(_) => unreachable!("runs before connecting (main)"),
+        PackageCmd::Origins(cmd) => origins(cmd, env).await?,
     })
 }
 
@@ -369,9 +392,19 @@ async fn release(a: &crate::make::ReleaseArgs, env: &Env) -> eyre::Result<Value>
     // Published: the cluster installs it from its registry, as production
     // clusters only do. Otherwise uploaded, which development clusters take.
     let installed = if a.publish {
-        to_json(&env.client.packages().install(&package, &a.version).await?)?
+        to_json(
+            &env.client
+                .packages()
+                .install(&package, &a.version, a.install_org.as_deref())
+                .await?,
+        )?
     } else {
-        to_json(&env.client.packages().upload(read_file(&mpk)?).await?)?
+        to_json(
+            &env.client
+                .packages()
+                .upload(read_file(&mpk)?, a.install_org.as_deref())
+                .await?,
+        )?
     };
     Ok(json!({
         "package": package,
@@ -382,7 +415,7 @@ async fn release(a: &crate::make::ReleaseArgs, env: &Env) -> eyre::Result<Value>
     }))
 }
 
-/// `meroctl app origins`. A change goes out with the manager's passkey
+/// `meroctl package origins`. A change goes out with the manager's passkey
 /// assertion when `--dev-passkey` names one; without it the request goes as
 /// is, and the node's `412 CONFIRM_REQUIRED` is the answer (no passkey, no
 /// change: the console makes it with the manager's own).
@@ -425,21 +458,14 @@ async fn origins(cmd: OriginsCmd, env: &Env) -> eyre::Result<Value> {
 
 /// Push `path` to its instances (now, if `push_first`), and again on every
 /// save unless `once`.
-pub async fn watch(
-    env: &Env,
-    path: &Path,
-    contexts: &[String],
-    dev_passkey: &Path,
-    once: bool,
-    interval_ms: u64,
-    push_first: bool,
-) -> eyre::Result<()> {
+pub async fn watch(env: &Env, a: &WatchArgs, push_first: bool) -> eyre::Result<()> {
+    let (path, once, interval_ms) = (a.path.as_path(), a.once, a.interval_ms);
     let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let mut seen = modified(path);
     let mut push_now = push_first;
     loop {
         if push_now {
-            match push(env, path, contexts, dev_passkey).await {
+            match push(env, a).await {
                 Ok(out) => println!("{}", serde_json::to_string(&out)?),
                 Err(e) if once => return Err(e),
                 Err(e) => eprintln!("push failed: {e:#}"),
@@ -464,16 +490,12 @@ pub async fn watch(
 }
 
 /// One push: the build, then each instance's update to it.
-async fn push(
-    env: &Env,
-    path: &Path,
-    contexts: &[String],
-    dev_passkey: &Path,
-) -> eyre::Result<Value> {
+async fn push(env: &Env, a: &WatchArgs) -> eyre::Result<Value> {
+    let (path, contexts, dev_passkey) = (&a.path, &a.contexts, &a.dev_passkey);
     let client = &env.client;
     let bytes = read_file(path)?;
     let (body, targets) = if path.extension().is_some_and(|e| e == "mpk") {
-        let installed = client.packages().upload(bytes).await?;
+        let installed = client.packages().upload(bytes, a.org.as_deref()).await?;
         let targets = if contexts.is_empty() {
             let me = client.auth().me().await?.account_id;
             client

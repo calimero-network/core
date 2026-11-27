@@ -11,8 +11,7 @@ A **blob** is immutable, content-addressed bytes kept outside every log: an
 attachment, an image, a model. Log entries are capped at 1 MiB and should stay
 small, so anything large goes to the **blob store** and the log carries only
 its id. The same store holds bundles and uploaded `.mpk` releases. Apps are
-`calimero:app` components, and the node keeps their blobs as described here
-(spec `app-runtime-v0.14` R8).
+`calimero:app` components, and the node keeps their blobs as described here.
 
 ## The store
 
@@ -86,7 +85,16 @@ The blob is stored with the request's `Content-Type` (printable ASCII, at most
 The node pins the id on the app's leader, stores the bytes on a majority, then
 commits `componentBlob { id, size, mime, tsMs }` to the app's log. Any `sealed`
 parameter is refused `400 USE_FILES_API`: sealed files have their own routes.
-An app holds at most 100,000 blobs (`429 QUOTA_EXCEEDED` past it).
+An app holds at most 100,000 blobs and 10 GiB of plain blobs (`429 QUOTA_EXCEEDED` past either).
+
+From cluster version 1.0.0-rc.39 an upload is charged to the app's organization like a
+file: its size counts against `maxFileBytesPerOrg`, and `GET /auth/usage` shows it in
+`fileBytes`. The charge is taken before any bytes are stored, so an upload past the quota
+is `429 QUOTA_EXCEEDED` and stores nothing. The entry carries `metered: true`, and the
+blob's record keeps the charge: an upload of bytes the app already holds charged is given
+back at once, and the owner's delete or the idle time gives the record's charge back when
+the leader collects the bytes. Below that version uploads are not charged, and a blob
+uploaded then stays uncharged.
 
 ## Reading, grants and listing
 
@@ -129,9 +137,9 @@ the old leader.
 
 A component app's runs can also make sealed files: a file is written in a call, tick or `init`, and its contents are read only inside a compute run.
 A file is a sealed blob.
-It shares the blob id namespace and the `BlobRef` type, and `blobs.info` answers for it with an empty content type.
+It shares the blobs' ids and the `BlobRef` type, and `blobs.info` answers for it with an empty content type.
 It cannot be downloaded or granted, and no blob upload can claim its id.
-A call, view, timer or `init` may create a file and ask for its size and hash, and `files.open` is refused there.
+A call, timer, `init` or xcall delivery may create a file, any run may ask for a file's size and hash (`files.info`), and `files.open` is refused everywhere but a compute run.
 So a sealed file's contents can be read only inside a compute run of the app release the organization approved, and leave only as a compute output published through a logged call.
 The node seals a file in the TD as 64 KiB AES-256-GCM chunks under a random data key, and wraps that key under a key derived from the cluster key for this app.
 The blob id is the SHA-256 of the ciphertext, so a replica can check what a peer sends.
@@ -172,6 +180,12 @@ There is no delete.
 The entry that makes the file also applies the state write that stores the reference, so the file is never collectable in between.
 A file nothing refers to is held for an hour from its entry, and one whose last reference went is forgotten the same way a blob is.
 Every replica forgets the record in the same entry, and the bytes are then collected from the nodes that hold them.
+A run may store a `BlobRef` to a file the app holds or one it finished earlier in the same run; a file exists only once that run's entry commits, and a writer dropped unfinished leaves nothing.
+
+A run holds at most 16 readers and writers at once, writes at most 2 GiB to one file and 64 MiB in all (a compute run 2 GiB in all), finishes at most 1,000 new files, and reads at most 1 MiB per `read`; an empty read is the end of the file.
+Every refusal that is not a policy violation is a fixed soft error string: `no such file`, `files are not enabled`, `too many open files`, `file too large`, `run wrote too much`, `too many new files`, `file already finished` or `file write failed`.
+A write refused for a size cap, or failed in the node, leaves the writer failed: it answers `file write failed` from then on, so `finish` never seals a truncated file.
+An unknown reader or writer handle traps `HostDenied`.
 
 The ciphertext lives on the app's replicas, not on every node.
 Before the leader proposes the entry, the new files are stored on it and pushed to the app's other replicas.
@@ -219,7 +233,7 @@ Every replica applies the entry only if the source is a file the app's records m
 Otherwise it answers `NOT_A_RUN_OUTPUT` and changes nothing, so a leader cannot publish anything else.
 
 The plaintext counts against the organization's file quota from the entry until retention collects it.
-Retention is R8: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
+Retention is a blob's: the plain blob is held while a `BlobRef` in state names it, and for an hour after.
 Publishing an output the app already holds as a plain blob stores and charges nothing again.
 A run publishes at most 16 outputs, each at most 47 MiB (the plain blob it becomes; a larger output answers `file too large`) and 64 MiB together.
 Past that `publish` answers the soft error `run published too much` and records nothing.
@@ -234,6 +248,178 @@ Past that `publish` answers the soft error `run published too much` and records 
 | A blob's content type | 127 bytes, printable ASCII |
 | A blob held with no reference (`BLOB_IDLE_MS`) | 1 hour |
 | A sealed file held with no reference | 1 hour |
-| Plaintext bytes of an organization's files | `maxFileBytesPerOrg`, 50 GB (`429 QUOTA_EXCEEDED` past it) |
+| Plain blob bytes one app holds (`MAX_APP_BLOB_BYTES`) | 10 GiB (`429 QUOTA_EXCEEDED` past it) |
+| Plaintext bytes of an organization's files and uploaded blobs | `maxFileBytesPerOrg`, 50 GB (`429 QUOTA_EXCEEDED` past it) |
 | New-file ciphertext all runs of a node hold before their entries | 256 MiB |
 | A grant | 1 s to 24 h |
+
+## In `calimero-node`
+
+Where the node implements this chapter, by the names in its code: paths are under `crates/node/src` unless another crate is named.
+The design and its reasons are above; a module's own detail is in its `//!` doc, and the node's mental model is [`crates/node/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/node/AGENTS.md).
+
+### Bundles are blobs, not log entries
+
+`POST /bundles` stores the WASM through `internal/blob` (majority required), and the system log records only `{hash, size}`.
+Log entries are capped at `calimero_log::MAX_ENTRY_BYTES` (1 MiB) because openraft gives each append one heartbeat.
+A call whose arguments pass `MAX_ARGS_BYTES` (512 KiB) is refused where it arrives (`413 ARGS_TOO_LARGE`), never proposed.
+
+### Blob routes and deletion
+
+- A download asks the leader with `blob_held_strong` through `Node::ask_leader`, which retries through an election for up to `LEADER_ANSWER_WAIT` (5 s) before `503`.
+- `Node::collect_blob` deletes bytes on every node through `internal/blob/delete`.
+- Every deletion of bytes asks `Node::blob_in_use`: held or pinned, as each app's leader answers, unknown counting as in use.
+- Pins live in `node/blob_guards.rs`; `logged_entry` pins on the leader for a publish, a call's files and a run's outputs.
+- A plain upload pins through `Node::pin_on_leader`: locally on the leader, else through `internal/blob/pin`, a lease of `LEASE_TTL` (60 s).
+- A put of an id (`BlobGuards::put`) also stops a deletion of that id caught between its checks and its delete, here and on every peer.
+- The client reports both the node's `413` and the envelope's refusal as `TOO_LARGE`.
+
+### Blobs a component holds
+
+Code: `component/blobs.rs`.
+
+- `BlobRecord { size, mime, refs, idleSinceMs }` lives in `rows::CBLOB`, in memory as `BlobTable`.
+- Upload and the owner's delete commit `componentBlob` and `componentBlobForget` through `CallRequest::host` (`Node::component_blob_cmd`).
+- The mime is at most `MAX_BLOB_MIME_BYTES`, and an app holds at most `MAX_COMPONENT_BLOBS` and `MAX_APP_BLOB_BYTES` of plain blobs (`refuse_full_app`, in `api/files.rs`).
+- From `Feature::MeteredBlobs` (`Node::require_features`), `blob_upload` charges the size with `ChargeFileBytes` before storing, and `componentBlob { metered }` sets `BlobRecord::metered`. `BlobTable::upload` answers whether the record took the charge (not when it already held one, metered or published); the API refunds a charge the entry did not take. `forget_blob` and `expire` queue a metered record's size in `collect_files`, released by `BlobsCollected` like a file's.
+- The `BlobRef` CBOR tag is `calimero_app_host::BLOB_REF_TAG`; `apply` counts references with `ref_deltas`.
+- Idle blobs are forgotten by `expiry_now` at most `BLOB_EXPIRY_STEP` per entry and queued in `ComponentHead::collect`; the leader's timer poll collects them.
+- Runs see the records through `RunBlobs` (`HostCore::with_blobs`); grants are keyed with `grant_key(K_c)`.
+
+### The sealed file format
+
+Code: `files.rs` (re-exporting `calimero_sealed::file`), `files/wrap.rs`.
+
+| Piece | Format |
+| --- | --- |
+| Chunk | AES-256-GCM STREAM (`FileSealer`, `FileOpener`); nonce = 4 zero bytes + big-endian chunk index; AAD = `calimero.file.v1` + a last-chunk flag byte |
+| Segment | `SEGMENT_CHUNKS` (256) whole chunks, `SEGMENT_BYTES` (16,781,312) stored bytes, the last one shorter (`SegmentWriter`, `SegmentReader`) |
+| File id | `file_id`: SHA-256 of `"calimero.file.segments.v1\0" \|\| u32 count \|\| h0 \|\| ... \|\| hn-1` |
+| Wrapped data key | `wrap_key`: salt \|\| nonce \|\| AES-256-GCM under a subkey of `backup::file_key`, the app id as AAD |
+
+- `FileOpener::finish_expecting` checks the plaintext size and SHA-256.
+- `FileMark` and `FileSeal` list the segments (`segments`, required, at least one); `FileMark::segment_hashes` is the one well-formedness check.
+- `wrap_for_job` re-wraps to a job node: ephemeral X25519, then HKDF over both public keys, the kind (file key or noise seed), the length-prefixed app and run ids, attempt and index.
+- The job node opens it through `SealedTransport::derive`, which never returns the raw DH output (`calimero_sealed::derive_shared`).
+- `noise_seed` and `run_token` derive a run's seed and capability from the file key.
+
+#### Exporting a file
+
+Code: `api/exports.rs`.
+
+- Both routes take `files_gate` (`api::may_handle_files` on a fresh system read) and judge the file on the leader (`Node::file_record_strong`, `internal/blob/held` with `record`), else `404`.
+- A segment is read from this node's store or a replica (`segment_from`); one past the last is `404 NO_SUCH_SEGMENT`.
+- `wrapped` is `nonce || AES-256-GCM` of the data key under `HKDF(X25519(ephemeral secret, recipient))`, salt `calimero.export-wrap.v1`.
+  The HKDF info is `ephemeral public || recipient public || u32 length-prefixed app id || u32 length-prefixed hex file id`.
+- `calimero_sealed::wrap::wrap_export` refuses a low-order key, and a recipient that is not 64 hex is `400 BAD_RECIPIENT` too.
+- `calimero_client::Client::export_file_to` opens it with `unwrap_export` and checks the segment list, each segment and the plaintext with `finish_expecting`.
+- `ExportLimits` is an in-memory token bucket of `MAX_EXPORTS_PER_MINUTE` over at most `MAX_TRACKED_ACCOUNTS` accounts (`429 TOO_MANY_EXPORTS`).
+
+### Sealed files of a component
+
+Code: `node/component/files.rs`.
+
+#### Records and segments
+
+- A run's `files` provider (`NodeFiles`) is built per run from the app id, `backup::file_key` and the blob records; it touches keys, budgets and bytes only when the run touches a file.
+- A file's record is `BlobRecord::file`, a `FileSeal` in `rows::CBLOB`, so snapshots and `restore` carry it.
+- Each segment is stored in the `blobs` column under `seg.<hex hash>`, with an empty index row `seg/<hash>` in `meta` in the same batch (`Engine::put_segment`, `list_segments`); there is no whole-file row.
+- Segments travel raw: `PUT /internal/segment/{hash}` (checked: the body's SHA-256, at most `SEGMENT_BYTES`) and `GET /internal/segment/{hash}`.
+- A fetch is served only to a node approved for an app hosted here whose files list the hash (`caller_may_hold`), else `404`.
+- A job transfer still sends the joined segments in one request.
+- `Outcome::files` carries marks only; `apply` records them as unreferenced blobs before the diff, for status `Ok` only.
+- `BlobTable::upload` and `forget_blob` refuse a file id.
+
+#### Who deletes segments
+
+No blob path (`collect_blob`, the blob routes) deletes a `seg.` row, and there is no peer delete.
+Collecting a file's id releases its quota only.
+`Node::sweep_segments` (`node/segments.rs`, every `SWEEP_EVERY`, 10 min) deletes a segment no hosted app lists (`BlobTable::holds_segment`) and nothing pins (`Node::pin_segments`), when:
+
+- this node saw it listed at an earlier sweep, so its file was forgotten; or
+- it has been unlisted for `SEGMENT_GRACE` (24 h) since first seen.
+
+First-seen times are in memory, so a restart restarts the grace.
+There is no caught-up check, so segments handed to a joining node before it applies survive the grace.
+A node that stops hosting an app deleted everywhere drops its segments at once (`Node::drop_deleted_files`); plain blobs stay.
+
+#### Writing in a logged run
+
+1. A run's writers hold only their partial segment in memory, against `MAX_PENDING_FILE_BYTES` (`PendingBytes`).
+   A write the budget cannot hold aborts the run as `FileError::Unavailable`.
+2. `Node::charge_files` charges the new files within `CHARGE_WAIT`, from the run's thread.
+   A refused charge answers `429` and logs nothing; one landing after the wait is refunded.
+3. `Node::persist_files` pushes the segments to the group's voters and learners (its Raft membership), `MAX_PUSHING_BLOBS` at a time, under one deadline below `FORWARD_TIMEOUT` and `MAX_PUSH_BYTES`.
+   It runs only after the entry bytes are built, so an entry replaced as too large stores nothing.
+   It needs a majority of voters, this node counted; a voter with no address still counts.
+4. Without a majority the call is `503 FILES_UNAVAILABLE`: the forward loops pass it on unretried, and the pushed bytes are removed.
+5. `Node::discard` undoes bytes and charge if the entry does not commit; `NodeFiles::forget_made` deletes segments no entry marks when the run ends.
+
+A file that cannot be had aborts a logged run as `503 TIMEOUT` (`FileError::Unavailable`) and ends a compute run `Unavailable`.
+Blocking on the runtime from a run needs a multi-thread runtime, else the run is refused.
+
+#### Reading
+
+- `open` reads one segment at a time; a local segment is used only if its SHA-256 matches, else it is fetched from the other replicas (5 s).
+- Any opener failure is `ReadError::Corrupt`, which the host core makes a `HostDenied` trap.
+- Open readers hold `OPEN_READER_BYTES` against `MAX_RUN_OPEN_BYTES` per run and `MAX_OPEN_FILE_BYTES` per node; logged runs wait 1 s for it.
+- `fetch_blob_from` asks only the app's other replicas, which serve a file they hold (`holds_blob`); bundles and other blobs still use every node.
+- Pushes skip members `may_send` refuses.
+
+#### Quota and retention
+
+- `expire_blobs` queues a forgotten file's plaintext size in `ComponentHead::collect_files` beside its id in `collect`.
+- The leader's `componentBlobsCollected` answers `freed`, and the node releases that many (`collect_component_blobs`), so a repeated entry releases nothing.
+- A queue past `MAX_COLLECT_QUEUE` drops its oldest ids with their sizes.
+- A snapshot without file-byte counts starts them at zero, and their release floors at zero.
+
+#### Replica moves
+
+`hand_over_bytes` hands the files over segment by segment with the bundle, and again after the voters change for files made during the move.
+The second hand-over is retried for 10 s and never abandons the move.
+
+### Publishing
+
+- `NodeFiles::publish` answers only a file with `FileSeal.output`, which only `apply_compute_final` sets.
+- A run log of an earlier release is marked `FileSeal.log` instead (see [Compute actions](/protocol/compute-actions/)), so it is never published.
+- It proves the whole file and holds the plaintext against the pending budget (`plaintext`).
+- `Outcome::published` carries `PublishedMark { source, id, size }`.
+- `run_with` adds each new published plaintext to the run's blobs, so `logged_entry` charges it (`new_file_bytes`) and `persist_files` pushes it.
+- `apply_component_outcome` checks every mark first (`publishes_only_outputs`, at most `MAX_PUBLISHED_PER_RUN`); one failing mark makes the entry a no-op.
+- Any no-op entry has its stored bytes discarded and its charge refunded (`recorded_nothing`).
+- `BlobTable::add_published` records the plain blob as `BlobRecord::charged`, `application/octet-stream`.
+- `blob_download` judges a published blob on the leader's record (`Node::blob_standing_strong`).
+
+#### Revoking grants
+
+- `BlobRecord::epoch` counts revokes (`ComponentCmd::BlobRevoke`, `__blob_revoke`); a grant above zero carries its epoch (`grant_token`).
+- `BlobTable::floor` (the hidden `rows::CBLOB` row `floor`) rises above the epoch of any forgotten blob but a sealed file; `add_published` and `upload` start there.
+- `load` fails on an unreadable floor or record instead of defaulting, and revoking refuses at `u32::MAX` (`no revocation left`).
+- `forget_blob` queues a published blob's bytes and charge in `collect` and `collect_files`.
+- A result method sees its outputs without the flag (`blob_view_with_outputs`), so a later call must publish them.
+- `refuse_sealed_file` answers `409 NOT_SUPPORTED` on the blob routes, judged by the leader through `file_held_strong`.
+- `/apps/{app}/storage` counts files' sealed bytes in `blobBytes`.
+
+### Uploads
+
+Code: `node/component/uploads.rs`.
+
+- `PART_BYTES` (16 MiB) is one part; `Client::upload_file` is the client side.
+- Access is `api::files_gate`; anyone else gets `403` on every `/files` route, and a part of the wrong length is `400 BAD_PART`.
+- A session (`Uploads`, one `Session` each) holds the segment writer, segment and part hashes and what is on a majority.
+- `UPLOAD_IDLE` and `UPLOAD_TTL` bound it; `Node::expire_uploads` ends it on the timer poll or when this node stops leading.
+- `SegmentWriter::write_more` seals part `k` into segment `k`, and `push_blobs` pushes it in the background with backoff.
+- `UPLOAD_WINDOW` bounds segments not yet on a majority; past `PART_PUSH_WAIT` the answer is `503`.
+- `admit` enforces the session limits and the payer's quota at begin.
+- `complete` waits `COMPLETE_WAIT`, charges once (`State::charged`) and commits through `commit_mark`.
+- A retried `complete` replays from the leader's record of the key (`replayed`, for the uploader only), even with no session left.
+- A recorded answer for another file under the same key wins, and the new file is undone.
+- When the commit's fate is unknown (`Upload::Unknown`), the session keeps its bytes until it ends.
+  Then a barrier decides: absent mark, refund and delete (`Node::undo_unmarked`).
+- Ending a session answers unknown at once, then stops its pushes and deletes its segments here (`Node::end`).
+- A follower forwards session requests one hop over `internal/upload*`, raw bodies, within `PART_FORWARD_TIMEOUT`.
+- The single request is a one-part session run through the same steps (`Node::upload_file`).
+- `StorageStats::files` carries each file's id, size and SHA-256, and `internal/storage` sends it to a peer.
+- The uploader comes from the API's `principal`; `internal/upload*` refuse anything but an account id (`valid_uploader`).
+- `BlobTable::add_uploaded` stores it as `FileSeal::uploader`, and `NodeFiles::uploader` answers `runs.uploader`.
+- A failed commit is settled with a `componentBarrier` entry, then a read of the record: present succeeded, absent undone, no barrier possible kept.

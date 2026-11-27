@@ -8,7 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.error import Error
-from ...models.package_pipelines_response_200 import PackagePipelinesResponse200
+from ...models.release_pipelines import ReleasePipelines
 from typing import cast
 
 
@@ -30,9 +30,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, PackagePipelinesResponse200]]:
+) -> Optional[Union[Error, ReleasePipelines]]:
     if response.status_code == 200:
-        response_200 = PackagePipelinesResponse200.from_dict(response.json())
+        response_200 = ReleasePipelines.from_dict(response.json())
 
         return response_200
 
@@ -59,7 +59,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, PackagePipelinesResponse200]]:
+) -> Response[Union[Error, ReleasePipelines]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -73,7 +73,7 @@ def sync_detailed(
     version: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, PackagePipelinesResponse200]]:
+) -> Response[Union[Error, ReleasePipelines]]:
     """A release's pipelines
 
      The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the
@@ -90,7 +90,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PackagePipelinesResponse200]]
+        Response[Union[Error, ReleasePipelines]]
     """
 
     kwargs = _get_kwargs(
@@ -110,7 +110,7 @@ def sync(
     version: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, PackagePipelinesResponse200]]:
+) -> Optional[Union[Error, ReleasePipelines]]:
     """A release's pipelines
 
      The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the
@@ -127,7 +127,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PackagePipelinesResponse200]
+        Union[Error, ReleasePipelines]
     """
 
     return sync_detailed(
@@ -142,7 +142,7 @@ async def asyncio_detailed(
     version: str,
     *,
     client: AuthenticatedClient,
-) -> Response[Union[Error, PackagePipelinesResponse200]]:
+) -> Response[Union[Error, ReleasePipelines]]:
     """A release's pipelines
 
      The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the
@@ -159,7 +159,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, PackagePipelinesResponse200]]
+        Response[Union[Error, ReleasePipelines]]
     """
 
     kwargs = _get_kwargs(
@@ -177,7 +177,7 @@ async def asyncio(
     version: str,
     *,
     client: AuthenticatedClient,
-) -> Optional[Union[Error, PackagePipelinesResponse200]]:
+) -> Optional[Union[Error, ReleasePipelines]]:
     """A release's pipelines
 
      The pipelines the release registers, by name: `hash`, `worstCaseFuel` (a decimal string), the
@@ -194,7 +194,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, PackagePipelinesResponse200]
+        Union[Error, ReleasePipelines]
     """
 
     return (

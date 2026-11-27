@@ -57,6 +57,11 @@
 //! seam for a managed deployment: a secrets service next to the node (inside
 //! the same TEE, say) answers for the secrets a deployer set for their app,
 //! for every organization that runs it.
+//!
+//! Spec: [Outbound HTTPS](https://calimero-network.github.io/core/protocol/execution/#outbound-https),
+//! [Secrets](https://calimero-network.github.io/core/protocol/secrets/),
+//! [Call an external service](https://calimero-network.github.io/core/build/guides/outbound/).
+//! Crate guide: [`crates/outbound/AGENTS.md`](https://github.com/calimero-network/core/blob/master/crates/outbound/AGENTS.md).
 
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
@@ -76,11 +81,11 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 use zeroize::Zeroizing;
 
-mod connector;
+mod audit;
 mod redact;
 mod settings;
 
-pub use connector::*;
+pub use audit::*;
 use redact::Redactor;
 pub use redact::{
     MAX_ENCODED_SECRET_BYTES, MAX_REDACTION_PATTERNS, MAX_SECRETS_PER_REQUEST,
@@ -168,22 +173,36 @@ pub type EgressCheck = Arc<dyn Fn() -> Option<&'static str> + Send + Sync>;
 
 /// `inner`, asking `off` before each request and refusing it with
 /// [`EGRESS_OFF`] while egress is off, before any other gate: nothing is
-/// resolved, filled in or sent.
+/// resolved, filled in or sent. A refused request is recorded in `audit` under
+/// `context` ([`AuditFailure::EgressOff`]), as `inner` records what it handles.
 #[must_use]
-pub fn egress_gated(inner: Arc<dyn OutboundHost>, off: EgressCheck) -> Arc<dyn OutboundHost> {
-    Arc::new(EgressGated { inner, off })
+pub fn egress_gated(
+    inner: Arc<dyn OutboundHost>,
+    off: EgressCheck,
+    audit: Arc<OutboundAudit>,
+    context: String,
+) -> Arc<dyn OutboundHost> {
+    Arc::new(EgressGated {
+        inner,
+        off,
+        audit,
+        context,
+    })
 }
 
 /// [`egress_gated`]'s host.
 struct EgressGated {
     inner: Arc<dyn OutboundHost>,
     off: EgressCheck,
+    audit: Arc<OutboundAudit>,
+    context: String,
 }
 
 impl fmt::Debug for EgressGated {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EgressGated")
             .field("inner", &self.inner)
+            .field("context", &self.context)
             .finish_non_exhaustive()
     }
 }
@@ -191,6 +210,11 @@ impl fmt::Debug for EgressGated {
 impl OutboundHost for EgressGated {
     fn send(&self, request: &[u8]) -> Result<Vec<u8>, String> {
         if let Some(who) = (self.off)() {
+            let at = audit::now_ms();
+            let mut entry = OutboundRequest::try_from_slice(request)
+                .map_or_else(|_| AuditEntry::malformed(at), |r| AuditEntry::of(&r, at));
+            entry.failure = Some(AuditFailure::EgressOff);
+            self.audit.record(&self.context, entry);
             return Err(format!(
                 "{EGRESS_OFF}: {who} turned egress off, so no request leaves the cluster \
                  for this app, whatever was approved"
@@ -406,8 +430,11 @@ pub struct Prepared {
     pub host: String,
     pub headers: Vec<(String, Zeroizing<String>)>,
     pub body: Zeroizing<Vec<u8>>,
-    /// The secrets substituted, once per substitution.
+    /// The values of the credentials the node attached, once each.
     secrets: Vec<Zeroizing<String>>,
+    /// The names of the credential bindings the node attached, in the order it
+    /// attached them: what the audit lists, never a value.
+    attached: Vec<String>,
     /// Their redaction from the response.
     redactor: Redactor,
 }
@@ -448,6 +475,25 @@ pub struct OutboundService {
     secrets: Option<Arc<dyn SecretProvider>>,
     transport: Arc<dyn Transport>,
 }
+
+/// A credential could not be attached (a binding refused, a placeholder written, too
+/// many secrets to redact): the refusal's kind in the audit ([`AuditFailure::Secret`]).
+/// Its message is the reason the app reads.
+#[derive(Debug)]
+struct SecretRefused {
+    reason: String,
+    /// The credential binding refused, when one was (not for a placeholder or a
+    /// redaction bound): the audit lists it.
+    binding: Option<String>,
+}
+
+impl fmt::Display for SecretRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+
+impl std::error::Error for SecretRefused {}
 
 impl OutboundService {
     /// The service `[outbound]` describes, or `None` when it is off.
@@ -529,12 +575,21 @@ impl OutboundService {
         approval: Option<Approval>,
         context: String,
     ) -> Option<Arc<dyn OutboundHost>> {
-        self.for_run_counted(app, declared, approval, context, Arc::default())
+        self.for_run_counted(
+            app,
+            declared,
+            approval,
+            context,
+            Arc::default(),
+            Arc::default(),
+        )
     }
 
     /// [`Self::for_run`], adding one to `sent` for each request it hands the
     /// transport: a refused or malformed request left nothing and counts
-    /// nothing. The node meters an app's outbound requests with it.
+    /// nothing. The node meters an app's outbound requests with it. Every
+    /// request the run hands it, sent or refused, is recorded in `audit` under
+    /// `context` (the node's per-instance outbound audit).
     #[must_use]
     pub fn for_run_counted(
         self: &Arc<Self>,
@@ -543,21 +598,7 @@ impl OutboundService {
         approval: Option<Approval>,
         context: String,
         sent: Arc<AtomicU64>,
-    ) -> Option<Arc<dyn OutboundHost>> {
-        self.run_outbound(app, declared, BTreeMap::new(), approval, context, sent)
-    }
-
-    /// The raw client for a run, refusing every host of `reserved` (a declared
-    /// connector's host, by the connector's name); `None` when the app
-    /// declared no prefix this node can use.
-    fn run_outbound(
-        self: &Arc<Self>,
-        app: AppIdentity,
-        declared: Vec<String>,
-        reserved: BTreeMap<String, String>,
-        approval: Option<Approval>,
-        context: String,
-        sent: Arc<AtomicU64>,
+        audit: Arc<OutboundAudit>,
     ) -> Option<Arc<dyn OutboundHost>> {
         let declared: BTreeSet<String> = declared
             .into_iter()
@@ -570,10 +611,10 @@ impl OutboundService {
             service: Arc::clone(self),
             app,
             declared,
-            reserved,
             approval,
             context,
             sent,
+            audit,
         }))
     }
 
@@ -646,7 +687,7 @@ impl OutboundService {
             bail!("a GET has no body");
         }
 
-        refuse_placeholder(&request)?;
+        refuse_placeholder(&request).map_err(secret_refused)?;
 
         // The credentials the release binds to this host and a path prefix covering this
         // request's path (normalized by the URL parser, so `..` and `%2e%2e` are gone): the
@@ -675,10 +716,13 @@ impl OutboundService {
             if let Some((secret, _)) = bound.iter().find(|(_, s)| {
                 matches!(s.placement(), Some(SecretPlacement::Header { name: h, .. }) if h == lower)
             }) {
-                bail!(
-                    "header {name} carries secret {secret}, which this app's manifest binds \
-                     to it for {host}: the node sets it, so the request may not ({SECRETS_DOCS})"
-                );
+                return Err(binding_refused(
+                    secret,
+                    eyre!(
+                        "header {name} carries secret {secret}, which this app's manifest binds \
+                         to it for {host}: the node sets it, so the request may not ({SECRETS_DOCS})"
+                    ),
+                ));
             }
             if lower == "content-type" {
                 content_type = Some(value.clone());
@@ -687,13 +731,20 @@ impl OutboundService {
         }
         let mut body = Zeroizing::new(request.body);
         let mut used = Vec::new();
+        let mut attached = Vec::new();
         for (name, secret) in bound {
-            let Some(value) = self.value_of(app, name, &host)? else {
+            let Some(value) = self
+                .value_of(app, name, &host)
+                .map_err(|e| binding_refused(name, e))?
+            else {
                 if secret.required {
-                    bail!(
-                        "secret {name} has no value for this app: its owner, its deployment \
-                         or this node's operator sets it"
-                    );
+                    return Err(binding_refused(
+                        name,
+                        eyre!(
+                            "secret {name} has no value for this app: its owner, its deployment \
+                             or this node's operator sets it"
+                        ),
+                    ));
                 }
                 continue;
             };
@@ -707,26 +758,44 @@ impl OutboundService {
                     if header.len() + filled.len() > MAX_HEADER_BYTES
                         || filled.bytes().any(|b| b == b'\r' || b == b'\n' || b == 0)
                     {
-                        bail!("secret {name}'s value does not fit a header");
+                        return Err(binding_refused(
+                            name,
+                            eyre!("secret {name}'s value does not fit a header"),
+                        ));
                     }
                     headers.push((header.to_owned(), filled));
                 }
                 Some(SecretPlacement::BodyField(field)) => {
                     if request.method == OutboundMethod::Get {
-                        bail!(
-                            "secret {name} is bound to body field {field:?}, and a GET has no body"
-                        );
+                        return Err(binding_refused(
+                            name,
+                            eyre!(
+                                "secret {name} is bound to body field {field:?}, and a GET has \
+                                 no body"
+                            ),
+                        ));
                     }
                     body = with_body_field(content_type.as_deref(), &body, field, &value).map_err(
-                        |why| eyre!("secret {name} is bound to body field {field:?}: {why}"),
+                        |why| {
+                            binding_refused(
+                                name,
+                                eyre!("secret {name} is bound to body field {field:?}: {why}"),
+                            )
+                        },
                     )?;
                 }
                 // `check_secrets` refused it at install.
-                None => bail!("secret {name} is bound to no place"),
+                None => {
+                    return Err(binding_refused(
+                        name,
+                        eyre!("secret {name} is bound to no place"),
+                    ))
+                }
             }
             used.push(value);
+            attached.push(name.clone());
         }
-        let redactor = Redactor::new(&used)?;
+        let redactor = Redactor::new(&used).map_err(secret_refused)?;
         Ok(Prepared {
             method: request.method,
             url,
@@ -734,6 +803,7 @@ impl OutboundService {
             headers,
             body,
             secrets: used,
+            attached,
             redactor,
         })
     }
@@ -855,42 +925,31 @@ struct RunOutbound {
     service: Arc<OutboundService>,
     app: AppIdentity,
     declared: BTreeSet<String>,
-    /// Hosts reached only through a connector the app declares, by its name.
-    reserved: BTreeMap<String, String>,
     approval: Option<Approval>,
     context: String,
     /// Requests handed to the transport.
     sent: Arc<AtomicU64>,
+    /// The node's outbound audit, recorded under `context`.
+    audit: Arc<OutboundAudit>,
 }
 
 impl OutboundHost for RunOutbound {
     fn send(&self, request: &[u8]) -> Result<Vec<u8>, String> {
         let started = Instant::now();
-        let request = OutboundRequest::try_from_slice(request)
-            .map_err(|e| format!("a malformed outbound request: {e}"))?;
+        let audit = &self.audit;
+        let request = match OutboundRequest::try_from_slice(request) {
+            Ok(request) => request,
+            Err(e) => {
+                audit.record(&self.context, AuditEntry::malformed(audit::now_ms()));
+                return Err(format!("a malformed outbound request: {e}"));
+            }
+        };
+        let mut entry = AuditEntry::of(&request, audit::now_ms());
         // The host alone, for the log: the rest of the URL (its path and query) is the
         // app's, and can carry a user's data or a token.
         let host = reqwest::Url::parse(&request.url)
             .ok()
             .and_then(|u| u.host_str().map(str::to_ascii_lowercase));
-        let reserved = host
-            .as_deref()
-            .map(|h| h.trim_end_matches('.'))
-            .and_then(|h| Some((self.reserved.get(h)?, h)));
-        if let Some((connector, reserved_host)) = reserved {
-            warn!(
-                context = %self.context,
-                package = %self.app.package,
-                host = reserved_host,
-                connector = %connector,
-                refusal = "ConnectorHost",
-                "outbound request refused"
-            );
-            return Err(format!(
-                "{reserved_host} is reached only through the {connector} connector this app \
-                 declares, never by a raw request"
-            ));
-        }
         let prepared =
             match self
                 .service
@@ -898,6 +957,9 @@ impl OutboundHost for RunOutbound {
             {
                 Ok(prepared) => prepared,
                 Err(reason) => {
+                    entry.failure = Some(audit::refusal_kind(&reason));
+                    entry.secrets = audit::refused_binding(&reason);
+                    audit.record(&self.context, entry);
                     // The node's name for the refusal, never its words: they quote the
                     // request (its URL, a header or secret name the guest wrote) and this
                     // line ships to the operator's log. The guest gets the words.
@@ -912,22 +974,37 @@ impl OutboundHost for RunOutbound {
                     return Err(reason);
                 }
             };
-        let (status, body) = self.service.transmit(
+        entry.secrets = audit::secret_names(&prepared.attached);
+        let answer = self.service.transmit(
             &self.app,
             &self.context,
             &self.sent,
             &self.declared,
             &prepared,
             started,
-        )?;
-        borsh::to_vec(&OutboundResponse { status, body }).map_err(|e| e.to_string())
+        );
+        match answer {
+            Ok((status, body)) => {
+                // The size the run gets: `transmit` already redacted the body.
+                entry.status = Some(status);
+                entry.response_bytes = body.len() as u64;
+                audit.record(&self.context, entry);
+                borsh::to_vec(&OutboundResponse { status, body }).map_err(|e| e.to_string())
+            }
+            Err(reason) => {
+                // Only that it failed in transit, never the transport's words.
+                entry.failure = Some(AuditFailure::Failed);
+                audit.record(&self.context, entry);
+                Err(reason)
+            }
+        }
     }
 }
 
 impl OutboundService {
     /// Sends a prepared request, counts it in `sent`, logs it (with the prefix of
     /// `declared` that covers it, never its path) and redacts its secrets from
-    /// the answer: every raw request and connector call ends here.
+    /// the answer: every request ends here.
     fn transmit(
         &self,
         app: &AppIdentity,
@@ -1075,7 +1152,9 @@ impl reqwest::dns::Resolve for PublicOnly {
     }
 }
 
-/// Whether `ip` is a globally routable unicast address.
+/// Whether `ip` is a globally routable unicast address: IPv4 outside the
+/// special-purpose ranges, IPv6 in 2000::/3 outside the non-global entries of the
+/// [IANA IPv6 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv6-special-registry/iana-ipv6-special-registry.xhtml).
 #[must_use]
 pub fn is_public(ip: IpAddr) -> bool {
     match ip {
@@ -1095,18 +1174,22 @@ pub fn is_public(ip: IpAddr) -> bool {
                 || a >= 240) // reserved
         }
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
+            // `::ffff:a.b.c.d` (mapped) and `::a.b.c.d` (IPv4-compatible, deprecated)
+            // are classified as the IPv4 address they carry; `::` and `::1` become
+            // `0.0.0.0` and `0.0.0.1`, which are not public either.
+            if let Some(v4) = v6.to_ipv4() {
                 return is_public(IpAddr::V4(v4));
             }
             let seg = v6.segments();
-            !(v6.is_unspecified()
-                || v6.is_loopback()
-                || v6.is_multicast()
-                || (seg[0] & 0xfe00) == 0xfc00 // unique local
-                || (seg[0] & 0xffc0) == 0xfe80 // link-local
-                || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation
-                || (seg[0] == 0x0064 && seg[1] == 0xff9b) // NAT64: an IPv4 address behind it
-                || seg[0] == 0x2002) // 6to4: likewise
+            // Only 2000::/3 is global unicast. Outside it lie the reserved ::/8
+            // (discard 100::/64 among it), NAT64 64:ff9b::/96 and 64:ff9b:1::/48
+            // (an IPv4 address behind them), SRv6 SIDs 5f00::/16, unique local
+            // fc00::/7, link-local fe80::/10, site-local fec0::/10 and multicast.
+            (seg[0] & 0xe000) == 0x2000
+                && !(seg[0] == 0x2001 && seg[1] < 0x0200 // IETF protocol assignments 2001::/23: Teredo, benchmarking, ORCHIDv2
+                    || (seg[0] == 0x2001 && seg[1] == 0x0db8) // documentation
+                    || seg[0] == 0x2002 // 6to4: an IPv4 address behind it
+                    || (seg[0] == 0x3fff && seg[1] < 0x1000)) // documentation 3fff::/20
         }
     }
 }
@@ -1270,6 +1353,22 @@ fn covers(prefix: &reqwest::Url, url: &reqwest::Url) -> bool {
         || path
             .strip_prefix(base)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// `report` as a [`SecretRefused`] naming no binding, its message unchanged.
+fn secret_refused(report: eyre::Report) -> eyre::Report {
+    eyre::Report::new(SecretRefused {
+        reason: report.to_string(),
+        binding: None,
+    })
+}
+
+/// `report` as a [`SecretRefused`] of the binding `name`, its message unchanged.
+fn binding_refused(name: &str, report: eyre::Report) -> eyre::Report {
+    eyre::Report::new(SecretRefused {
+        reason: report.to_string(),
+        binding: Some(name.to_owned()),
+    })
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {

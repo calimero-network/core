@@ -33,6 +33,13 @@ const CREATE_CHILD_TEAM: u32 = 1 << 11;
 
 /// A signed single-service `.mpk` of `package@1.0.0`, its WASM tagged so each
 /// package ships its own.
+/// Installs `mpk` as the operator: the cluster's catalog, which every account here uses.
+async fn catalog(c: &Cluster, mpk: Vec<u8>) {
+    let ops = c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ok = ops.ops().package_upload(mpk).await.unwrap();
+}
+
 fn release(package: &str) -> Vec<u8> {
     let mut wasm = kv_wasm();
     let tag = package.as_bytes();
@@ -75,6 +82,7 @@ fn release_shipping(package: &str, wasm: Vec<u8>) -> Vec<u8> {
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -176,7 +184,7 @@ async fn reaches(c: &Client, org: &str) -> Vec<String> {
 
 /// The accounts `c` sees in `org`'s member directory (`GET /orgs/{org}`).
 async fn directory(c: &Client, org: &str) -> Vec<String> {
-    let v = c.orgs().get(org).await.map(wire).unwrap();
+    let v = c.orgs().get(org, None, None, None).await.map(wire).unwrap();
     v["members"].as_object().unwrap().keys().cloned().collect()
 }
 
@@ -222,7 +230,7 @@ async fn app_team(c: &Client, org: &str, package: &str) -> Value {
         .unwrap_or_else(|| panic!("no app team of {package} in {v}"))
 }
 
-/// G1: an app's access is changed by its owner, an organization admin, or
+/// An app's access is changed by its owner, an organization admin, or
 /// whoever manages its team's apps (`MANAGE_APPLICATION` there, a lead) and,
 /// for another team, that team's too; organization-wide access needs it
 /// organization-wide. A plain member never.
@@ -317,9 +325,10 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
     // The owner, not in team two, holds no owner powers over an app on it;
     // once in it, they may change its access anywhere in the organization.
     let to_org = vec![Grant::Org];
+    // Out of the team, the app is not theirs to see: as if missing.
     refused(
         &bob.apps().access(&app, to_org).await.unwrap_err(),
-        "MANAGE_APPLICATION",
+        "404 NOT_FOUND: no such app",
     );
     let _ok = alice
         .orgs()
@@ -338,7 +347,7 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
         .unwrap();
 }
 
-/// G2: pending invites are listed (key, terms, creator, creation time, never
+/// Pending invites are listed (key, terms, creator, creation time, never
 /// a token) to whoever may revoke them: an admin all, a team's lead those
 /// naming only their teams, a creator their own; a revoked invite redeems no
 /// more. Revoking takes the actor's passkey.
@@ -432,7 +441,7 @@ async fn invites_are_listed_and_revoked_by_whoever_may_see_them() {
     );
 }
 
-/// G3, G9 and who installs: an admin converts an organization whose apps
+/// Converting to app teams, and who installs: an admin converts an organization whose apps
 /// use organization access into app teams in one step; everyone who reached
 /// an app keeps it, two apps make the organization shared (every app team
 /// closed), a package has one app team, and only an admin installs a new
@@ -446,7 +455,7 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let (dave, _d) = signed_up(&c, 0, "dave").await;
     for p in [CHAT, BLOCKS, NOTES] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     for p in [&bob, &carol] {
@@ -461,7 +470,12 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     let chat = instance(&alice, &org, CHAT, Value::Null).await.unwrap();
     let blocks = instance(&alice, &org, BLOCKS, Value::Null).await.unwrap();
     assert_eq!(
-        alice.orgs().get(&org).await.map(wire).unwrap()["mode"],
+        alice
+            .orgs()
+            .get(&org, None, None, None)
+            .await
+            .map(wire)
+            .unwrap()["mode"],
         "legacy"
     );
     for p in [&bob, &carol] {
@@ -536,7 +550,12 @@ async fn scoping_apps_keeps_everyone_in_and_separates_the_apps() {
     assert!(!seen.contains(&carol_id), "{seen:?}");
     assert!(!directory(&carol, &org).await.contains(&dave_id));
     assert_eq!(directory(&alice, &org).await.len(), 4);
-    let full = dave.orgs().get(&org).await.map(wire).unwrap();
+    let full = dave
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert!(
         !serde_json::to_string(&full).unwrap().contains(&carol_id),
         "{full}"
@@ -626,11 +645,7 @@ async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apar
     let c = Cluster::start(3).await;
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     for p in [CHAT, NOTES] {
-        let _ok = alice
-            .packages()
-            .upload(release_shipping(p, kv_wasm()))
-            .await
-            .unwrap();
+        catalog(&c, release_shipping(p, kv_wasm())).await;
     }
     // Naming both packages, and naming none (every package with an instance).
     let both = json!({ "apps": [{ "package": CHAT }, { "package": NOTES }] });
@@ -652,7 +667,7 @@ async fn scoping_two_packages_that_ship_one_component_keeps_their_instances_apar
     }
 }
 
-/// G6 and the guest role: in a standalone organization (one open app team)
+/// Who invites, and the guest role: in a standalone organization (one open app team)
 /// its members invite others to the app; once the organization is shared
 /// only leads and admins do, until an admin turns on the team's default
 /// capability. Where apps have app teams, a guest reaches only the apps of
@@ -665,7 +680,7 @@ async fn members_invite_to_a_standalone_app_and_guests_get_only_their_apps() {
     let (eve, _e) = signed_up(&c, 2, "eve").await;
     let (gail, _g) = signed_up(&c, 0, "gail").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     join(
@@ -810,7 +825,7 @@ async fn a_dm_is_reached_only_by_those_in_its_apps_team() {
     let (frank, _f) = signed_up(&c, 1, "frank").await;
     let (erin, _e) = signed_up(&c, 2, "erin").await;
     for p in [CHAT, NOTES] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     for p in [&bob, &carol, &frank] {
@@ -953,7 +968,7 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
     let (dave, _d) = signed_up(&c, 0, "dave").await;
     let (gail, _g) = signed_up(&c, 1, "gail").await;
     let (erin, _e) = signed_up(&c, 2, "erin").await;
-    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
+    catalog(&c, release(CHAT)).await;
     let org = new_org(&alice).await;
     for p in [&bob, &carol, &dave] {
         join(
@@ -1020,7 +1035,7 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
             .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
             .await
             .unwrap_err(),
-        "not allowed to create this team",
+        "404 NOT_FOUND: no such team",
     );
     let _outside = erin
         .orgs()
@@ -1032,12 +1047,13 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
         .team_remove_member(&org, &chat_team, &bob_id, Some(&mut a))
         .await
         .unwrap();
+    // Out of Chat, it is not theirs to see: as if missing.
     refused(
         &bob.orgs()
             .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
             .await
             .unwrap_err(),
-        "not allowed to create this team",
+        "404 NOT_FOUND: no such team",
     );
 
     // Dave, removed from Chat, and Carol, who leaves it, are out of the
@@ -1081,7 +1097,7 @@ async fn an_admin_closes_one_app_team_keeping_whom_they_name() {
     let (frank, _f) = signed_up(&c, 1, "frank").await;
     let (erin, mut e) = signed_up(&c, 2, "erin").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     for p in [&bob, &carol, &dave, &frank] {
@@ -1274,7 +1290,7 @@ async fn an_all_apps_member_gets_every_app_added_later() {
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     let (dave, mut d) = signed_up(&c, 0, "dave").await;
     for p in [CHAT, NOTES, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     for p in [&carol, &dave] {
@@ -1323,7 +1339,12 @@ async fn an_all_apps_member_gets_every_app_added_later() {
     assert!(listed.iter().any(|i| i["allApps"] == true), "{listed:?}");
     join(&bob, &s(&token)).await;
     let bob_id = id(&bob).await;
-    let o = alice.orgs().get(&org).await.map(wire).unwrap();
+    let o = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["allApps"], json!([bob_id]), "{o}");
     // Chat was there before: Bob is not in it.
     assert!(!reaches(&bob, &org).await.contains(&chat));
@@ -1369,7 +1390,12 @@ async fn an_all_apps_member_gets_every_app_added_later() {
         .await
         .map(wire)
         .unwrap();
-    let o = alice.orgs().get(&org).await.map(wire).unwrap();
+    let o = alice
+        .orgs()
+        .get(&org, None, None, None)
+        .await
+        .map(wire)
+        .unwrap();
     assert_eq!(o["allApps"], json!([carol_id]), "{o}");
 }
 
@@ -1385,7 +1411,7 @@ async fn closing_an_app_team_takes_the_channels_of_whoever_loses_it() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     let (dave, mut d) = signed_up(&c, 2, "dave").await;
-    let _ok = alice.packages().upload(release(CHAT)).await.unwrap();
+    catalog(&c, release(CHAT)).await;
     let org = new_org(&alice).await;
     join(
         &bob,
@@ -1475,7 +1501,7 @@ async fn an_admin_lets_an_app_teams_members_make_channels() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, mut b) = signed_up(&c, 1, "bob").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     join(
@@ -1544,7 +1570,7 @@ async fn an_admin_gives_a_member_every_app_in_one_step() {
     let (bob, mut b) = signed_up(&c, 1, "bob").await;
     let (carol, _c) = signed_up(&c, 2, "carol").await;
     for p in [CHAT, BLOCKS, NOTES] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     join(
@@ -1666,7 +1692,7 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
     let (alice, mut a) = signed_up(&c, 0, "alice").await;
     let (bob, _b) = signed_up(&c, 1, "bob").await;
     for p in [CHAT, BLOCKS] {
-        let _ok = alice.packages().upload(release(p)).await.unwrap();
+        catalog(&c, release(p)).await;
     }
     let org = new_org(&alice).await;
     join(
@@ -1907,4 +1933,49 @@ async fn a_frontend_session_manages_its_own_packages_channels() {
     assert!(alice.apps().get(&room).await.is_err());
     assert!(alice.orgs().team_get(&org, &channel).await.is_err());
     assert!(alice.apps().get(&chat_app).await.is_ok());
+}
+
+/// An app team is made only for a package the admin may use: Mal, an admin of his own
+/// organization, asking for one of Bob's private package is answered as for a package
+/// the cluster lacks, before his passkey, and no team is made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_app_team_of_a_private_package_answers_as_a_missing_package() {
+    let c = Cluster::start(3).await;
+    let (bob, _b) = signed_up(&c, 0, "bob").await;
+    let (mal, mut mal_pk) = signed_up(&c, 1, "mal").await;
+    let _bobco = new_org(&bob).await;
+    let _ok = bob.packages().upload(release(NOTES), None).await.unwrap();
+    let malco = new_org(&mal).await;
+
+    let private = scope(
+        &mal,
+        &mut mal_pk,
+        &malco,
+        json!({ "apps": [{ "package": NOTES }] }),
+    )
+    .await
+    .unwrap_err();
+    let missing = scope(
+        &mal,
+        &mut mal_pk,
+        &malco,
+        json!({ "apps": [{ "package": "com.test.missing" }] }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(private.to_string(), missing.to_string());
+    // Before the passkey: asked without one, the private package is no step-up away.
+    let unsigned = mal
+        .orgs()
+        .app_teams_scope(
+            &malco,
+            Some(typed(json!([{ "package": NOTES }]))),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(unsigned.to_string(), missing.to_string());
+    let teams = mal.orgs().app_team_list(&malco).await.map(wire).unwrap();
+    assert_eq!(teams["appTeams"], json!([]), "{teams}");
 }

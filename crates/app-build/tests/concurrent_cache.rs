@@ -1,4 +1,4 @@
-//! Concurrent first builds across processes (Ruling 46): nextest runs each test in its own
+//! Concurrent first builds across processes: nextest runs each test in its own
 //! process, so on a cold cache many processes build the same guest at once. They must build
 //! once and all succeed.
 

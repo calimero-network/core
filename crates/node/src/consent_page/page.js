@@ -10,6 +10,13 @@
   var withdrawing = false;
   // Checks that call for care: listed under Details, and repeated up top.
   var cautions = [];
+  var CHALLENGE_FRESH_MS = 4 * 60 * 1000; // the node keeps a passkey challenge 5 minutes
+  var INSTANT_MS = 1000; // a refusal sooner than this came back with no prompt shown
+  // The approve challenge (the node's 412), asked before the click: browsers show
+  // a passkey prompt only close to the click that asked for it.
+  var challenge = null, asking = null, refresh = 0;
+  // A prompt the browser refused without showing it: one more click asks again.
+  var AGAIN = {};
 
   function el(tag, text, cls) {
     var e = document.createElement(tag);
@@ -194,12 +201,16 @@
     if (u.hold) pol.appendChild(el("p", u.hold, "note-box"));
     labels(u.approveLabel, u.keepLabel, u.keepByDefault, u.class === "red" ? u.keepWords : null);
   }
+  // The organization chosen on an install sheet that asks for one; posted with the approval.
+  var chosenOrg = null;
   function renderInstall(x, i) {
+    if (has(i.chooseOrg)) chooseOrg(x, i.chooseOrg);
     var made = section(x, "What gets created for you");
     var ul = add(made, el("ul", null, "creates"));
-    (i.creates || []).forEach(function (c) {
+    (i.creates || []).forEach(function (c, n) {
       var li = add(ul, el("li"));
       li.appendChild(el("span", c.name + " " + c.version, "n"));
+      if (!n && i.privateTo) li.appendChild(el("span", i.privateTo, "pill pill-plain"));
       li.appendChild(el("span", c.what, "s"));
     });
     var where = section(x, "Where your data can go");
@@ -214,6 +225,26 @@
     bullets(up, i.updates);
     if (i.payer) x.appendChild(el("p", i.payer + " pays for this app; you have no Calimero bill for it.", "note-box"));
     labels("Create with passkey", "Cancel", false, null);
+  }
+  function chooseOrg(x, orgs) {
+    var box = section(x, "Create it in");
+    var select = add(box, el("select", null, "choose-org"));
+    select.id = "org";
+    select.setAttribute("aria-label", "Organization");
+    var none = add(select, el("option", "Choose an organization"));
+    none.value = ""; none.disabled = true; none.selected = true;
+    orgs.forEach(function (o) { add(select, el("option", o.name)).value = o.orgId; });
+    var points = {};
+    orgs.forEach(function (o) { points[o.orgId] = o.point; });
+    box.appendChild(el("p", "You are in several organizations. The app and its data belong to the one you choose.", "small muted"));
+    chosenOrg = "";
+    $("approve").disabled = true;
+    select.addEventListener("change", function () {
+      chosenOrg = select.value;
+      $("approve").disabled = !chosenOrg;
+      if (chosenOrg) prepare();
+      if ($("created") && points[chosenOrg]) $("created").textContent = points[chosenOrg];
+    });
   }
   function renderPolicyChange(x, p) {
     bullets(section(x, "Now"), p.now && p.now.words);
@@ -421,12 +452,13 @@
     var li = add($("attention"), el("li", null, "fact " + kind));
     add(li, el("span", null, "fact-ic")).appendChild(icon(name));
     var body = add(li, el("div"));
-    body.appendChild(el("p", title, "fact-t"));
+    var t = add(body, el("p", title, "fact-t"));
     if (sub) body.appendChild(el("p", sub, "fact-s"));
     if (has(items)) {
       var box = add(body, el("p", null, "fact-items"));
       items.forEach(function (i) { var c = add(box, el("code", i)); c.title = i; });
     }
+    return t;
   }
   // The main view: what needs care first (in colour), then what holds up,
   // then what happens. Only risk gets colour, so a warning stands out.
@@ -436,8 +468,11 @@
     cautions.forEach(function (c) { fact("warn", "warn", c[0], c[1]); });
     if (!attn.length && (m.kind === "upgrade" || m.kind === "upgradeUnit")) fact("ok", "shield", "No new permissions", "It reaches what the version you run now reaches.");
     if (signed) fact("ok", "key", signed[0], signed[1]);
+    // Who chooses this app's updates: a deployment's name is not unique, so its line names the owner too.
+    if (m.takenOver) fact("warn", "warn", m.takenOver.title, m.takenOver.detail);
+    if (m.offeredBy) fact("", "info", m.offeredBy.title, m.offeredBy.detail);
     var points = (m.points || []).filter(Boolean);
-    if (points.length) fact("", "info", points[0], points[1]);
+    if (points.length) fact("", "info", points[0], points[1]).id = "created";
   }
   function renderChecks(m, host) {
     var ul = $("checks"), mockShown = false;
@@ -637,7 +672,7 @@
     location.assign(u.href);
   }
   function busy(on, text) {
-    $("approve").disabled = on; $("decline").disabled = on;
+    $("approve").disabled = on || chosenOrg === ""; $("decline").disabled = on;
     $("status").textContent = text || "";
   }
   // Where the approval is: 1 asks the node, 2 waits for the passkey, 3
@@ -660,29 +695,65 @@
     $("status").textContent = "Returning you to the app…";
   }
 
-  function approve() {
-    step(1);
-    post("/approve").then(function (r) {
+  // Ask the node for the approve challenge now, and again before the node forgets it.
+  function prepare() {
+    challenge = null;
+    clearTimeout(refresh);
+    // The chosen organization goes into the action, so the passkey signs it.
+    var org = chosenOrg;
+    var p = post("/approve", org ? { org: org } : {}).then(function (r) {
       if (r.status !== 412) throw new Error((r.body && r.body.message) || "unexpected answer " + r.status);
-      var d = r.body.details;
-      step(2);
-      return navigator.credentials.get({ publicKey: {
-        challenge: b64urlToBytes(d.challenge),
-        rpId: d.rpId,
-        allowCredentials: (d.allowCredentials || []).map(function (c) { return { type: "public-key", id: b64urlToBytes(c) }; }),
-        userVerification: "required",
-        timeout: 120000,
-      } }).then(function (cred) {
-        step(3);
-        return post("/approve", { confirm: { challengeId: d.challengeId, assertion: {
-          credentialId: bytesToB64url(cred.rawId),
-          authenticatorData: bytesToB64url(cred.response.authenticatorData),
-          clientDataJson: bytesToB64url(cred.response.clientDataJSON),
-          signature: bytesToB64url(cred.response.signature),
-        } } });
+      if (asking === p) {
+        challenge = { d: r.body.details, at: Date.now(), org: org };
+        refresh = setTimeout(prepare, CHALLENGE_FRESH_MS);
+      }
+      return r.body.details;
+    });
+    p.catch(function () { if (asking === p) asking = null; });
+    return (asking = p);
+  }
+  // The passkey over `d`, then the approval. Called inside the click when `d` was ready.
+  function ask(d) {
+    step(2);
+    var started = Date.now();
+    return navigator.credentials.get({ publicKey: {
+      challenge: b64urlToBytes(d.challenge),
+      rpId: d.rpId,
+      allowCredentials: (d.allowCredentials || []).map(function (c) { return { type: "public-key", id: b64urlToBytes(c) }; }),
+      userVerification: "required",
+      timeout: 120000,
+    } }).then(function (cred) {
+      step(3);
+      challenge = asking = null;
+      clearTimeout(refresh);
+      return post("/approve", Object.assign({ confirm: { challengeId: d.challengeId, assertion: {
+        credentialId: bytesToB64url(cred.rawId),
+        authenticatorData: bytesToB64url(cred.response.authenticatorData),
+        clientDataJson: bytesToB64url(cred.response.clientDataJSON),
+        signature: bytesToB64url(cred.response.signature),
+      } } }, chosenOrg ? { org: chosenOrg } : {})).then(function (r) {
+        if (r.status === 200) return r;
+        var code = r.body && r.body.error;
+        if (code === "EXPIRED_CHALLENGE" || code === "UNKNOWN_CHALLENGE") {
+          return prepare().then(function () { throw AGAIN; });
+        }
+        prepare();
+        throw new Error((r.body && r.body.message) || "refused: " + r.status);
       });
-    }).then(function (r) {
-      if (r.status !== 200) throw new Error((r.body && r.body.message) || "refused: " + r.status);
+    }, function (e) {
+      throw e && e.name === "NotAllowedError" && Date.now() - started < INSTANT_MS ? AGAIN : e;
+    });
+  }
+  function approve() {
+    var c = challenge;
+    var asked;
+    if (c && c.org === chosenOrg && Date.now() - c.at < CHALLENGE_FRESH_MS) {
+      asked = ask(c.d);
+    } else {
+      step(1);
+      asked = (c || !asking || (challenge && challenge.org !== chosenOrg) ? prepare() : asking).then(ask);
+    }
+    asked.then(function (r) {
       if (hub) {
         // Unlocked: the page reads its list afresh.
         location.reload();
@@ -690,7 +761,15 @@
       }
       finished();
       leave(r.body.redirect);
-    }).catch(function (e) { step(0); busy(false, (withdrawing ? "Not withdrawn: " : "Not approved: ") + e.message); });
+    }).catch(function (e) {
+      step(0);
+      if (e === AGAIN) {
+        $("approve-label").textContent = "Confirm with your passkey";
+        busy(false, "Your browser wants one more tap before it shows the passkey prompt.");
+        return;
+      }
+      busy(false, (withdrawing ? "Not withdrawn: " : "Not approved: ") + e.message);
+    });
   }
   function decline() {
     busy(true, "Declining…");
@@ -704,6 +783,8 @@
   $("decline").addEventListener("click", decline);
   load()
     .then(render)
+    // A choice of organization still pending: its challenge is asked for once one is chosen.
+    .then(function () { if (!$("actions").hidden && chosenOrg !== "") prepare(); })
     .catch(function (e) {
       document.querySelectorAll(".host").forEach(function (h) { h.textContent = location.host; });
       $("headline").textContent = "Nothing to approve here";

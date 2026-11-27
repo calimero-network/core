@@ -311,7 +311,7 @@ def unkept_output(cl, rig, in_process):
     rec = rig.record(run)
     out = rig.output_ids(run)
     info = rig.info(out[0]) if out else {}
-    check("8 unkept output is registered, then left to R8", rec["state"] == "done" and len(out) == 1
+    check("8 unkept output is registered, then left to the blob lifecycle", rec["state"] == "done" and len(out) == 1
           and info.get("size") == VIEW_BYTES and rig.done() == before_done + 1,
           f"startUnkept on input {file8[:12]}, results {before_done}",
           f"state {rec['state']}, output {out[0][:12] if out else None} registered (size {info.get('size')}), "
@@ -401,7 +401,7 @@ def local_part(wd, compute, csv_path, policy, start, rows):
     run = subprocess.run([str(BIN / "meroctl"), "local", "compute", "run", str(compute), "--method", "redact", "--args", f"@{args}",
                           "--input", str(csv_path), "--out", str(out)], capture_output=True, text=True, check=True)
     result = json.loads(base64.b64decode(re.search(r"result \(base64\): (\S+)", run.stdout).group(1)))
-    return (out / "output-0").read_bytes(), result["cells"]
+    return (out / "output-0").read_bytes(), int(result["cells"])  # a decimal string: exact past 2^53
 
 
 def download(cl, app, blob, grant=None, key=None):
@@ -491,7 +491,7 @@ def redact_job(cl):
     parts = len(view["parts"])
     check("11a job done after its job node was killed mid-run",
           view["status"] == "done" and rec["state"] == "done" and len(attempts) >= 2 and attempts[-1] != killed_node
-          and view["totalRows"] == REDACT_ROWS and view["rowsDone"] == REDACT_ROWS and parts == 3
+          and int(view["totalRows"]) == REDACT_ROWS and int(view["rowsDone"]) == REDACT_ROWS and parts == 3
           and refused and not_theirs,
           f"{REDACT_ROWS} rows in {len(data)} bytes, parts of {REDACT_PER_PART}; admin set the policy, a member "
           f"was refused it: {refused}; another member was refused the uploader's file: {not_theirs}; "
@@ -526,7 +526,7 @@ def redact_job(cl):
         stable = stable and out[5] == "" and out[2] != src[2] and out[3] != src[3] and out[4] != src[4]
     cells = sum(c for _, c in refs)
     check("11c no email, phone or card is left, pseudonyms are stable across rows and parts, counts match",
-          not leaks and stable and len(set(tokens.values())) == len(tokens) and view["cellsRedacted"] == cells,
+          not leaks and stable and len(set(tokens.values())) == len(tokens) and int(view["cellsRedacted"]) == cells,
           f"{len(originals)} source rows, {len(tokens)} distinct names, columns {REDACT_COLUMNS}",
           f"patterns left: {leaks or 'none'}; {len(rows)} rows out, {len(tokens)} pseudonyms each the HMAC of its name; "
           f"cells redacted {view['cellsRedacted']} (local runs {cells})")

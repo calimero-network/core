@@ -12,6 +12,14 @@ const MAX_KEY_FOLLOW_UPS: usize = 4;
 const MAX_KEY_FOLLOW_UP_BYTES: usize = 64 * 1024;
 /// What a follow-up's arguments write for the key being made: `key:<its id>`.
 const KEY_PLACEHOLDER: &str = "key:$key";
+/// The longest account name a sign-up takes, in characters: a sign-up's
+/// ceremony holds it until its challenge expires, so it is bounded before
+/// anything is held (`account_name_fits`).
+pub const MAX_ACCOUNT_NAME_CHARS: usize = 64;
+/// The largest request body a passkey ceremony's route (`/auth/passkey/*`)
+/// takes: a name, an origin, an invite and a registration or assertion fit in
+/// a few KiB.
+pub const MAX_PASSKEY_CEREMONY_BYTES: usize = 64 * 1024;
 /// The bytes of each follow-up's salt.
 const FOLLOW_UP_SALT_BYTES: usize = 16;
 /// How often a follow-up whose outcome is unknown (a 5xx) is sent again under its key.
@@ -28,16 +36,28 @@ async fn new_session(
     from: Option<AppOrigin>,
     new: NewSession,
     consent: Value,
-) -> ApiResult {
+) -> ApiResult<Json<SessionAnswer>> {
     let origin = from.as_ref().and_then(AppOrigin::registered);
+    let registration = from
+        .as_ref()
+        .map(|a| a.registration.clone())
+        .unwrap_or_default();
     let app = from.map(|a| a.package);
     if let (Some(package), Some(origin)) = (&app, &origin) {
         info!(%package, %origin, "a session opened on a registered origin");
     }
-    let token = session_token_for(node, account, passkey, app.clone(), origin.clone(), &new)?;
+    let token = session_token_for(
+        node,
+        account,
+        passkey,
+        app.clone(),
+        origin.clone(),
+        registration.clone(),
+        &new,
+    )?;
     let record = RefreshRecord {
         opened_at: now_secs(),
-        ..new.record(account, passkey, app, origin)
+        ..new.record(account, passkey, app, origin, registration)
     };
     let _ok = node
         .sys_write(&SystemCmd::CreateRefresh {
@@ -47,6 +67,20 @@ async fn new_session(
         })
         .await?;
     Ok(session_answer(account, &token, &new))
+}
+
+/// The holder key a ceremony binds its session to ([`RefreshRecord::holder`]), checked before
+/// the ceremony spends anything: `400 BAD_HOLDER_KEY` for a malformed one, `409
+/// FEATURE_NOT_ACTIVE` while a node of the cluster would drop it.
+async fn holder_for(node: &Node, key: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(key) = key else {
+        return Ok(None);
+    };
+    crate::proof::check_holder_key(&key)
+        .map_err(|why| ApiError::bad_request("BAD_HOLDER_KEY", why))?;
+    node.require_features(&[crate::system::cluster_version::Feature::SessionHolders])
+        .await?;
+    Ok(Some(key))
 }
 
 #[derive(Deserialize)]
@@ -71,6 +105,11 @@ pub(super) struct RegisterBegin {
 pub(super) struct LoginBegin {
     #[serde(default)]
     origin: Option<String>,
+    /// The holder key to bind the session to ([`RefreshRecord::holder`]): a browser's
+    /// non-extractable P-256 key, base64url of its raw public point. The challenge states
+    /// it, so the passkey signs the binding.
+    #[serde(default, rename = "holderKey")]
+    holder_key: Option<String>,
 }
 
 /// The rp-id a ceremony begun on `origin` uses: the cluster's for its own
@@ -122,11 +161,26 @@ async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiErro
     node.sys(judge).map_err(crate::node::rejected)
 }
 
+/// Refuse an account name past [`MAX_ACCOUNT_NAME_CHARS`], `400
+/// NAME_TOO_LONG`: judged before a ceremony holds it or the log is asked to
+/// create the account.
+fn account_name_fits(name: &str) -> Result<(), ApiError> {
+    // A name past the limit in bytes is past it in characters too.
+    if name.len() > 4 * MAX_ACCOUNT_NAME_CHARS || name.chars().count() > MAX_ACCOUNT_NAME_CHARS {
+        return Err(ApiError::bad_request(
+            "NAME_TOO_LONG",
+            &format!("an account's name is at most {MAX_ACCOUNT_NAME_CHARS} characters"),
+        ));
+    }
+    Ok(())
+}
+
 async fn register_begin(
     State(node): State<Arc<Node>>,
     sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RegisterBegin>,
-) -> ApiResult {
+) -> ApiResult<Json<PasskeyChallenge>> {
+    account_name_fits(&body.name)?;
     refuse_sign_up(&node, body.invite.as_deref()).await?;
     let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
     let challenge = random::<32>();
@@ -157,9 +211,9 @@ async fn register_begin(
         },
         sealed.map(|Extension(s)| s),
     )?;
-    Ok(Json(json!({
-        "challengeId": id,
-        "options": {
+    Ok(Json(PasskeyChallenge {
+        challenge_id: id,
+        options: json!({
             "challenge": b64url(&challenge),
             "rp": { "id": rp_id, "name": "Calimero" },
             "user": { "id": b64url(&user_id), "name": shown, "displayName": shown },
@@ -167,8 +221,8 @@ async fn register_begin(
             "timeout": 60000,
             "attestation": "none",
             "authenticatorSelection": { "residentKey": "required", "userVerification": "preferred" },
-        }
-    })))
+        }),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -186,13 +240,17 @@ pub(super) struct RegisterFinish {
     /// over the account it creates.
     #[serde(default)]
     confirm: Option<ConfirmBody>,
+    /// The holder key to bind the new account's first session to, on the first finish
+    /// ([`LoginBegin::holder_key`]); the new passkey signs it with the account.
+    #[serde(default)]
+    holder_key: Option<String>,
 }
 
 async fn register_finish(
     State(node): State<Arc<Node>>,
     sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RegisterFinish>,
-) -> ApiResult {
+) -> ApiResult<Json<SessionAnswer>> {
     // A new account approves this node's release, so only a release the
     // operator did not approve (where it holds release approvals) refuses it:
     // decided before the challenge is spent, so the client can finish on
@@ -206,6 +264,7 @@ async fn register_finish(
     if let Some(confirm) = body.confirm {
         return sign_up_confirmed(&node, confirm, body.invite.as_deref()).await;
     }
+    let holder = holder_for(&node, body.holder_key).await?;
     let Pending::Register {
         challenge, name, ..
     } = take_pending(&node, &body.challenge_id).await?
@@ -215,6 +274,8 @@ async fn register_finish(
             "not a registration challenge",
         ));
     };
+    // Begun on a node that did not bound it, perhaps (`internal/challenge/take`).
+    account_name_fits(&name)?;
     // Signing up on a package's frontend opens a session bound to it.
     let app = claimed_app(&node, &body.registration.client_data_json).await;
     let cred = verify_registration(
@@ -236,17 +297,27 @@ async fn register_finish(
     // A registration carries no signature by the new key (attestation
     // `none`): the new passkey signs the account it creates, and the session
     // it opens, before the log takes it (412, then the retry).
-    let session = NewSession::new();
+    let session = NewSession::new(holder);
     // The new passkey belongs to the rp-id of the origin it was made on.
     let rp_id = app
         .as_ref()
         .and_then(|a| a.rp_id.clone())
         .unwrap_or_else(|| node.config.rp_id.clone());
     let origin = app.as_ref().and_then(AppOrigin::registered);
+    let registration = app
+        .as_ref()
+        .map(|a| a.registration.clone())
+        .unwrap_or_default();
     let app = app.map(|a| a.package);
     let grant = RefreshGrant {
         hash: session.hash(),
-        record: session.record(&account.account_id, &cred.id, app.clone(), origin.clone()),
+        record: session.record(
+            &account.account_id,
+            &cred.id,
+            app.clone(),
+            origin.clone(),
+            registration.clone(),
+        ),
     };
     let statement = crate::proof::Statement::new(
         &format!("account:{}", account.account_id),
@@ -264,6 +335,7 @@ async fn register_finish(
             session,
             app,
             origin,
+            registration,
         },
         sealed.map(|Extension(s)| s),
     )?;
@@ -279,7 +351,11 @@ async fn register_finish(
 /// The sign-up's retry: the new passkey's assertion over the account, then
 /// the account and its first session. `invite` (the same token the first
 /// half carried) is redeemed for the account here, signed with its key.
-async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&str>) -> ApiResult {
+async fn sign_up_confirmed(
+    node: &Node,
+    confirm: ConfirmBody,
+    invite: Option<&str>,
+) -> ApiResult<Json<SessionAnswer>> {
     let Pending::SignUp {
         challenge,
         statement,
@@ -287,6 +363,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
         session,
         app,
         origin,
+        registration,
         ..
     } = take_pending(node, &confirm.challenge_id).await?
     else {
@@ -295,6 +372,8 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
             "not a sign-up confirmation",
         ));
     };
+    // The account the log is asked to create, whichever node held its ceremony.
+    account_name_fits(&account.name)?;
     let cred = account
         .passkeys
         .first()
@@ -303,7 +382,11 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
     // origin itself, for one), or the cluster's.
     let from = claimed_app(node, &confirm.assertion.client_data_json)
         .await
-        .filter(|a| app.as_deref() == Some(a.package.as_str()) && a.registered() == origin);
+        .filter(|a| {
+            app.as_deref() == Some(a.package.as_str())
+                && a.registered() == origin
+                && a.registration == registration
+        });
     if origin.is_some() && from.is_none() {
         return Err(ApiError::unauthenticated(
             "confirm the sign-up on the origin it began on",
@@ -324,6 +407,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
         &passkey,
         app.clone(),
         origin.clone(),
+        registration.clone(),
         &session,
     )?;
     let consent = crate::proof::Consent {
@@ -363,7 +447,7 @@ async fn sign_up_confirmed(node: &Node, confirm: ConfirmBody, invite: Option<&st
             invite,
             refresh: Some(RefreshGrant {
                 hash: session.hash(),
-                record: session.record(&account_id, &passkey, app, origin),
+                record: session.record(&account_id, &passkey, app, origin, registration),
             }),
             consent: super::consent_value(&consent)?,
             at: now,
@@ -377,12 +461,13 @@ async fn login_begin(
     State(node): State<Arc<Node>>,
     sealed: Option<Extension<SealedSession>>,
     body: Option<Json<LoginBegin>>,
-) -> ApiResult {
+) -> ApiResult<Json<PasskeyChallenge>> {
     let body = body.map(|Json(b)| b).unwrap_or_default();
     let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
+    let holder = holder_for(&node, body.holder_key).await?;
     // The challenge states the session the sign-in opens, so the log takes
     // its refresh token only with this assertion (`CreateRefresh`).
-    let session = NewSession::new();
+    let session = NewSession::new(holder);
     let statement = session.sign_in_statement();
     let challenge = statement.challenge().map_err(ApiError::internal)?;
     let id = put_pending(
@@ -395,10 +480,10 @@ async fn login_begin(
         },
         sealed.map(|Extension(s)| s),
     )?;
-    Ok(Json(json!({
-        "challengeId": id,
-        "options": { "challenge": b64url(&challenge), "rpId": rp_id, "userVerification": "preferred", "timeout": 60000 }
-    })))
+    Ok(Json(PasskeyChallenge {
+        challenge_id: id,
+        options: json!({ "challenge": b64url(&challenge), "rpId": rp_id, "userVerification": "preferred", "timeout": 60000 }),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -425,7 +510,10 @@ async fn check_assertion(
     check_assertion_for(node, base, challenge, assertion, account, bound, any_app).await
 }
 
-async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionBody>) -> ApiResult {
+async fn login_finish(
+    State(node): State<Arc<Node>>,
+    Json(body): Json<AssertionBody>,
+) -> ApiResult<Json<SessionAnswer>> {
     // The account the passkey names, if this replica knows it: refused before
     // the challenge is spent when this node may not serve it, so the client
     // finishes the same ceremony on another node. (A replica that does not
@@ -468,7 +556,10 @@ async fn login_finish(State(node): State<Arc<Node>>, Json(body): Json<AssertionB
     .await
 }
 
-async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn passkey_add_begin(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<PasskeyChallenge>> {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let challenge = random::<32>();
@@ -498,17 +589,17 @@ async fn passkey_add_begin(State(node): State<Arc<Node>>, headers: HeaderMap) ->
         &passkeys::cluster_tag(&node),
         None,
     );
-    Ok(Json(json!({
-        "challengeId": id,
-        "options": {
+    Ok(Json(PasskeyChallenge {
+        challenge_id: id,
+        options: json!({
             "challenge": b64url(&challenge),
             "rp": { "id": node.config.rp_id, "name": "Calimero" },
             "user": { "id": b64url(&random::<16>()), "name": shown, "displayName": shown },
             "pubKeyCredParams": [ { "type": "public-key", "alg": -7 }, { "type": "public-key", "alg": -8 } ],
             "excludeCredentials": exclude,
             "attestation": "none",
-        }
-    })))
+        }),
+    }))
 }
 
 #[derive(Deserialize)]
@@ -533,7 +624,7 @@ async fn passkey_add_finish(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Json(body): Json<AddPasskeyFinish>,
-) -> ApiResult {
+) -> ApiResult<Json<PasskeyAdded>> {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let made = if body.confirm.is_some() {
@@ -584,7 +675,7 @@ async fn passkey_add_finish(
             at: now_secs(),
         })
         .await?;
-    Ok(Json(json!({ "credentialId": id })))
+    Ok(Json(PasskeyAdded { credential_id: id }))
 }
 
 /// Remove a passkey: the account's, approved with a passkey (412 first; the
@@ -621,9 +712,38 @@ async fn passkey_remove(
 #[serde(rename_all = "camelCase")]
 pub(super) struct RefreshBody {
     refresh_token: String,
+    /// The holder's signature, required for a token bound to a holder key
+    /// ([`RefreshRecord::holder`]) and ignored for any other.
+    #[serde(default)]
+    holder_proof: Option<crate::types::HolderProof>,
 }
 
-async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -> ApiResult {
+/// A token bound to a holder key is used only with that key's proof: `401 HOLDER_PROOF_REQUIRED`
+/// without one, `401 BAD_HOLDER_PROOF` for one that does not verify. Judged before anything is
+/// written, so a copy of the token taken off the device neither refreshes nor spends it.
+fn check_holder(
+    rec: &RefreshRecord,
+    hash: &str,
+    proof: Option<&crate::types::HolderProof>,
+) -> Result<(), ApiError> {
+    let Some(holder) = &rec.holder else {
+        return Ok(());
+    };
+    let Some(proof) = proof else {
+        return Err(ApiError::new(
+            401,
+            "HOLDER_PROOF_REQUIRED",
+            "this refresh token is bound to a device key: send its holderProof",
+        ));
+    };
+    crate::proof::verify_refresh_holder(holder, hash, proof.at, &proof.signature, now_secs())
+        .map_err(|why| ApiError::new(401, "BAD_HOLDER_PROOF", why))
+}
+
+async fn refresh(
+    State(node): State<Arc<Node>>,
+    Json(body): Json<RefreshBody>,
+) -> ApiResult<Json<SessionAnswer>> {
     let old_hash = b64url(&sha256(body.refresh_token.as_bytes()));
     let mut found = node.sys(|s| s.refresh.get(&old_hash).cloned());
     let mut caught_up = true;
@@ -643,12 +763,21 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
         // refused at apply for a token never exchanged, so a replica that
         // could not catch up lets the system log decide rather than answer
         // "unknown" to a thief from a stale view.
-        let known_here = node.sys(|s| s.rotated_refresh.contains_key(&old_hash));
+        let rotated = node.sys(|s| s.rotated_refresh.get(&old_hash).cloned());
+        let known_here = rotated.is_some();
+        // A token bound to a holder key ends its session only with that key's proof: a copy
+        // of an old token taken off the device cannot sign its owner out. Judged here before
+        // anything is written, and again at apply (`accounts::authorize_reuse`), which also
+        // decides for a replica that could not catch up.
+        if let Some(rotated) = &rotated {
+            check_holder(rotated, &old_hash, body.holder_proof.as_ref())?;
+        }
         if known_here || !caught_up {
             let revoked = node
                 .sys_write(&SystemCmd::RefreshReused {
                     hash: old_hash,
                     now: now_secs(),
+                    holder_proof: body.holder_proof.clone(),
                 })
                 .await;
             if known_here || revoked.is_ok() {
@@ -670,11 +799,12 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
     if !serves(&node, &rec.account) {
         return Err(wrong_node());
     }
+    check_holder(&rec, &old_hash, body.holder_proof.as_ref())?;
     if let Some(origin) = &rec.origin {
         // Judged on the cluster's latest state: a removal made through
         // another node holds here at once.
         let _caught_up = node.sys_fresh().await;
-        if !origin_holds(&node, rec.app.as_deref(), origin) {
+        if !origin_holds(&node, rec.app.as_deref(), origin, &rec.registration) {
             return Err(origin_gone());
         }
     }
@@ -685,12 +815,14 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
     let record = RefreshRecord {
         account: rec.account.clone(),
         session: rec.session.clone(),
-        expires_at: now_secs() + REFRESH_TTL,
+        expires_at: now_secs() + rec.ttl(),
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
         origin: rec.origin.clone(),
+        registration: rec.registration.clone(),
         key: crate::proof::refresh_key(&new_refresh),
         opened_at: rec.opened_at,
+        holder: rec.holder.clone(),
     };
     let new_hash = b64url(&sha256(new_refresh.as_bytes()));
     let now = now_secs();
@@ -724,6 +856,9 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
             .sys_write(&SystemCmd::RefreshReused {
                 hash: old_hash,
                 now: now_secs(),
+                // Checked against this token's live record above (`check_holder`); the log
+                // judges it again against the exchanged one.
+                holder_proof: body.holder_proof.clone(),
             })
             .await;
         if revoked.is_ok() {
@@ -743,13 +878,17 @@ async fn refresh(State(node): State<Arc<Node>>, Json(body): Json<RefreshBody>) -
             passkey: rec.passkey,
             app: rec.app,
             origin: rec.origin,
+            registration: rec.registration,
             node: 0,
             key: String::new(),
         },
     )?;
-    Ok(Json(
-        json!({ "accountId": rec.account, "sessionToken": token, "expiresAt": expires_at, "refreshToken": new_refresh }),
-    ))
+    Ok(Json(SessionAnswer {
+        account_id: rec.account,
+        session_token: token,
+        expires_at,
+        refresh_token: new_refresh,
+    }))
 }
 
 /// A refresh that keeps its token and writes nothing to the system log: the
@@ -768,9 +907,9 @@ async fn kept_refresh(
     token: &str,
     hash: &str,
     rec: &RefreshRecord,
-) -> Result<Option<Json<Value>>, ApiError> {
+) -> Result<Option<Json<SessionAnswer>>, ApiError> {
     let now = now_secs();
-    let issued = rec.expires_at.saturating_sub(REFRESH_TTL);
+    let issued = rec.issued_at();
     if rec.key.is_empty()
         || now.saturating_sub(issued) >= node.config.refresh_rotate_after.as_secs()
     {
@@ -801,16 +940,17 @@ async fn kept_refresh(
             passkey: rec.passkey.clone(),
             app: rec.app.clone(),
             origin: rec.origin.clone(),
+            registration: rec.registration.clone(),
             node: 0,
             key: String::new(),
         },
     )?;
-    Ok(Some(Json(json!({
-        "accountId": rec.account,
-        "sessionToken": session,
-        "expiresAt": expires_at,
-        "refreshToken": token,
-    }))))
+    Ok(Some(Json(SessionAnswer {
+        account_id: rec.account.clone(),
+        session_token: session,
+        expires_at,
+        refresh_token: token.to_owned(),
+    })))
 }
 
 async fn logout(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
@@ -851,7 +991,12 @@ const MAX_SESSION_ID_CHARS: usize = 64;
 /// A refresh token younger than `Config::refresh_rotate_after` (an hour) is
 /// kept without a write, and a session token lives [`SESSION_TTL`], so a
 /// session may have been used up to that much after `lastActiveAt`.
-fn account_sessions(s: &SystemState, account: &str, current: Option<&str>, now: u64) -> Vec<Value> {
+fn account_sessions(
+    s: &SystemState,
+    account: &str,
+    current: Option<&str>,
+    now: u64,
+) -> Vec<SessionView> {
     let mut latest: BTreeMap<&str, &RefreshRecord> = BTreeMap::new();
     for r in s.refresh.values() {
         if r.account != account || r.expires_at <= now || s.revoked_sessions.contains(&r.session) {
@@ -871,16 +1016,14 @@ fn account_sessions(s: &SystemState, account: &str, current: Option<&str>, now: 
     sessions
         .into_iter()
         .take(MAX_SESSIONS_LISTED)
-        .map(|r| {
-            json!({
-                "session": r.session,
-                "passkey": r.passkey,
-                "app": r.app,
-                "origin": r.origin,
-                "openedAt": (r.opened_at > 0).then_some(r.opened_at),
-                "lastActiveAt": r.expires_at.saturating_sub(REFRESH_TTL),
-                "current": current == Some(r.session.as_str()),
-            })
+        .map(|r| SessionView {
+            session: r.session.clone(),
+            passkey: r.passkey.clone(),
+            app: r.app.clone(),
+            origin: r.origin.clone(),
+            opened_at: (r.opened_at > 0).then_some(r.opened_at),
+            last_active_at: r.issued_at(),
+            current: current == Some(r.session.as_str()),
         })
         .collect()
 }
@@ -889,13 +1032,16 @@ fn account_sessions(s: &SystemState, account: &str, current: Option<&str>, now: 
 /// The account holder's alone, on the cluster's own origin: never an API key
 /// or a package-bound session, which would learn the other apps and origins
 /// the person signs in to.
-async fn sessions_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn sessions_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<SessionList>> {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let current = p.session.as_ref().map(|c| c.session.clone());
     let now = now_secs();
     let sessions = node.sys(|s| account_sessions(s, &account, current.as_deref(), now));
-    Ok(Json(json!({ "sessions": sessions })))
+    Ok(Json(SessionList { sessions }))
 }
 
 /// `DELETE /auth/sessions/{session}`: end one of the caller's own sessions,
@@ -954,7 +1100,7 @@ async fn activity_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Query(q): Query<ActivityQuery>,
-) -> ApiResult {
+) -> ApiResult<Json<ActivityList>> {
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let activity = node.sys(|s| {
@@ -966,12 +1112,12 @@ async fn activity_list(
                 .collect::<Vec<_>>()
         })
     });
-    Ok(Json(json!({ "activity": activity })))
+    Ok(Json(ActivityList { activity }))
 }
 
 /// One activity entry as `GET /auth/activity` lists it: every key present,
 /// the ones its kind does not have `null`.
-fn activity_entry(e: &crate::types::ActivityEntry) -> Value {
+fn activity_entry(e: &crate::types::ActivityEntry) -> ActivityView {
     use crate::types::Activity;
     let (kind, app, origin, method, subject) = match &e.what {
         Activity::SignIn { app, origin } => {
@@ -985,66 +1131,91 @@ fn activity_entry(e: &crate::types::ActivityEntry) -> Value {
             Some(subject.as_str()),
         ),
     };
-    json!({
-        "at": e.at,
-        "passkey": e.passkey,
-        "kind": kind,
-        "app": app,
-        "origin": origin,
-        "method": method,
-        "subject": subject,
-    })
+    ActivityView {
+        at: e.at,
+        passkey: e.passkey.clone(),
+        kind: kind.to_owned(),
+        app: app.map(str::to_owned),
+        origin: origin.map(str::to_owned),
+        method: method.map(str::to_owned),
+        subject: subject.map(str::to_owned),
+    }
 }
 
-async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json<AccountView>> {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
-    let (acc, orgs, (recovery, pending)) = node.sys(|s| {
+    // An instance's own site learns the account's name and that instance's organization alone.
+    let (acc, orgs, (recovery, pending), site) = node.sys(|s| {
         let acc = s.accounts.get(&account).cloned();
+        let site = p
+            .site_instance(s)
+            .map(|app| s.apps.get(&app).map(|a| a.org.clone()));
         let recovery = (
-            s.recovery_keys.values().any(|a| *a == account),
-            s.account_recoveries.get(&account).map(|p| p.json(&account)),
+            site.is_none() && s.recovery_keys.values().any(|a| *a == account),
+            s.account_recoveries
+                .get(&account)
+                .filter(|_| site.is_none())
+                .map(|p| p.view(&account)),
         );
-        let orgs: Vec<Value> = s
+        let orgs: Vec<AccountOrg> = s
             .orgs
             .values()
+            .filter(|o| {
+                site.as_ref()
+                    .is_none_or(|org| org.as_ref() == Some(&o.org_id))
+            })
             .filter_map(|o| {
-                o.role(&account)
-                    .map(|r| json!({ "orgId": o.org_id, "name": o.name, "role": r, "personal": o.personal }))
+                o.role(&account).map(|role| AccountOrg {
+                    org_id: o.org_id.clone(),
+                    name: o.name.clone(),
+                    role,
+                    personal: o.personal,
+                })
             })
             .collect();
-        (acc, orgs, recovery)
+        (acc, orgs, recovery, site)
     });
     let acc = acc.ok_or_else(|| ApiError::not_found("account"))?;
-    Ok(Json(json!({
-        "accountId": acc.account_id,
-        "name": acc.name,
-        "passkeys": acc.passkeys.iter().map(|c| {
-            let times = acc.passkey_times.get(&c.id);
-            json!({
-                "id": c.id,
-                "signCount": c.sign_count,
-                "label": acc.passkey_labels.get(&c.id),
-                // When it was added and last signed in (Unix seconds);
-                // `null`: before the node kept it.
-                "addedAt": times.and_then(|t| t.added_at),
-                "lastSignInAt": times.and_then(|t| t.last_sign_in_at),
+    Ok(Json(AccountView {
+        account_id: acc.account_id.clone(),
+        name: acc.name.clone(),
+        passkeys: acc
+            .passkeys
+            .iter()
+            .filter(|_| site.is_none())
+            .map(|c| {
+                let times = acc.passkey_times.get(&c.id);
+                AccountPasskey {
+                    id: c.id.clone(),
+                    sign_count: c.sign_count,
+                    label: acc.passkey_labels.get(&c.id).cloned(),
+                    // When it was added and last signed in (Unix seconds);
+                    // `null`: before the node kept it.
+                    added_at: times.and_then(|t| t.added_at),
+                    last_sign_in_at: times.and_then(|t| t.last_sign_in_at),
+                }
             })
-        }).collect::<Vec<_>>(),
-        "orgs": orgs,
-        "via": if p.api_key.is_some() { "apiKey" } else { "session" },
+            .collect(),
+        orgs,
+        via: if p.api_key.is_some() {
+            "apiKey"
+        } else {
+            "session"
+        }
+        .to_owned(),
         // The passkey (device) this session was opened with.
-        "passkeyId": p.session.as_ref().and_then(|s| s.passkey.clone()),
+        passkey_id: p.session.as_ref().and_then(|s| s.passkey.clone()),
         // The package a frontend's session is bound to, and the registered
         // origin that opened it.
-        "app": p.bound_app(),
-        "origin": p.session.as_ref().and_then(|s| s.origin.clone()),
+        app: p.bound_app().map(str::to_owned),
+        origin: p.session.as_ref().and_then(|s| s.origin.clone()),
         // Whether a recovery code is set (`/auth/recovery`); never the code.
-        "recoveryCode": recovery,
+        recovery_code: recovery,
         // A recovery under way (`/auth/recovery/start`), which a passkey of
         // this account cancels (`/auth/recovery/cancel`) before `readyAt`.
-        "recoveryPending": pending,
-    })))
+        recovery_pending: pending,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -1102,8 +1273,12 @@ async fn upgrade_scope(
                 "an upgrade key needs an app that runs a signed package",
             )
         })?;
+    // A package with no release the account may use answers as a missing one.
     let signer = node
-        .sys(|s| s.packages.get(&package).map(|p| p.signer_id.clone()))
+        .sys(|s| {
+            s.package_used(&package, account, false)
+                .map(|p| p.signer_id.clone())
+        })
         .ok_or_else(|| ApiError::not_found("no such package"))?;
     if !node.sys(|s| s.may_upgrade(&app, account, owner_approves)) {
         return Err(ApiError::forbidden(if owner_approves {
@@ -1588,12 +1763,17 @@ async fn apikey_create(
     );
     let count = follow_ups.len();
     let results = tokio::spawn(made).await.map_err(|_| interrupted(count))??;
-    Ok(Json(
-        json!({ "keyId": key_id, "key": key, "then": results }),
-    ))
+    Ok(Json(json!(ApiKeyMade {
+        key_id,
+        key,
+        then: results
+    })))
 }
 
-async fn apikey_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
+async fn apikey_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<ApiKeyList>> {
     let account = holder(&node, &headers).await?.account()?;
     let keys: Vec<ApiKeyRecord> = node.sys(|s| {
         s.api_keys
@@ -1602,7 +1782,7 @@ async fn apikey_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiRe
             .cloned()
             .collect()
     });
-    Ok(Json(json!({ "keys": keys })))
+    Ok(Json(ApiKeyList { keys }))
 }
 
 /// Revoke an API key: the account's, approved with a passkey (412 first;
@@ -1657,6 +1837,7 @@ async fn alias_set(
     Json(body): Json<AliasBody>,
 ) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
+    p.settings_write()?;
     let account = p.account()?;
     let app = node.canonical_app_id(&body.app);
     let rec = node.app(&app).await?;
@@ -1679,7 +1860,10 @@ async fn alias_delete(
     headers: HeaderMap,
     Path(alias): Path<String>,
 ) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    p.settings_write()?;
+    let account = p.account()?;
     let _ok = node
         .sys_write(&SystemCmd::SetAlias {
             account,
@@ -1694,23 +1878,30 @@ async fn alias_get(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
     Path(alias): Path<String>,
-) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+) -> ApiResult<Json<AliasView>> {
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let app = node
         .sys(|s| s.accounts.get(&account)?.aliases.get(&alias).cloned())
         .ok_or_else(|| ApiError::not_found("no such alias"))?;
-    Ok(Json(json!({ "alias": alias, "appId": app })))
+    Ok(Json(AliasView { alias, app_id: app }))
 }
 
-async fn alias_list(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+async fn alias_list(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+) -> ApiResult<Json<AliasList>> {
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let aliases = node.sys(|s| {
         s.accounts
             .get(&account)
             .map(|a| a.aliases.clone())
             .unwrap_or_default()
     });
-    Ok(Json(json!({ "aliases": aliases })))
+    Ok(Json(AliasList { aliases }))
 }
 
 #[derive(Deserialize)]
@@ -1737,48 +1928,48 @@ async fn passkey_label(
 }
 
 /// What the caller's account uses, against the cluster's quotas, and what today's
-/// runs of the apps it is the developer of used (Q20, D76, D78): fuel and writes,
+/// runs of the apps it is the developer of used: fuel and writes,
 /// summed over the component apps billed to `account:{id}` as their developer
 /// (`usage::developer`), on the UTC day of the node's app time. An organization's
 /// are the organization's (`GET /orgs/{org}/usage`). Sums of 64-bit counters are
-/// decimal strings (D20): `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
-async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult {
-    let account = signed_in(&node, &headers).await?.account()?;
+/// decimal strings: `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
+async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json<AccountUsage>> {
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let today = node
         .developer_usage_today(&crate::usage::account_payer(&account))
         .await;
-    let mut out = node.sys(|s| {
-        json!({
-            "apps": s.apps.values().filter(|a| a.owner == account).count(),
-            "bundleBytes": s
-                .bundles
-                .values()
-                .filter(|b| b.uploaded_by == account)
-                .map(|b| b.size)
-                .sum::<u64>()
-                .to_string(),
-            "apiKeys": s.api_keys.values().filter(|k| k.account == account).count(),
-            "orgsOwned": s
-                .orgs
-                .values()
-                .filter(|o| o.role(&account) == Some(OrgRole::Owner))
-                .count(),
-            "fileBytes": s
-                .orgs
-                .values()
-                .filter(|o| o.role(&account).is_some())
-                .map(|o| o.org_id.clone())
-                .chain([format!("account:{account}")])
-                .map(|payer| {
-                    let bytes = s.file_bytes(&payer);
-                    (payer, bytes)
-                })
-                .collect::<std::collections::BTreeMap<_, _>>(),
-            "quotas": s.quotas,
-        })
+    let out = node.sys(|s| AccountUsage {
+        apps: s.apps.values().filter(|a| a.owner == account).count(),
+        bundle_bytes: s
+            .bundles
+            .values()
+            .filter(|b| b.uploaded_by == account)
+            .map(|b| b.size)
+            .sum::<u64>()
+            .to_string(),
+        api_keys: s.api_keys.values().filter(|k| k.account == account).count(),
+        orgs_owned: s
+            .orgs
+            .values()
+            .filter(|o| o.role(&account) == Some(OrgRole::Owner))
+            .count(),
+        file_bytes: s
+            .orgs
+            .values()
+            .filter(|o| o.role(&account).is_some())
+            .map(|o| o.org_id.clone())
+            .chain([format!("account:{account}")])
+            .map(|payer| {
+                let bytes = s.file_bytes(&payer);
+                (payer, bytes)
+            })
+            .collect(),
+        quotas: s.quotas.clone(),
+        developer_fuel_today: today.fuel.to_string(),
+        developer_writes_today: today.writes.to_string(),
     });
-    out["developerFuelToday"] = json!(today.fuel.to_string());
-    out["developerWritesToday"] = json!(today.writes.to_string());
     Ok(Json(out))
 }
 
@@ -1792,9 +1983,9 @@ async fn account_apps(
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
     let limit = q.limit()?;
-    Ok(Json(
-        scope_report(&node, &p, &account, None, &q, limit).await,
-    ))
+    Ok(Json(json!(
+        scope_report(&node, &p, &account, None, &q, limit).await
+    )))
 }
 
 /// This area's routes, merged into [`super::router`].
@@ -1804,6 +1995,11 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/auth/passkey/register/finish", post(register_finish))
         .route("/auth/passkey/login/begin", post(login_begin))
         .route("/auth/passkey/login/finish", post(login_finish))
+        // Anyone may begin these, so their bodies stay small (the router's
+        // own limit, inside which this one applies, is the sealed envelope's).
+        .route_layer(axum::extract::DefaultBodyLimit::max(
+            MAX_PASSKEY_CEREMONY_BYTES,
+        ))
         .route("/auth/passkeys/add/begin", post(passkey_add_begin))
         .route("/auth/passkeys/add/finish", post(passkey_add_finish))
         .route(
@@ -1971,4 +2167,142 @@ mod tests {
             json!({ "followUpOf": consent.used().unwrap(), "index": 2, "salt": "c2FsdA" })
         );
     }
+}
+
+/// A WebAuthn ceremony begun: its challenge id, and the options to hand the browser as they
+/// are (`navigator.credentials.create` or `.get`; WebAuthn's shape, not this API's).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PasskeyChallenge {
+    pub(super) challenge_id: String,
+    pub(super) options: Value,
+}
+
+/// A passkey added to the account.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct PasskeyAdded {
+    credential_id: String,
+}
+
+/// `GET /auth/sessions`: the account's live sessions, latest active first.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct SessionList {
+    sessions: Vec<SessionView>,
+}
+
+/// One live session: its passkey, the package and origin it is bound to, when it opened
+/// (`null`: before the node kept it), when it was last active and whether it is the caller's.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SessionView {
+    session: String,
+    passkey: Option<String>,
+    app: Option<String>,
+    origin: Option<String>,
+    opened_at: Option<u64>,
+    last_active_at: u64,
+    current: bool,
+}
+
+/// `GET /auth/activity`: what the account's passkeys did, newest first.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ActivityList {
+    activity: Vec<ActivityView>,
+}
+
+/// One activity entry: a sign-in (its package and origin) or an approval (its method and
+/// subject), every key present, those its kind does not have `null`.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ActivityView {
+    at: u64,
+    passkey: String,
+    kind: String,
+    app: Option<String>,
+    origin: Option<String>,
+    method: Option<String>,
+    subject: Option<String>,
+}
+
+/// `GET /auth/me`: the caller's account, its passkeys and organizations, how the caller came
+/// and its recovery state.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AccountView {
+    account_id: String,
+    name: String,
+    passkeys: Vec<AccountPasskey>,
+    orgs: Vec<AccountOrg>,
+    via: String,
+    passkey_id: Option<String>,
+    app: Option<String>,
+    origin: Option<String>,
+    recovery_code: bool,
+    recovery_pending: Option<crate::types::AccountRecoveryPending>,
+}
+
+/// One passkey of an [`AccountView`]: its label, and when it was added and last signed in
+/// (`null`: before the node kept it).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AccountPasskey {
+    id: String,
+    sign_count: u32,
+    label: Option<String>,
+    added_at: Option<u64>,
+    last_sign_in_at: Option<u64>,
+}
+
+/// One organization of an [`AccountView`]: the caller's role, and whether it is a personal one.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AccountOrg {
+    org_id: String,
+    name: String,
+    role: OrgRole,
+    personal: bool,
+}
+
+/// `GET /auth/usage`: what the account uses against the quotas, and its developer usage today
+/// (64-bit sums as decimal strings).
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AccountUsage {
+    apps: usize,
+    bundle_bytes: String,
+    api_keys: usize,
+    orgs_owned: usize,
+    file_bytes: BTreeMap<String, u64>,
+    quotas: crate::system::Quotas,
+    developer_fuel_today: String,
+    developer_writes_today: String,
+}
+
+/// `GET /auth/aliases`: the account's names for apps.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AliasList {
+    aliases: BTreeMap<String, String>,
+}
+
+/// `GET /auth/aliases/{alias}`.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct AliasView {
+    alias: String,
+    app_id: String,
+}
+
+/// `POST /auth/apikeys`: the key, answered once, and what the calls made with it answered.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ApiKeyMade {
+    key_id: String,
+    key: String,
+    then: Vec<Value>,
+}
+
+/// `GET /auth/apikeys`: the account's keys, never a key itself.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct ApiKeyList {
+    keys: Vec<ApiKeyRecord>,
 }

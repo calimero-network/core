@@ -9,7 +9,7 @@ from ... import errors
 
 from ...models.error import Error
 from ...models.login_begin_body import LoginBeginBody
-from ...models.login_begin_response_200 import LoginBeginResponse200
+from ...models.passkey_challenge import PasskeyChallenge
 from typing import cast
 
 
@@ -34,11 +34,21 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Optional[Union[Error, LoginBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     if response.status_code == 200:
-        response_200 = LoginBeginResponse200.from_dict(response.json())
+        response_200 = PasskeyChallenge.from_dict(response.json())
 
         return response_200
+
+    if response.status_code == 400:
+        response_400 = Error.from_dict(response.json())
+
+        return response_400
+
+    if response.status_code == 409:
+        response_409 = Error.from_dict(response.json())
+
+        return response_409
 
     if response.status_code == 429:
         response_429 = Error.from_dict(response.json())
@@ -53,7 +63,7 @@ def _parse_response(
 
 def _build_response(
     *, client: Union[AuthenticatedClient, Client], response: httpx.Response
-) -> Response[Union[Error, LoginBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -66,12 +76,15 @@ def sync_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: LoginBeginBody,
-) -> Response[Union[Error, LoginBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
-    origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the
-    browser as they are: free-form here, their shape is WebAuthn's.
+    origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public
+    point, a browser's non-extractable key) binds the session to that key: the challenge states it, its
+    refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options`
+    are the WebAuthn options to hand to the browser as they are: free-form here, their shape is
+    WebAuthn's.
 
     **Who:** anyone.
 
@@ -83,7 +96,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, LoginBeginResponse200]]
+        Response[Union[Error, PasskeyChallenge]]
     """
 
     kwargs = _get_kwargs(
@@ -101,12 +114,15 @@ def sync(
     *,
     client: Union[AuthenticatedClient, Client],
     body: LoginBeginBody,
-) -> Optional[Union[Error, LoginBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
-    origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the
-    browser as they are: free-form here, their shape is WebAuthn's.
+    origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public
+    point, a browser's non-extractable key) binds the session to that key: the challenge states it, its
+    refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options`
+    are the WebAuthn options to hand to the browser as they are: free-form here, their shape is
+    WebAuthn's.
 
     **Who:** anyone.
 
@@ -118,7 +134,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, LoginBeginResponse200]
+        Union[Error, PasskeyChallenge]
     """
 
     return sync_detailed(
@@ -131,12 +147,15 @@ async def asyncio_detailed(
     *,
     client: Union[AuthenticatedClient, Client],
     body: LoginBeginBody,
-) -> Response[Union[Error, LoginBeginResponse200]]:
+) -> Response[Union[Error, PasskeyChallenge]]:
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
-    origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the
-    browser as they are: free-form here, their shape is WebAuthn's.
+    origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public
+    point, a browser's non-extractable key) binds the session to that key: the challenge states it, its
+    refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options`
+    are the WebAuthn options to hand to the browser as they are: free-form here, their shape is
+    WebAuthn's.
 
     **Who:** anyone.
 
@@ -148,7 +167,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Union[Error, LoginBeginResponse200]]
+        Response[Union[Error, PasskeyChallenge]]
     """
 
     kwargs = _get_kwargs(
@@ -164,12 +183,15 @@ async def asyncio(
     *,
     client: Union[AuthenticatedClient, Client],
     body: LoginBeginBody,
-) -> Optional[Union[Error, LoginBeginResponse200]]:
+) -> Optional[Union[Error, PasskeyChallenge]]:
     """Start a sign-in
 
      A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered
-    origin, whose rp-id the ceremony then uses. `options` are the WebAuthn options to hand to the
-    browser as they are: free-form here, their shape is WebAuthn's.
+    origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public
+    point, a browser's non-extractable key) binds the session to that key: the challenge states it, its
+    refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options`
+    are the WebAuthn options to hand to the browser as they are: free-form here, their shape is
+    WebAuthn's.
 
     **Who:** anyone.
 
@@ -181,7 +203,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Union[Error, LoginBeginResponse200]
+        Union[Error, PasskeyChallenge]
     """
 
     return (

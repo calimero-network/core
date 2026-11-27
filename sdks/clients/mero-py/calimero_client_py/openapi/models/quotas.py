@@ -13,6 +13,9 @@ T = TypeVar("T", bound="Quotas")
 class Quotas:
     """The per-account limits, and the compute and file limits of each organization (or personal account) that has no
     override. `maxFuelPerDeveloperPerDay` (0: no limit) is a decimal string; the others are JSON numbers.
+    `maxTeamsPerOrg`, `maxMetadataBytesPerOrg` and `maxMetadataBytesPerAccount` bound what an organization, and the
+    organizations an account owns, keep in the system state (absent from a node before 1.0.0-rc.39; a change from their
+    defaults needs that cluster version, `409 FEATURE_NOT_ACTIVE`).
 
         Attributes:
             max_apps_per_account (int):
@@ -23,7 +26,10 @@ class Quotas:
             max_file_bytes_per_org (int):
             max_concurrent_runs_per_org (int):
             compute_fuel_per_org (int):
-            max_fuel_per_developer_per_day (str): an unsigned 64-bit integer as a decimal string (D20)
+            max_fuel_per_developer_per_day (str): an unsigned 64-bit integer as a decimal string, exact past 2^53
+            max_teams_per_org (int):
+            max_metadata_bytes_per_org (int):
+            max_metadata_bytes_per_account (int):
     """
 
     max_apps_per_account: int
@@ -35,6 +41,9 @@ class Quotas:
     max_concurrent_runs_per_org: int
     compute_fuel_per_org: int
     max_fuel_per_developer_per_day: str
+    max_teams_per_org: int
+    max_metadata_bytes_per_org: int
+    max_metadata_bytes_per_account: int
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -56,6 +65,12 @@ class Quotas:
 
         max_fuel_per_developer_per_day = self.max_fuel_per_developer_per_day
 
+        max_teams_per_org = self.max_teams_per_org
+
+        max_metadata_bytes_per_org = self.max_metadata_bytes_per_org
+
+        max_metadata_bytes_per_account = self.max_metadata_bytes_per_account
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -69,6 +84,9 @@ class Quotas:
                 "maxConcurrentRunsPerOrg": max_concurrent_runs_per_org,
                 "computeFuelPerOrg": compute_fuel_per_org,
                 "maxFuelPerDeveloperPerDay": max_fuel_per_developer_per_day,
+                "maxTeamsPerOrg": max_teams_per_org,
+                "maxMetadataBytesPerOrg": max_metadata_bytes_per_org,
+                "maxMetadataBytesPerAccount": max_metadata_bytes_per_account,
             }
         )
 
@@ -95,6 +113,12 @@ class Quotas:
 
         max_fuel_per_developer_per_day = d.pop("maxFuelPerDeveloperPerDay")
 
+        max_teams_per_org = d.pop("maxTeamsPerOrg")
+
+        max_metadata_bytes_per_org = d.pop("maxMetadataBytesPerOrg")
+
+        max_metadata_bytes_per_account = d.pop("maxMetadataBytesPerAccount")
+
         quotas = cls(
             max_apps_per_account=max_apps_per_account,
             max_bundle_bytes_per_account=max_bundle_bytes_per_account,
@@ -105,6 +129,9 @@ class Quotas:
             max_concurrent_runs_per_org=max_concurrent_runs_per_org,
             compute_fuel_per_org=compute_fuel_per_org,
             max_fuel_per_developer_per_day=max_fuel_per_developer_per_day,
+            max_teams_per_org=max_teams_per_org,
+            max_metadata_bytes_per_org=max_metadata_bytes_per_org,
+            max_metadata_bytes_per_account=max_metadata_bytes_per_account,
         )
 
         quotas.additional_properties = d

@@ -26,9 +26,9 @@ TARGET="${CARGO_TARGET_DIR:-$ROOT/target}"
 FROM_DIR="$TARGET/upgrade-from"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-# The coverage matrix in the docs is generated from the deep cases; refuse a stale copy
-# before building anything.
-python3 -I crates/node/tests/fault/upgrade_deep.py --check-matrix docs/src/content/docs/contribute/testing.mdx
+# Every case loads and describes itself for the coverage matrix (which the docs site writes
+# from them when it builds); fail on one that does not before building anything.
+python3 -I crates/node/tests/fault/upgrade_deep.py --matrix >/dev/null
 python3 -I crates/node/tests/fault/upgrade_runner_test.py
 
 pinned=$(grep -v '^[[:space:]]*#' .github/upgrade-from | grep -v '^[[:space:]]*$' | head -n 1)

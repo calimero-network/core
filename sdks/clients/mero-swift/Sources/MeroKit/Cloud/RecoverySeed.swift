@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// An organization's recovery key (core rc.9+, `docs/specs/org-recovery.md`):
+/// An organization's recovery key (core rc.9+, [Organization recovery](https://calimero-network.github.io/core/protocol/organizations/#recovery)):
 /// an Ed25519 key whose 32-byte seed the owner keeps offline. The node stores
 /// only the public half (``publicKey``); the seed signs, here and never on a
 /// node, the statement that hands the organization to one account.

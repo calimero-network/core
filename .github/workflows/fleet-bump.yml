@@ -106,8 +106,10 @@ jobs:
     if: needs.plan.outputs.targets != '[]'
     runs-on: ubuntu-latest
     # 20 minutes for the bump itself, plus up to 20 waiting for npm (npm surface)
-    # or 40 for Maven Central (mobile surface).
-    timeout-minutes: 60
+    # or 40 for Maven Central (mobile surface). The cargo surface rebuilds every
+    # committed component ABI of the apps repository (one release build per app,
+    # core compiled once): 90.
+    timeout-minutes: ${{ matrix.surface == 'cargo' && 90 || 60 }}
     strategy:
       # One repository failing must not stop the others from getting their
       # pull request.
@@ -139,24 +141,49 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           path: consumer
 
-      # Needed only for `cargo generate-lockfile`; the consumer's own CI compiles
-      # the contract on the pull request. The tee surface needs no toolchain.
+      # For `cargo update`, and for rebuilding the apps repository's committed
+      # ABIs (scripts/component-build.sh, wasm32-wasip2) when the release moves
+      # what the SDK writes into them (bump-fleet.sh, "the client generator").
+      # The tee surface needs no toolchain.
       - name: Setup Rust
         if: matrix.surface == 'cargo'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-wasip2
+
+      # pnpm/action-setup takes the pnpm version from the consumer's root
+      # `packageManager` and fails the job without one ("No pnpm version is
+      # specified"). mero-tag and mero-ar have no root package.json (their
+      # frontends are standalone packages under web/, landing/, promo/), so their
+      # cargo bumps failed so on rc.36 and rc.37 before reaching the bump. Their
+      # pins need no pnpm: the bump runs pnpm only for a workspace that declares
+      # it. So pnpm is set up only when the root names a pnpm version, rather
+      # than guessing one for a repository that never chose it.
+      - name: Read the consumer's package manager
+        id: pm
+        run: |
+          set -euo pipefail
+          pm=""
+          if [ -f consumer/package.json ]; then
+            pm=$(jq -r '.packageManager // empty' consumer/package.json)
+          fi
+          case "$pm" in
+            pnpm@*) echo "pnpm=true" >> "$GITHUB_OUTPUT"; echo "consumer pins $pm" ;;
+            *) echo "pnpm=false" >> "$GITHUB_OUTPUT"; echo "consumer pins no pnpm (packageManager: '${pm:-none}'); pnpm is not set up" ;;
+          esac
 
       # A repository that pins the client generator (meroctl, or mero-app-build
       # before it) commits the clients it generates; the bump reruns every
       # package's `codegen` with the release's binary (bump-fleet.sh, "the client
       # generator"), through the repository's pnpm.
       - name: Set up pnpm for the npm surface
-        if: matrix.surface == 'npm'
+        if: matrix.surface == 'npm' && steps.pm.outputs.pnpm == 'true'
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: consumer/package.json
 
       - name: Set up pnpm
-        if: matrix.surface == 'cargo' && hashFiles('consumer/scripts/install-meroctl.sh', 'consumer/scripts/install-mero-app-build.sh') != ''
+        if: matrix.surface == 'cargo' && steps.pm.outputs.pnpm == 'true' && hashFiles('consumer/scripts/install-meroctl.sh', 'consumer/scripts/install-mero-app-build.sh') != ''
         uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
         with:
           package_json_file: consumer/package.json
@@ -419,9 +446,15 @@ jobs:
             drifted up to four releases behind by the time this was automated
           - the client generator's pin (\`scripts/install-meroctl.sh\`, or
             \`scripts/install-mero-app-build.sh\` before meroctl)
-            (unless it runs ahead), and every committed client its \`codegen\`
-            writes, regenerated with \`$VERSION\`'s generator. When they could not
-            be regenerated, the list of pins left unmoved below says so
+            (unless it runs ahead), and everything generated with it, in order:
+            every committed ABI (\`apps/*/logic/res/abi.json\`, rebuilt by
+            \`scripts/component-build.sh\` against \`$VERSION\`'s SDK, so a release
+            that moves the WIT world \`calimero:app@X\` moves them too), every
+            web client its \`codegen\` writes from them
+            (\`apps/*/app/src/generated/\`), and the mobile clients
+            \`scripts/mobile-codegen.sh\` writes (\`*Client.swift\`, \`*Client.kt\`
+            under \`apps/*/mobile/\`), all with \`$VERSION\`'s meroctl. When a step
+            could not run, the list of pins left unmoved below says what to run
           - \`CORE_REF\` in Mero Chat's \`mobile/e2e/run-relay.sh\`, to the commit
             \`$VERSION\` is tagged at. The mobile live tests build their relay's merod
             from it, and that runtime refuses a bundle built against a newer release
