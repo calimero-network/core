@@ -88,6 +88,8 @@ WORKFLOWS = {
             "scripts/check-rust-cache-groups.py",
             "scripts/check-scenario-discovery.py",
             "scripts/tests/check-like-ci.test.sh",
+            "scripts/touch-changed-since.sh",
+            "scripts/tests/touch-changed-since.test.sh",
             "scripts/tests/ci-scope-test.py",
             "scripts/tests/ci-paths-test.py",
             "scripts/tests/path-dep-closure-test.py",

@@ -691,7 +691,12 @@ guest and fixture in `target/app-components`, built once through
 app-build's own test builds in `target/tmp`; the SDK's compile-fail cases in
 `target/tests/trybuild`) are cached apart, saved from master, whose push runs
 `Rust tests (1/4)`; that push runs every shard (shards 2-4 stop after the restore
-when nothing is left for master to run).
+when nothing is left for master to run). That cache comes from the newest key
+with its prefix, so not from the commit the rust-cache was built from: it holds
+its own commit marker, and `scripts/touch-changed-since.sh` touches the files that
+differ from it too. The master push rebuilds the SDK's compile-fail cases and
+app-build's tests whichever quarter they fall in, so the marker holds for every
+build the cache carries.
 
 A pull request and its merge-queue entry run only the tests the change can reach: `Scope`'s `test_filter`
 (`scripts/ci-scope.py`) is a nextest `rdeps(...)` filterset over the workspace

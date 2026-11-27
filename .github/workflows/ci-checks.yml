@@ -284,6 +284,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash scripts/tests/check-like-ci.test.sh
 
+      - name: Test touch-changed-since
+        if: ${{ !cancelled() }}
+        run: bash scripts/tests/touch-changed-since.test.sh
+
       # ci-scope.py scopes jobs by this closure; one it misses is a source change
       # whose gate never runs.
       - name: Test path-dep-closure against cargo's resolve
@@ -410,17 +414,31 @@ jobs:
       # (target/app-components, cached there by source hash, one cargo target dir for all;
       # calimero_app_build::build_in_repo_cache), app-build's own test builds
       # (CARGO_TARGET_TMPDIR, target/tmp) and the SDK's compile-fail cases (trybuild's
-      # target/tests/trybuild). Most of the slowest tests' time was these builds. Restored after setup-rust-ci marked what changed,
-      # so cargo rebuilds a guest only if its sources did; saved from master below.
+      # target/tests/trybuild). Most of the slowest tests' time was these builds. Saved from master
+      # below, with the commit they were built from: the restore may come from another commit
+      # than the rust-cache's, and every file's mtime says it is older than any build.
       - name: Restore the test apps' builds
+        id: test-apps
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             target/tmp
             target/app-components
             target/tests/trybuild
-          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
-          restore-keys: test-apps-v2-
+            ${{ runner.temp }}/test-apps-commit
+          key: test-apps-v3-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
+          restore-keys: test-apps-v3-
+
+      - name: Mark what changed since the test apps' build
+        env:
+          RESTORED: ${{ steps.test-apps.outputs.cache-matched-key }}
+        run: |
+          marker="$RUNNER_TEMP/test-apps-commit/commit"
+          if [ -n "$RESTORED" ]; then
+            scripts/touch-changed-since.sh "$marker"
+          else
+            mkdir -p "$(dirname "$marker")" && git rev-parse HEAD > "$marker"
+          fi
 
       # Every test app the tests build, compiled before them into the component cache, so a
       # test only ever reads one: a compile is a build step's time, never a test's (the 15 s
@@ -486,6 +504,16 @@ jobs:
           SCENARIO_FILES=crates/node/tests/previous-release/kv-store.json \
             cargo test --workspace --test scenarios -- --test-threads 1
 
+      # The save records this commit for every build it holds, so the tests this quarter
+      # leaves to the others rebuild theirs first.
+      - name: Rebuild the test apps of the other quarters' tests
+        if: ${{ !cancelled() && github.ref == 'refs/heads/master' && matrix.shard == 1 }}
+        env:
+          NEXTEST_PROFILE: ci
+        run: >
+          cargo nextest run --workspace --no-fail-fast
+          -E 'binary_id(calimero-sdk::compile_fail) | package(calimero-app-build)'
+
       - name: Save the test apps' builds
         if: ${{ !cancelled() && github.ref == 'refs/heads/master' && matrix.shard == 1 }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -494,7 +522,8 @@ jobs:
             target/tmp
             target/app-components
             target/tests/trybuild
-          key: test-apps-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
+            ${{ runner.temp }}/test-apps-commit
+          key: test-apps-v3-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'crates/sdk/**', 'crates/sdk-macros/**', 'crates/app-sdk/**', 'crates/app-wit/**', 'crates/app-build/**', 'crates/*/tests/guests/**', 'sdks/plugins/**', 'apps/**') }}
 
 
   # Apps on the component SDK are workspaces of their own, so the workspace tests

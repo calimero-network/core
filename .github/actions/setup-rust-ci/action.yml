@@ -147,18 +147,6 @@ runs:
       if: runner.os == 'Linux' && inputs.rust-cache == 'true' && inputs.workspace-crates == 'true'
       shell: bash
       run: |
-        set -uo pipefail
-        marker="$RUNNER_TEMP/ci-cache-commit/commit"
-        base=$(cat "$marker" 2>/dev/null || true)
         git ls-files -z | xargs -0 touch -c -h -d '2000-01-01T00:00:00Z'
-        if [ -n "$base" ] && { git cat-file -e "$base^{commit}" 2>/dev/null \
-             || git fetch -q --no-tags --depth=1 origin "$base"; } \
-           && changed=$(git diff --name-only "$base" HEAD); then
-          printf '%s\n' "$changed" | grep -v '^$' | while IFS= read -r f; do touch -c -h -- "$f"; done
-          echo "cache built from $base; $(printf '%s\n' "$changed" | grep -c . || true) files changed since"
-        else
-          git ls-files -z | xargs -0 touch -c -h
-          echo "no cache commit to compare with${base:+ ($base unreachable)}: every file counts as changed"
-        fi
-        mkdir -p "$GITHUB_WORKSPACE/target" "$(dirname "$marker")"
-        git rev-parse HEAD > "$marker"
+        mkdir -p "$GITHUB_WORKSPACE/target"
+        scripts/touch-changed-since.sh "$RUNNER_TEMP/ci-cache-commit/commit"
