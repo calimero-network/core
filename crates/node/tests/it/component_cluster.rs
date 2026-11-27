@@ -480,7 +480,7 @@ async fn clients_refuse_unattested_nodes_and_plain_requests() {
         },
     )
     .unwrap();
-    let e = strict.auth().login_begin(None).await.unwrap_err();
+    let e = strict.auth().login_begin(None, None).await.unwrap_err();
     assert!(e.to_string().contains("mock quote refused"), "{e}");
 
     // A plain (unsealed) request is refused; attestation and health are served.

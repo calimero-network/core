@@ -229,7 +229,8 @@ above. No other image tags are pushed: there is no `edge` or per-commit image.
 
 - The GitHub Release `X` exists with every asset above and `SHA256SUMS`.
 - `docker pull ghcr.io/calimero-network/merod:X` works.
-- crates.io lists the crates at `X`.
+- crates.io lists the crates at `X`: `Release Crates` fails unless it serves every
+  publishable crate at `X` (`scripts/check-publishable-crates.py --published X`).
 - The homebrew-tap pull request and the fleet-bump pull requests are open, and
   the `Release` run on the merge commit is green.
 

@@ -5991,12 +5991,18 @@ pub struct RefreshGrant {
 /// names the account, and must be the one the record names.
 #[must_use]
 pub fn sign_in_args(hash: &str, record: &RefreshRecord) -> Value {
-    json!({
+    let mut args = json!({
         "refresh": hash,
         "key": record.key,
         "session": record.session,
         "expiresAt": record.expires_at,
-    })
+    });
+    // Named only when the session is bound to one, so a sign-in without it is
+    // signed in the bytes it was before.
+    if let Some(holder) = &record.holder {
+        args["holder"] = json!(holder);
+    }
+    args
 }
 
 /// What a new account's passkey signs at sign-up (`account:<id> /

@@ -35,6 +35,7 @@ import {
   errorFrom,
 } from './errors.js';
 import { b64url, type PasskeyProvider, type PasskeyUserVerification } from './passkey.js';
+import type { SessionHolder } from './holder.js';
 import { passkeyConfirm, type ConfirmChallenge } from './passkey.js';
 import type { components } from '../generated/api.js';
 
@@ -145,6 +146,12 @@ export interface NodeTransportOptions {
   fetch?: typeof fetch;
   /** How calls and views retry a 503 or a failed connection. */
   retry?: RetryOptions;
+  /**
+   * The device key sessions are bound to ({@link SessionHolder}): each refresh
+   * carries its proof, and a sign-in through the client binds the session to it.
+   * In a browser, {@link browserSessionHolder}.
+   */
+  holder?: SessionHolder;
 }
 
 /** Where a transport whose nodes came from the directory re-reads its node list. */
@@ -303,6 +310,8 @@ export class NodeTransport implements Transport {
   private visitor: (() => Promise<string>) | undefined;
   /** The refresh under way, which every request that needs one shares. */
   private refreshing: Promise<CalimeroSession> | undefined;
+  /** The device key sessions are bound to, if any ({@link NodeTransportOptions.holder}). */
+  private holderKey: SessionHolder | undefined;
   /** The backoff between retries, for a caller that retries a request the routes do not. */
   readonly retry: Required<RetryOptions>;
   /** Rejections of the underlying `fetch` itself: the node could not be reached or dropped the connection. */
@@ -315,6 +324,7 @@ export class NodeTransport implements Transport {
     this.nodeUrls = [...new Set([options.baseUrl, ...(options.nodes ?? [])].map(trim))];
     this.policy = options.policy;
     this.retry = { ...DEFAULT_RETRY, ...options.retry };
+    this.holderKey = options.holder;
     const given = options.fetch ?? ((input, init) => fetch(input, init));
     // `fetch` rejects with a `TypeError` when it gets no answer: the connection
     // was refused, reset or dropped before the response. The sealed fetch passes
@@ -370,6 +380,16 @@ export class NodeTransport implements Transport {
     this.auth = session.sessionToken;
     this.current = session;
     this.visitor = undefined;
+  }
+
+  /** Bind the sessions signed in from now on to `holder`, and prove it on every refresh ({@link NodeTransportOptions.holder}). */
+  useHolder(holder: SessionHolder | undefined): void {
+    this.holderKey = holder;
+  }
+
+  /** The device key sessions are bound to, if any. */
+  get holder(): SessionHolder | undefined {
+    return this.holderKey;
   }
 
   /** Drop the credential: no request after this carries it. */
@@ -809,7 +829,12 @@ export class NodeTransport implements Transport {
     // node (`send` moved there already): once per node, at most.
     for (let tried = 1; session === undefined; tried++) {
       try {
-        session = await this.json<CalimeroSession>('POST', 'auth/refresh', { body: { refreshToken: current.refreshToken } });
+        // A holder's proof goes with every refresh: a token bound to its key
+        // needs it, and the node ignores it for any other.
+        const holderProof = this.holderKey ? await this.holderKey.prove(current.refreshToken) : undefined;
+        session = await this.json<CalimeroSession>('POST', 'auth/refresh', {
+          body: holderProof ? { refreshToken: current.refreshToken, holderProof } : { refreshToken: current.refreshToken },
+        });
       } catch (error) {
         if (!(error instanceof WrongNode) || tried >= this.nodeUrls.length) throw error;
       }

@@ -15,7 +15,7 @@
 //! decision again after its maker reversed it.
 
 use calimero_identity::{from_b64url, sha256, Assertion, Credential};
-use ring::signature::{UnparsedPublicKey, ED25519};
+use ring::signature::{UnparsedPublicKey, ECDSA_P256_SHA256_FIXED, ED25519};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -441,6 +441,79 @@ pub fn verify_refresh_use(key: &str, message: &[u8], signature: &str) -> Result<
         .map_err(|_| "the exchange is not signed with the refresh token's key")
 }
 
+/// What a holder's proof covers, before the token's hash and its time.
+pub const REFRESH_HOLDER_DOMAIN: &[u8] = b"calimero.refresh-holder.v1\0";
+
+/// How far a holder's proof may be from the node's clock, either way.
+pub const HOLDER_PROOF_SKEW_SECS: u64 = 120;
+
+/// The bytes of a holder key: an uncompressed P-256 point (`0x04 ‖ X ‖ Y`), what
+/// WebCrypto's `exportKey("raw", …)` gives.
+pub const HOLDER_KEY_BYTES: usize = 65;
+
+/// The longest holder key, as base64url text, a request may carry.
+pub const MAX_HOLDER_KEY_CHARS: usize = 128;
+
+/// The longest holder proof signature, as base64url text.
+pub const MAX_HOLDER_PROOF_CHARS: usize = 128;
+
+/// Check a holder key (base64url of [`HOLDER_KEY_BYTES`] bytes, an uncompressed P-256 point)
+/// before a session is bound to it, so a malformed one is refused at sign-in rather than
+/// at every refresh.
+///
+/// # Errors
+/// A key that is too long, not base64url, or not an uncompressed point.
+pub fn check_holder_key(key: &str) -> Result<(), &'static str> {
+    if key.len() > MAX_HOLDER_KEY_CHARS {
+        return Err("the holder key is too long");
+    }
+    let raw = from_b64url(key).map_err(|_| "the holder key is not base64url")?;
+    if raw.len() != HOLDER_KEY_BYTES || raw.first() != Some(&4) {
+        return Err("the holder key is not an uncompressed P-256 public key");
+    }
+    Ok(())
+}
+
+/// The bytes a holder signs to use a refresh token: `"calimero.refresh-holder.v1\0"`, then the
+/// token's hash (`b64url(SHA-256(token))`) and `at` (decimal Unix seconds), each followed by a
+/// zero byte. Naming the hash binds the proof to that token; `at` bounds a replay of it to
+/// [`HOLDER_PROOF_SKEW_SECS`].
+#[must_use]
+pub fn refresh_holder_message(token_hash: &str, at: u64) -> Vec<u8> {
+    let mut m = REFRESH_HOLDER_DOMAIN.to_vec();
+    for part in [token_hash, &at.to_string()] {
+        m.extend_from_slice(part.as_bytes());
+        m.push(0);
+    }
+    m
+}
+
+/// Check a holder's proof: `signature` (base64url, the 64-byte `r ‖ s` WebCrypto's ECDSA gives)
+/// by `holder` (base64url, [`check_holder_key`]) over [`refresh_holder_message`] of
+/// `token_hash` and `at`, made within [`HOLDER_PROOF_SKEW_SECS`] of `now`.
+///
+/// # Errors
+/// A proof that is stale, early, malformed, or not the holder's.
+pub fn verify_refresh_holder(
+    holder: &str,
+    token_hash: &str,
+    at: u64,
+    signature: &str,
+    now: u64,
+) -> Result<(), &'static str> {
+    if at.abs_diff(now) > HOLDER_PROOF_SKEW_SECS {
+        return Err("the holder proof is not from now: check the device's clock");
+    }
+    if signature.len() > MAX_HOLDER_PROOF_CHARS {
+        return Err("the holder proof is too long");
+    }
+    let public = from_b64url(holder).map_err(|_| "the session's holder key is malformed")?;
+    let signature = from_b64url(signature).map_err(|_| "the holder proof is not base64url")?;
+    UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, &public)
+        .verify(&refresh_holder_message(token_hash, at), &signature)
+        .map_err(|_| "the holder proof is not signed with the session's holder key")
+}
+
 /// What an account recovery code's key is derived from, before the code.
 pub const RECOVERY_CODE_DOMAIN: &[u8] = b"calimero.account-recovery-code.v1\0";
 
@@ -603,4 +676,71 @@ pub fn verify_key_upgrade(
 #[must_use]
 pub fn key_proof_id(proof: &Value) -> Option<&str> {
     proof.get("apiKey").and_then(Value::as_str)
+}
+
+#[cfg(test)]
+mod holder_tests {
+    use ring::rand::SystemRandom;
+    use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};
+
+    use super::{check_holder_key, refresh_holder_message, verify_refresh_holder};
+
+    fn device() -> (EcdsaKeyPair, String) {
+        let rng = SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, &rng).unwrap();
+        let pair = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_FIXED_SIGNING, pkcs8.as_ref(), &rng)
+            .unwrap();
+        let public = calimero_identity::b64url(pair.public_key().as_ref());
+        (pair, public)
+    }
+
+    fn sign(pair: &EcdsaKeyPair, hash: &str, at: u64) -> String {
+        let sig = pair
+            .sign(&SystemRandom::new(), &refresh_holder_message(hash, at))
+            .unwrap();
+        calimero_identity::b64url(sig.as_ref())
+    }
+
+    /// The proof verifies for its key, its token and a time near now; anything else is refused.
+    #[test]
+    fn a_holder_proof_verifies_only_for_its_key_token_and_time() {
+        let (pair, public) = device();
+        let (_other, other_public) = device();
+        let now = 1_700_000_000;
+        let sig = sign(&pair, "hash", now - 60);
+        assert_eq!(
+            verify_refresh_holder(&public, "hash", now - 60, &sig, now),
+            Ok(())
+        );
+        assert!(verify_refresh_holder(&other_public, "hash", now - 60, &sig, now).is_err());
+        assert!(verify_refresh_holder(&public, "other", now - 60, &sig, now).is_err());
+        assert!(verify_refresh_holder(&public, "hash", now - 59, &sig, now).is_err());
+        let stale = sign(&pair, "hash", now - 121);
+        assert!(verify_refresh_holder(&public, "hash", now - 121, &stale, now).is_err());
+        let early = sign(&pair, "hash", now + 121);
+        assert!(verify_refresh_holder(&public, "hash", now + 121, &early, now).is_err());
+        assert!(verify_refresh_holder(&public, "hash", now, &"A".repeat(200), now).is_err());
+    }
+
+    /// The bytes are the ones mero-js signs (`holder.test.ts` pins the same vector).
+    #[test]
+    fn a_holder_message_is_the_one_mero_js_signs() {
+        let hash = calimero_identity::b64url(&calimero_identity::sha256(b"rt_token"));
+        assert_eq!(hash, "aAWBVfU5NO7kZuxMRjnJyWZf9oZu9RF25AkhoU0wLO0");
+        assert_eq!(
+            refresh_holder_message(&hash, 1_700_000_000),
+            b"calimero.refresh-holder.v1\0aAWBVfU5NO7kZuxMRjnJyWZf9oZu9RF25AkhoU0wLO0\x001700000000\0"
+        );
+    }
+
+    /// Only an uncompressed P-256 point is a holder key.
+    #[test]
+    fn a_holder_key_is_an_uncompressed_p256_point() {
+        let (_pair, public) = device();
+        assert_eq!(check_holder_key(&public), Ok(()));
+        assert!(check_holder_key(&calimero_identity::b64url(&[2; 33])).is_err());
+        assert!(check_holder_key(&calimero_identity::b64url(&[4; 64])).is_err());
+        assert!(check_holder_key("not base64url!").is_err());
+        assert!(check_holder_key(&"A".repeat(200)).is_err());
+    }
 }
