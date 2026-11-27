@@ -3407,7 +3407,10 @@ async fn oversized_view_args_are_refused_before_running() {
     let refused = |e: calimero_client::Error| {
         assert_eq!(e.code(), Some("ARGS_TOO_LARGE"), "{e}");
     };
-    for consistency in [ViewsRequestConsistency::Strong, ViewsRequestConsistency::Stale] {
+    for consistency in [
+        ViewsRequestConsistency::Strong,
+        ViewsRequestConsistency::Stale,
+    ] {
         refused(
             alice
                 .apps()
