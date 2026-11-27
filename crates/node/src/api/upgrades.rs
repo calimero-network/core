@@ -605,7 +605,10 @@ async fn run_upgrade(
     };
     // The bundle judged is the one the group must still run when it switches (`BundleMoved`).
     let (refusal, judged_on) = node.sys(|s| {
-        let judged_on = s.apps.get(&app_id).map(|a| a.bundle.clone());
+        let judged_on = s
+            .apps
+            .get(&app_id)
+            .map(|a| json!({ "bundle": a.bundle, "computeBundle": a.compute_bundle }));
         (judge_upgrade(s), judged_on)
     });
     // Every replica's node must run the runtime the target needs, or the

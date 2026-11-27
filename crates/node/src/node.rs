@@ -3673,13 +3673,13 @@ impl Node {
                 conflict: false,
             });
         }
-        let judged_on = req.args.get("from").and_then(Value::as_str);
+        let judged_on = req.args.get("from").and_then(component::JudgedOn::parse);
         self.upgrade_component(
             g,
             &bundle,
             compute_bundle.as_deref(),
             migrate.as_deref(),
-            judged_on,
+            judged_on.as_ref(),
         )
         .await
     }
