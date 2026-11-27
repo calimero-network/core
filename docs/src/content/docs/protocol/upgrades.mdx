@@ -182,6 +182,20 @@ If that release was uninstalled meanwhile, install it again first (or undo, or
 restore); the directory knows only what it recorded, so it cannot keep that
 release installed for the group.
 
+An undo, the one move to an older release, goes back only along the lineage:
+it returns code and state together to the restore point, so the older code
+sees only state it already held, but undoing the upgrade that pinned an
+instance from another package is refused `409 OUTSIDE_LINEAGE`. The operator's
+restore takes a backup only when a release of the lineage ships both its
+bundle and its compute component, and never one older than the instance's
+floor (`409 LINEAGE_OLDER_RELEASE`), whoever signs it: a pinned store is not
+rolled back, and a fix ships as a newer release. The operator's signature names
+the bundle and compute component the restore runs. A holder's import keeps the
+pin, takes it again from the record's release in the slice where the record
+lost it, and is refused where this cluster holds that package under another
+publisher, or not at all. Every one of them, and moving the instance to another
+organization, keeps the record's `lineage`, and its floor only rises.
+
 A pinning release is installed only from cluster version 1.0.0-rc.39
 (`409 FEATURE_NOT_ACTIVE` below it), and must name a semver version.
 
@@ -878,6 +892,7 @@ Code: `system.rs` (`SystemState::within_lineage`, `SystemState::lineage_of`), `s
 
 - `PackageVersion::lineage` records the manifest's `lineage`; `Feature::PinnedLineage` gates installing a pinning release.
 - `CreateApp` and `UpgradeApp` set `AppRecord::lineage` from the release that governs the instance, and never clear it; the classifier's `pinsLineage` (`Release::pinned`) is judged at apply from `PackageVersion::lineage`.
+- `on_lineage` (package and signer, any order) judges an undo; `ships_on_lineage`, `restores_older` and `owner_takes_older` a restore (`RestoreApp::owner`, `RestoreConsent`); `imported_lineage` an `ImportHolder`'s record.
 - `within_lineage` runs before the step-up, in `run_upgrade` before `__upgrade` reaches the group, and in `UpgradeApp`'s apply, without an operator exemption.
 
 ### Runtime requirements

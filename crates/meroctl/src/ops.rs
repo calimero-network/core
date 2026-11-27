@@ -103,6 +103,10 @@ pub enum OpsCmd {
         /// The recovery file's name; the instance's newest when left out.
         #[arg(long, requires = "recovery_key_file")]
         recovery_file: Option<String>,
+        /// The owner's consent (`POST /apps/{app}/restore-consent`'s answer, a JSON file) to
+        /// restore a pinned instance to older code.
+        #[arg(long)]
+        owner_consent: Option<PathBuf>,
     },
     /// The operator's backup key, or set it (`--public-key`, 64 hex): the
     /// X25519 key every instance's recovery-disk backups are sealed to where
@@ -284,8 +288,10 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
             context,
             recovery_key_file: Some(key_file),
             recovery_file,
+            owner_consent,
             ..
         } => {
+            let owner = owner_consent.as_deref().map(read_json).transpose()?;
             let secret = read_secret(&key_file)?;
             let files = recovery_files(env, client).await?;
             let prefix = format!("app-{context}.");
@@ -301,14 +307,23 @@ pub async fn run(cmd: OpsCmd, env: &Env) -> eyre::Result<Value> {
                 file: name,
                 key: hex::encode(*key),
             };
-            decided(ops.restore(&context, None, Some(recovery), operator).await)?
+            decided(
+                ops.restore(&context, None, Some(recovery), owner, operator)
+                    .await,
+            )?
         }
         OpsCmd::Restore {
-            context, backup, ..
-        } => decided(
-            ops.restore(&context, backup.as_deref(), None, operator)
-                .await,
-        )?,
+            context,
+            backup,
+            owner_consent,
+            ..
+        } => {
+            let owner = owner_consent.as_deref().map(read_json).transpose()?;
+            decided(
+                ops.restore(&context, backup.as_deref(), None, owner, operator)
+                    .await,
+            )?
+        }
         OpsCmd::BackupKey { public_key: None } => to_json(&ops.backup_key().await?)?,
         OpsCmd::BackupKey {
             public_key: Some(key),
@@ -459,6 +474,13 @@ async fn recovery_files(
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
+}
+
+/// A JSON file `meroctl` was handed, such as an owner's restore consent.
+fn read_json<T: serde::de::DeserializeOwned>(file: &std::path::Path) -> eyre::Result<T> {
+    let raw = std::fs::read(file).wrap_err_with(|| format!("reading {}", file.display()))?;
+    serde_json::from_slice(&raw)
+        .wrap_err_with(|| format!("{} is not the expected JSON", file.display()))
 }
 
 /// A backup key's private half, from the file `ops recovery-keygen` wrote.

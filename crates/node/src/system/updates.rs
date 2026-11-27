@@ -351,6 +351,7 @@ fn check_undo_part(
     let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
     let point = app.restore_point.as_ref().ok_or(NO_RESTORE_POINT)?;
     state.may_undo(app, point, at)?;
+    state.on_lineage(app, point.from_release.as_ref())?;
     match &point.file {
         Some(file) => {
             let distinct: BTreeSet<u64> = replicas.iter().copied().collect();

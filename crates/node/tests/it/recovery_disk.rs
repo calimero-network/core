@@ -255,6 +255,7 @@ async fn a_cluster_comes_back_from_its_recovery_disk_after_every_kms_is_gone() {
             &kv,
             None,
             Some(typed(opened(&disk_at, &app_file, &secret))),
+            None,
             Some(&operator_sign),
         )
         .await

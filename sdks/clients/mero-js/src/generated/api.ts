@@ -1012,6 +1012,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apps/{app}/restore-consent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Consent to restoring a pinned instance to older code
+         * @description An owner or admin of the app's organization, while an undo of its last upgrade is open, with a step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`bundle`: what the backup's state runs; `point`: the restore point the open undo would revert): answers the consent the operator's restore (`POST /ops/apps/{app}/restore`, `owner`) carries to restore a pinned instance (its record's `lineage`) from that backup to code older than the release it runs. `403 FORBIDDEN` for anyone else and `409 UNDO_WINDOW_PASSED` once the undo closed, before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.39.
+         *
+         *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         */
+        post: operations["app_restore_consent"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/apps/{app}/runs": {
         parameters: {
             query?: never;
@@ -1189,7 +1211,7 @@ export interface paths {
         put?: never;
         /**
          * Undo an app's last upgrade
-         * @description An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+         * @description An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -2443,7 +2465,7 @@ export interface paths {
         put?: never;
         /**
          * Restore an app from its sealed backup
-         * @description Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's.
+         * @description Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), and to code older than the release it runs only with `owner`, an owner's or admin's consent while an undo of its last upgrade is open (`POST /apps/{app}/restore-consent`; else `409 LINEAGE_OLDER_RELEASE`), each before the signature is asked for.
          *
          *     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
          */
@@ -4311,7 +4333,7 @@ export interface paths {
         put?: never;
         /**
          * Bring an organization's or account's apps back from its recovery files
-         * @description Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+         * @description Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
          *
          *     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
          */
@@ -6641,6 +6663,12 @@ export interface components {
             };
             /** Format: int64 */
             undoneAt?: number;
+        };
+        /** @description An owner's or admin's step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`POST /apps/{app}/restore-consent`; `point` is the restore point its open undo would revert, by its time, target and snapshot): the operator's restore carries it as `owner`, with the operator's signature naming the same bundle, to take a pinned instance (its record's `lineage`) from that backup onto that bundle, older than the release it runs, while that undo is open at a time no earlier than the upgrade and any upgrade logged since. Spent once. */
+        RestoreConsent: {
+            account: string;
+            /** @description Free-form JSON: its shape is not this API's (see the description around it for whose it is). */
+            consent: unknown;
         };
         /** @description One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade, read from a majority of the replicas the app is on now, the furthest counting, never from the restore point's node alone; each of them `null` when nobody can say, never `false` for writes it cannot see; `lostWrites` itself `null` while the restore point's node does not answer, which `unavailable` then says). */
         UndoPart: {
@@ -11116,6 +11144,100 @@ export interface operations {
             };
         };
     };
+    app_restore_consent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    backup: string;
+                    sha256: string;
+                    bundle: string;
+                    confirm?: components["schemas"]["Confirm"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreConsent"];
+                };
+            };
+            /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`; `UNDO_WINDOW_PASSED`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     app_runs: {
         parameters: {
             query?: {
@@ -11744,7 +11866,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FEATURE_NOT_ACTIVE`; `NO_RESTORE_POINT`; `RESTORE_POINT_UNAVAILABLE`; `UNDO_NOT_AS_NAMED`; `UNDO_RELEASE_GONE`; `UNDO_STALE`; `UNDO_WINDOW_PASSED`; `UPGRADE_PENDING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`, `UPGRADE_PENDING`: a `UpgradePending`. */
+            /** @description `FEATURE_NOT_ACTIVE`; `NO_RESTORE_POINT`; `OUTSIDE_LINEAGE`; `RESTORE_POINT_UNAVAILABLE`; `UNDO_NOT_AS_NAMED`; `UNDO_RELEASE_GONE`; `UNDO_STALE`; `UNDO_WINDOW_PASSED`; `UPGRADE_PENDING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`, `UPGRADE_PENDING`: a `UpgradePending`. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -16229,6 +16351,7 @@ export interface operations {
                         key: string;
                     };
                     operatorProof?: components["schemas"]["OperatorProof"];
+                    owner?: components["schemas"]["RestoreConsent"];
                 };
             };
         };
@@ -16278,7 +16401,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `BACKUP_FROM_NEWER_RELEASE`; `BUNDLE_GONE`; `MOVE_IN_PROGRESS`; `NO_BACKUP_DIR`; `RECOVERY_SEGMENTS_MISSING`; `UNKNOWN_BACKUP_FORMAT`; `UPGRADE_PENDING`. `details` of `UPGRADE_PENDING`: a `UpgradePending`. */
+            /** @description `BACKUP_FROM_NEWER_RELEASE`; `BUNDLE_GONE`; `LINEAGE_OLDER_RELEASE`; `MOVE_IN_PROGRESS`; `NO_BACKUP_DIR`; `OUTSIDE_LINEAGE`; `RECOVERY_SEGMENTS_MISSING`; `UNKNOWN_BACKUP_FORMAT`; `UPGRADE_PENDING`. `details` of `UPGRADE_PENDING`: a `UpgradePending`. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -22619,7 +22742,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FEATURE_NOT_ACTIVE`; `NO_BACKUP_DIR`; `RECOVERY_SEGMENTS_MISSING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            /** @description `FEATURE_NOT_ACTIVE`; `NO_BACKUP_DIR`; `OUTSIDE_LINEAGE`; `RECOVERY_SEGMENTS_MISSING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
             409: {
                 headers: {
                     [name: string]: unknown;

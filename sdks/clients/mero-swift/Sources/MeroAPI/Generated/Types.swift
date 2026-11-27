@@ -500,6 +500,15 @@ public protocol APIProtocol: Sendable {
     /// - Remark: HTTP `DELETE /apps/{app}/public-links/{link}`.
     /// - Remark: Generated from `#/paths//apps/{app}/public-links/{link}/delete(public_link_revoke)`.
     func publicLinkRevoke(_ input: Operations.PublicLinkRevoke.Input) async throws -> Operations.PublicLinkRevoke.Output
+    /// Consent to restoring a pinned instance to older code
+    ///
+    /// An owner or admin of the app's organization, while an undo of its last upgrade is open, with a step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`bundle`: what the backup's state runs; `point`: the restore point the open undo would revert): answers the consent the operator's restore (`POST /ops/apps/{app}/restore`, `owner`) carries to restore a pinned instance (its record's `lineage`) from that backup to code older than the release it runs. `403 FORBIDDEN` for anyone else and `409 UNDO_WINDOW_PASSED` once the undo closed, before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.39.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/restore-consent`.
+    /// - Remark: Generated from `#/paths//apps/{app}/restore-consent/post(app_restore_consent)`.
+    func appRestoreConsent(_ input: Operations.AppRestoreConsent.Input) async throws -> Operations.AppRestoreConsent.Output
     /// An app's compute runs
     ///
     /// Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.
@@ -583,7 +592,7 @@ public protocol APIProtocol: Sendable {
     func appUndoView(_ input: Operations.AppUndoView.Input) async throws -> Operations.AppUndoView.Output
     /// Undo an app's last upgrade
     ///
-    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -1686,7 +1695,7 @@ public protocol APIProtocol: Sendable {
     func publisherBinding(_ input: Operations.PublisherBinding.Input) async throws -> Operations.PublisherBinding.Output
     /// Bring an organization's or account's apps back from its recovery files
     ///
-    /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+    /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
     ///
     /// **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
     ///
@@ -2726,6 +2735,25 @@ extension APIProtocol {
             body: body
         ))
     }
+    /// Consent to restoring a pinned instance to older code
+    ///
+    /// An owner or admin of the app's organization, while an undo of its last upgrade is open, with a step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`bundle`: what the backup's state runs; `point`: the restore point the open undo would revert): answers the consent the operator's restore (`POST /ops/apps/{app}/restore`, `owner`) carries to restore a pinned instance (its record's `lineage`) from that backup to code older than the release it runs. `403 FORBIDDEN` for anyone else and `409 UNDO_WINDOW_PASSED` once the undo closed, before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.39.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/restore-consent`.
+    /// - Remark: Generated from `#/paths//apps/{app}/restore-consent/post(app_restore_consent)`.
+    public func appRestoreConsent(
+        path: Operations.AppRestoreConsent.Input.Path,
+        headers: Operations.AppRestoreConsent.Input.Headers = .init(),
+        body: Operations.AppRestoreConsent.Input.Body
+    ) async throws -> Operations.AppRestoreConsent.Output {
+        try await appRestoreConsent(Operations.AppRestoreConsent.Input(
+            path: path,
+            headers: headers,
+            body: body
+        ))
+    }
     /// An app's compute runs
     ///
     /// Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.
@@ -2887,7 +2915,7 @@ extension APIProtocol {
     }
     /// Undo an app's last upgrade
     ///
-    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -5048,7 +5076,7 @@ extension APIProtocol {
     }
     /// Bring an organization's or account's apps back from its recovery files
     ///
-    /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+    /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
     ///
     /// **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
     ///
@@ -14729,6 +14757,33 @@ public enum Components {
                 case run
                 case file
                 case undoneAt
+            }
+        }
+        /// An owner's or admin's step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`POST /apps/{app}/restore-consent`; `point` is the restore point its open undo would revert, by its time, target and snapshot): the operator's restore carries it as `owner`, with the operator's signature naming the same bundle, to take a pinned instance (its record's `lineage`) from that backup onto that bundle, older than the release it runs, while that undo is open at a time no earlier than the upgrade and any upgrade logged since. Spent once.
+        ///
+        /// - Remark: Generated from `#/components/schemas/RestoreConsent`.
+        public struct RestoreConsent: Codable, Hashable, Sendable {
+            /// - Remark: Generated from `#/components/schemas/RestoreConsent/account`.
+            public var account: Swift.String
+            /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            ///
+            /// - Remark: Generated from `#/components/schemas/RestoreConsent/consent`.
+            public var consent: OpenAPIRuntime.OpenAPIValueContainer
+            /// Creates a new `RestoreConsent`.
+            ///
+            /// - Parameters:
+            ///   - account:
+            ///   - consent: Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+            public init(
+                account: Swift.String,
+                consent: OpenAPIRuntime.OpenAPIValueContainer
+            ) {
+                self.account = account
+                self.consent = consent
+            }
+            public enum CodingKeys: String, CodingKey {
+                case account
+                case consent
             }
         }
         /// One app an undo reverts: the release it leaves (`from`) and returns to (`to`, `toBundle`), when it was upgraded and by whom (`auto`: on its own), until when it may be undone, its restore point, and what the undo loses (`lostWrites`: the app group's entries since the restore point, its last write, and `any`: whether it wrote since the upgrade, read from a majority of the replicas the app is on now, the furthest counting, never from the restore point's node alone; each of them `null` when nobody can say, never `false` for writes it cannot see; `lostWrites` itself `null` while the restore point's node does not answer, which `unavailable` then says).
@@ -29617,6 +29672,207 @@ public enum Operations {
             }
         }
     }
+    /// Consent to restoring a pinned instance to older code
+    ///
+    /// An owner or admin of the app's organization, while an undo of its last upgrade is open, with a step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`bundle`: what the backup's state runs; `point`: the restore point the open undo would revert): answers the consent the operator's restore (`POST /ops/apps/{app}/restore`, `owner`) carries to restore a pinned instance (its record's `lineage`) from that backup to code older than the release it runs. `403 FORBIDDEN` for anyone else and `409 UNDO_WINDOW_PASSED` once the undo closed, before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.39.
+    ///
+    /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+    ///
+    /// - Remark: HTTP `POST /apps/{app}/restore-consent`.
+    /// - Remark: Generated from `#/paths//apps/{app}/restore-consent/post(app_restore_consent)`.
+    public enum AppRestoreConsent {
+        public static let id: Swift.String = "app_restore_consent"
+        public struct Input: Sendable, Hashable {
+            /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/path`.
+            public struct Path: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/path/app`.
+                public var app: Swift.String
+                /// Creates a new `Path`.
+                ///
+                /// - Parameters:
+                ///   - app:
+                public init(app: Swift.String) {
+                    self.app = app
+                }
+            }
+            public var path: Operations.AppRestoreConsent.Input.Path
+            /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/header`.
+            public struct Headers: Sendable, Hashable {
+                public var accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppRestoreConsent.AcceptableContentType>]
+                /// Creates a new `Headers`.
+                ///
+                /// - Parameters:
+                ///   - accept:
+                public init(accept: [OpenAPIRuntime.AcceptHeaderContentType<Operations.AppRestoreConsent.AcceptableContentType>] = .defaultValues()) {
+                    self.accept = accept
+                }
+            }
+            public var headers: Operations.AppRestoreConsent.Input.Headers
+            /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/requestBody`.
+            @frozen public enum Body: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/requestBody/json`.
+                public struct JsonPayload: Codable, Hashable, Sendable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/requestBody/json/backup`.
+                    public var backup: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/requestBody/json/sha256`.
+                    public var sha256: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/requestBody/json/bundle`.
+                    public var bundle: Swift.String
+                    /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/requestBody/json/confirm`.
+                    public var confirm: Components.Schemas.Confirm?
+                    /// Creates a new `JsonPayload`.
+                    ///
+                    /// - Parameters:
+                    ///   - backup:
+                    ///   - sha256:
+                    ///   - bundle:
+                    ///   - confirm:
+                    public init(
+                        backup: Swift.String,
+                        sha256: Swift.String,
+                        bundle: Swift.String,
+                        confirm: Components.Schemas.Confirm? = nil
+                    ) {
+                        self.backup = backup
+                        self.sha256 = sha256
+                        self.bundle = bundle
+                        self.confirm = confirm
+                    }
+                    public enum CodingKeys: String, CodingKey {
+                        case backup
+                        case sha256
+                        case bundle
+                        case confirm
+                    }
+                    public init(from decoder: any Decoder) throws {
+                        let container = try decoder.container(keyedBy: CodingKeys.self)
+                        self.backup = try container.decode(
+                            Swift.String.self,
+                            forKey: .backup
+                        )
+                        self.sha256 = try container.decode(
+                            Swift.String.self,
+                            forKey: .sha256
+                        )
+                        self.bundle = try container.decode(
+                            Swift.String.self,
+                            forKey: .bundle
+                        )
+                        self.confirm = try container.decodeIfPresent(
+                            Components.Schemas.Confirm.self,
+                            forKey: .confirm
+                        )
+                        try decoder.ensureNoAdditionalProperties(knownKeys: [
+                            "backup",
+                            "sha256",
+                            "bundle",
+                            "confirm"
+                        ])
+                    }
+                }
+                /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/requestBody/content/application\/json`.
+                case json(Operations.AppRestoreConsent.Input.Body.JsonPayload)
+            }
+            public var body: Operations.AppRestoreConsent.Input.Body
+            /// Creates a new `Input`.
+            ///
+            /// - Parameters:
+            ///   - path:
+            ///   - headers:
+            ///   - body:
+            public init(
+                path: Operations.AppRestoreConsent.Input.Path,
+                headers: Operations.AppRestoreConsent.Input.Headers = .init(),
+                body: Operations.AppRestoreConsent.Input.Body
+            ) {
+                self.path = path
+                self.headers = headers
+                self.body = body
+            }
+        }
+        @frozen public enum Output: Sendable, Hashable {
+            public struct Ok: Sendable, Hashable {
+                /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/responses/200/content`.
+                @frozen public enum Body: Sendable, Hashable {
+                    /// - Remark: Generated from `#/paths/apps/{app}/restore-consent/POST/responses/200/content/application\/json`.
+                    case json(Components.Schemas.RestoreConsent)
+                    /// The associated value of the enum case if `self` is `.json`.
+                    ///
+                    /// - Throws: An error if `self` is not `.json`.
+                    /// - SeeAlso: `.json`.
+                    public var json: Components.Schemas.RestoreConsent {
+                        get throws {
+                            switch self {
+                            case let .json(body):
+                                return body
+                            }
+                        }
+                    }
+                }
+                /// Received HTTP response body
+                public var body: Operations.AppRestoreConsent.Output.Ok.Body
+                /// Creates a new `Ok`.
+                ///
+                /// - Parameters:
+                ///   - body: Received HTTP response body
+                public init(body: Operations.AppRestoreConsent.Output.Ok.Body) {
+                    self.body = body
+                }
+            }
+            /// OK
+            ///
+            /// - Remark: Generated from `#/paths//apps/{app}/restore-consent/post(app_restore_consent)/responses/200`.
+            ///
+            /// HTTP response code: `200 ok`.
+            case ok(Operations.AppRestoreConsent.Output.Ok)
+            /// The associated value of the enum case if `self` is `.ok`.
+            ///
+            /// - Throws: An error if `self` is not `.ok`.
+            /// - SeeAlso: `.ok`.
+            public var ok: Operations.AppRestoreConsent.Output.Ok {
+                get throws {
+                    switch self {
+                    case let .ok(response):
+                        return response
+                    default:
+                        try throwUnexpectedResponseStatus(
+                            expectedStatus: "ok",
+                            response: self
+                        )
+                    }
+                }
+            }
+            /// Undocumented response.
+            ///
+            /// A response with a code that is not documented in the OpenAPI document.
+            case undocumented(statusCode: Swift.Int, OpenAPIRuntime.UndocumentedPayload)
+        }
+        @frozen public enum AcceptableContentType: AcceptableProtocol {
+            case json
+            case other(Swift.String)
+            public init?(rawValue: Swift.String) {
+                switch rawValue.lowercased() {
+                case "application/json":
+                    self = .json
+                default:
+                    self = .other(rawValue)
+                }
+            }
+            public var rawValue: Swift.String {
+                switch self {
+                case let .other(string):
+                    return string
+                case .json:
+                    return "application/json"
+                }
+            }
+            public static var allCases: [Self] {
+                [
+                    .json
+                ]
+            }
+        }
+    }
     /// An app's compute runs
     ///
     /// Newest first, `limit` (1 to 100, default 20) at a time; `next` is the `before` of the next page, `null` on the last.
@@ -30875,7 +31131,7 @@ public enum Operations {
     }
     /// Undo an app's last upgrade
     ///
-    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+    /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
     ///
     /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
     ///
@@ -49229,7 +49485,7 @@ public enum Operations {
     }
     /// Bring an organization's or account's apps back from its recovery files
     ///
-    /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+    /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
     ///
     /// **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
     ///

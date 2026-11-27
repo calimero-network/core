@@ -315,6 +315,19 @@ extension CalimeroClient {
             }
         }
 
+        /// Consent to restoring a pinned instance to older code: `POST /apps/{app}/restore-consent` (`app_restore_consent`).
+        ///
+        /// An owner or admin of the app's organization, while an undo of its last upgrade is open, with a step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`bundle`: what the backup's state runs; `point`: the restore point the open undo would revert): answers the consent the operator's restore (`POST /ops/apps/{app}/restore`, `owner`) carries to restore a pinned instance (its record's `lineage`) from that backup to code older than the release it runs. `403 FORBIDDEN` for anyone else and `409 UNDO_WINDOW_PASSED` once the undo closed, before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.39.
+        ///
+        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+        @discardableResult
+        public func restoreConsent(app: Swift.String, backup: Swift.String, sha256: Swift.String, bundle: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.RestoreConsent {
+            let input = Operations.AppRestoreConsent.Input(path: .init(app: app), body: .json(.init(backup: backup, sha256: sha256, bundle: bundle)))
+            return try await client.perform(passkey: passkey) { api in
+                try await api.appRestoreConsent(input).ok.body.json
+            }
+        }
+
         /// One compute run: `GET /apps/{app}/runs/{run}` (`app_run`).
         ///
         /// Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.
@@ -446,7 +459,7 @@ extension CalimeroClient {
 
         /// Undo an app's last upgrade: `POST /apps/{app}/undo` (`app_undo`).
         ///
-        /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+        /// An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
         ///
         /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
         @discardableResult
@@ -2600,7 +2613,7 @@ extension CalimeroClient {
 
         /// Bring an organization's or account's apps back from its recovery files: `POST /recover/holder` (`restore_recover_holder`).
         ///
-        /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+        /// Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
         ///
         /// **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
         @discardableResult

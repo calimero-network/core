@@ -104,7 +104,11 @@ def sync_detailed(
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
-    the file's name and `sha256` its body's.
+    the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only
+    from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`),
+    and to code older than the release it runs only with `owner`, an owner's or admin's consent while an
+    undo of its last upgrade is open (`POST /apps/{app}/restore-consent`; else `409
+    LINEAGE_OLDER_RELEASE`), each before the signature is asked for.
 
     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first;
     send it again with `operatorProof`, the operator key's signature over `details.message` and its
@@ -148,7 +152,11 @@ def sync(
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
-    the file's name and `sha256` its body's.
+    the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only
+    from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`),
+    and to code older than the release it runs only with `owner`, an owner's or admin's consent while an
+    undo of its last upgrade is open (`POST /apps/{app}/restore-consent`; else `409
+    LINEAGE_OLDER_RELEASE`), each before the signature is asked for.
 
     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first;
     send it again with `operatorProof`, the operator key's signature over `details.message` and its
@@ -187,7 +195,11 @@ async def asyncio_detailed(
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
-    the file's name and `sha256` its body's.
+    the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only
+    from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`),
+    and to code older than the release it runs only with `owner`, an owner's or admin's consent while an
+    undo of its last upgrade is open (`POST /apps/{app}/restore-consent`; else `409
+    LINEAGE_OLDER_RELEASE`), each before the signature is asked for.
 
     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first;
     send it again with `operatorProof`, the operator key's signature over `details.message` and its
@@ -229,7 +241,11 @@ async def asyncio(
     `release` `null`, for one written before manifests) and the app group's Raft status. `recovery`
     restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`,
     else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then
-    the file's name and `sha256` its body's.
+    the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only
+    from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`),
+    and to code older than the release it runs only with `owner`, an owner's or admin's consent while an
+    undo of its last upgrade is open (`POST /apps/{app}/restore-consent`; else `409
+    LINEAGE_OLDER_RELEASE`), each before the signature is asked for.
 
     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first;
     send it again with `operatorProof`, the operator key's signature over `details.message` and its

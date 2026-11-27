@@ -69,6 +69,7 @@ from .app_moved import AppMoved
 from .app_offered import AppOffered
 from .app_open_api import AppOpenApi
 from .app_restore import AppRestore
+from .app_restore_consent_body import AppRestoreConsentBody
 from .app_restore_source import AppRestoreSource
 from .app_restored import AppRestored
 from .app_restored_backup import AppRestoredBackup
@@ -620,6 +621,7 @@ from .report_app_upgrades_held_by import ReportAppUpgradesHeldBy
 from .report_upgrade import ReportUpgrade
 from .report_upgrade_actor_kind import ReportUpgradeActorKind
 from .report_upgrade_class import ReportUpgradeClass
+from .restore_consent import RestoreConsent
 from .restore_point import RestorePoint
 from .restore_point_file import RestorePointFile
 from .restore_point_file_source import RestorePointFileSource
@@ -850,6 +852,7 @@ __all__ = (
     "AppOffered",
     "AppOpenApi",
     "AppRestore",
+    "AppRestoreConsentBody",
     "AppRestored",
     "AppRestoredBackup",
     "AppRestoreSource",
@@ -1349,6 +1352,7 @@ __all__ = (
     "ReportUpgrade",
     "ReportUpgradeActorKind",
     "ReportUpgradeClass",
+    "RestoreConsent",
     "RestorePoint",
     "RestorePointFile",
     "RestorePointFileSource",

@@ -7689,6 +7689,8 @@ fn a_restore_is_signed_over_its_backup_and_ends_in_its_own_group() {
             compute_bundle: None,
             source: source("7.2.x.snap"),
             proof: proof.clone(),
+            owner: None,
+            at: None,
         };
     let args = json!({ "backup": "7.2.x.snap", "sha256": "ab" });
     let proof = signed("app", "__restore_app", &args);
@@ -9569,6 +9571,483 @@ fn a_compute_only_pinned_instance_moves_forward() {
     }
     let _ok = m.run_unproven(up).unwrap();
     assert_eq!(m.state.apps["job"].lineage.as_ref().unwrap().floor, "1.1.0");
+}
+
+/// `deploying` with `p@1.0.0..1.2.0` pinning, `q@1.0.0` plain (`b-q`), and `alice`'s
+/// instance `kv` on `p@1.1.0` and `plain` on `q@1.0.0`, both in `org`.
+fn lineage_fixture() -> SystemMachine {
+    let mut m = deploying(super::Deployments::Open);
+    for version in ["1.0.0", "1.1.0", "1.2.0"] {
+        let _ok = m.run_unproven(install_pinned("alice", version)).unwrap();
+    }
+    let other = SystemCmd::InstallPackage {
+        package: "q".into(),
+        signer_id: "did:key:q".into(),
+        release: serde_json::from_value(json!({
+            "version": "1.0.0", "mpk": "q", "mpkSize": 1, "source": "upload",
+            "services": { "": "b-q" }, "installedBy": "alice", "installedAt": 5
+        }))
+        .unwrap(),
+    };
+    let _ok = m.run_unproven(other).unwrap();
+    for (id, bundle, (package, version)) in [
+        ("kv", "b-1.1.0", ("p", "1.1.0")),
+        ("plain", "b-q", ("q", "1.0.0")),
+    ] {
+        let mut create = instance(id, "alice", bundle, None);
+        if let SystemCmd::CreateApp { app, .. } = &mut create {
+            app.org = "org".into();
+            app.release = Some(PackageRef {
+                package: package.into(),
+                version: version.into(),
+                service: None,
+                compute: false,
+            });
+        }
+        let _ok = m.run_unproven(create).unwrap();
+    }
+    m
+}
+
+/// An upgrade of `app` to `bundle` of `release` taking a restore point, at 10.
+fn upgrade_with_point(app: &str, bundle: &str, release: (&str, &str)) -> SystemCmd {
+    let mut cmd = upgrade_to(app, "alice", bundle, Some(release));
+    if let SystemCmd::UpgradeApp { restore_point, .. } = &mut cmd {
+        *restore_point = Some(crate::types::TakenRestorePoint::default());
+    }
+    cmd
+}
+
+fn undo(app: &str) -> SystemCmd {
+    SystemCmd::UndoUpgrade {
+        app_id: app.into(),
+        apps: serde_json::from_value(json!({ app: [] })).unwrap(),
+        actor: "alice".into(),
+        at: 20,
+        consent: Value::Null,
+        release_installed: true,
+    }
+}
+
+/// An undo goes back along the lineage, to an older release too, and keeps the pin; it
+/// never goes back to another package, as undoing the upgrade that pinned it would.
+#[test]
+fn an_undo_keeps_a_pinned_instance_on_its_lineage() {
+    use super::OUTSIDE_LINEAGE;
+    let mut m = lineage_fixture();
+    let _ok = m
+        .run_unproven(upgrade_with_point("kv", "b-1.2.0", ("p", "1.2.0")))
+        .unwrap();
+    let pinned = m.state.apps["kv"].lineage.clone();
+    assert!(pinned.is_some());
+    let _ok = m.run_unproven(undo("kv")).unwrap();
+    let kv = &m.state.apps["kv"];
+    assert_eq!(kv.release.as_ref().unwrap().version, "1.1.0");
+    assert_eq!(kv.lineage, pinned, "an undo keeps the pin");
+
+    let _ok = m
+        .run_unproven(upgrade_with_point("plain", "b-1.1.0", ("p", "1.1.0")))
+        .unwrap();
+    assert!(
+        m.state.apps["plain"].lineage.is_some(),
+        "pinned by the upgrade"
+    );
+    assert_eq!(m.run_unproven(undo("plain")).unwrap_err(), OUTSIDE_LINEAGE);
+    assert_eq!(m.state.apps["plain"].bundle, "b-1.1.0", "nothing moved");
+}
+
+/// The operator restores a pinned instance only from a backup a release of its lineage ships,
+/// never older than the release it runs unless an owner or admin consented, judged at the
+/// time the proposing node took the restore (not one the consent names) while an undo of its
+/// last upgrade is open; the pin stays.
+#[test]
+fn a_restore_keeps_a_pinned_instance_on_its_lineage() {
+    use super::{RestoreConsent, LINEAGE_OLDER_RELEASE, OUTSIDE_LINEAGE};
+    let mut m = lineage_fixture();
+    register(&mut m, 1, "replica");
+    let _ok = m
+        .run_unproven(upgrade_with_point("kv", "b-1.2.0", ("p", "1.2.0")))
+        .unwrap();
+    let restore = |bundle: &str, owner: Option<(&str, u64)>| SystemCmd::RestoreApp {
+        app_id: "kv".into(),
+        replicas: vec![1],
+        bundle: bundle.into(),
+        compute_bundle: None,
+        source: crate::types::RestoreSource {
+            name: "kv.snap".into(),
+            sha256: "ab".into(),
+            index: 7,
+        },
+        proof: Value::Null,
+        owner: owner.map(|(account, _)| RestoreConsent {
+            account: account.into(),
+            consent: Value::Null,
+        }),
+        at: owner.map(|(_, at)| at),
+    };
+    let pinned = m.state.apps["kv"].lineage.clone();
+    let window = crate::types::UNDO_WINDOW_SECS;
+    for (why, cmd, refused) in [
+        ("another package", restore("b-q", None), OUTSIDE_LINEAGE),
+        (
+            "older, no owner",
+            restore("b-1.1.0", None),
+            LINEAGE_OLDER_RELEASE,
+        ),
+        (
+            "older, a member",
+            restore("b-1.1.0", Some(("bob", 20))),
+            LINEAGE_OLDER_RELEASE,
+        ),
+        (
+            "older, taken after the undo closed",
+            restore("b-1.1.0", Some(("alice", 10 + window + 1))),
+            LINEAGE_OLDER_RELEASE,
+        ),
+        (
+            "older, taken before the upgrade it would undo",
+            restore("b-1.1.0", Some(("alice", 9))),
+            LINEAGE_OLDER_RELEASE,
+        ),
+    ] {
+        assert_eq!(m.run_unproven(cmd).unwrap_err(), refused, "{why}");
+        assert_eq!(m.state.apps["kv"].bundle, "b-1.2.0", "{why}: nothing moved");
+    }
+    assert_eq!(
+        restore("b-1.1.0", Some(("alice", 20))).features(),
+        [
+            super::cluster_version::Feature::RestoreApp,
+            super::cluster_version::Feature::PinnedLineage
+        ]
+    );
+    let _ok = m
+        .run_unproven(restore("b-1.1.0", Some(("alice", 20))))
+        .unwrap();
+    let kv = &m.state.apps["kv"];
+    assert_eq!((kv.bundle.as_str(), &kv.lineage), ("b-1.1.0", &pinned));
+    // Not older: the operator alone.
+    let _ok = m.run_unproven(restore("b-1.2.0", None)).unwrap();
+    assert_eq!(m.state.apps["kv"].bundle, "b-1.2.0");
+}
+
+/// [`lineage_fixture`] with `p@2.0.0`, `3.0.0` and `4.0.0` installed after `kv` was created,
+/// `kv` upgraded to 2.0.0 and then 3.0.0 (taking restore points at 10 and 11), and a replica.
+fn late_releases() -> SystemMachine {
+    let mut m = lineage_fixture();
+    m.state.attributes_by_release = true;
+    for version in ["2.0.0", "3.0.0", "4.0.0"] {
+        let mut cmd = install_pinned("alice", version);
+        if let SystemCmd::InstallPackage { release, .. } = &mut cmd {
+            release.installed_at = 50;
+        }
+        let _ok = m.run_unproven(cmd).unwrap();
+    }
+    register(&mut m, 1, "replica");
+    for (version, at) in [("2.0.0", 10), ("3.0.0", 11)] {
+        let mut up = upgrade_with_point("kv", &format!("b-{version}"), ("p", version));
+        if let SystemCmd::UpgradeApp { at: when, .. } = &mut up {
+            *when = at;
+        }
+        let _ok = m.run_unproven(up).unwrap();
+    }
+    m
+}
+
+/// A restored pinned instance is judged from the lineage release that ships its bundle, so it
+/// moves on afterwards (after an owner's restore to an older release, and after the operator's
+/// restore to a newer one), while what governs it is left as a restore leaves it.
+#[test]
+fn a_restored_pinned_instance_still_moves_forward() {
+    let restore = |bundle: &str, owner: bool| SystemCmd::RestoreApp {
+        app_id: "kv".into(),
+        replicas: vec![1],
+        bundle: bundle.into(),
+        compute_bundle: None,
+        source: crate::types::RestoreSource {
+            name: "kv.snap".into(),
+            sha256: "ab".into(),
+            index: 7,
+        },
+        proof: Value::Null,
+        owner: owner.then(|| super::RestoreConsent {
+            account: "alice".into(),
+            consent: Value::Null,
+        }),
+        at: owner.then_some(20),
+    };
+    let mut older = late_releases();
+    let _ok = older.run_unproven(restore("b-2.0.0", true)).unwrap();
+    // Who governs it is as a restore left it before: no later release takes it over.
+    let kv = &older.state.apps["kv"];
+    assert_eq!(kv.release, None);
+    assert_eq!(older.state.governing_release(kv), None);
+    let _ok = older
+        .run_unproven(upgrade_to("kv", "alice", "b-3.0.0", Some(("p", "3.0.0"))))
+        .unwrap();
+
+    let mut newer = late_releases();
+    let _ok = newer
+        .run_unproven(upgrade_to("kv", "alice", "b-2.0.0", Some(("p", "2.0.0"))))
+        .unwrap_err();
+    let _ok = newer.run_unproven(restore("b-4.0.0", false)).unwrap();
+    let _ok = newer
+        .run_unproven(upgrade_to("kv", "alice", "b-4.0.0", Some(("p", "4.0.0"))))
+        .unwrap();
+}
+
+/// An owner's consent on a restore is a passkey assertion over exactly that backup, the bundle
+/// it runs and the restore point its undo would revert (by identity, not only its time), and
+/// the operator's signature names the same bundle; it is spent once.
+#[test]
+fn a_restores_owner_consent_names_its_backup_and_is_spent_once() {
+    let (mut m, mut alice, ..) = proven_cluster();
+    for hash in ["b0", "b9"] {
+        let _prev = m.state.bundles.insert(
+            hash.into(),
+            serde_json::from_value(json!({ "hash": hash, "size": 1, "uploadedBy": "alice" }))
+                .unwrap(),
+        );
+    }
+    let point = |group: u64| -> crate::types::RestorePoint {
+        serde_json::from_value(json!({
+            "fromBundle": "b0", "toBundle": "b1", "at": 5, "by": "alice",
+            "file": { "node": 2, "group": group,
+                "source": { "name": "rp", "sha256": "cd", "index": 3 } },
+        }))
+        .unwrap()
+    };
+    m.state.apps.get_mut("app").unwrap().restore_point = Some(point(2));
+    let restore = |bundle: &str, operator_bundle: &str, owner: Value| SystemCmd::RestoreApp {
+        app_id: "app".into(),
+        replicas: vec![2, 1, 3],
+        bundle: bundle.into(),
+        compute_bundle: None,
+        source: crate::types::RestoreSource {
+            name: "7.2.x.snap".into(),
+            sha256: "ab".into(),
+            index: 7,
+        },
+        proof: signed(
+            "app",
+            "__restore_app",
+            &json!({ "backup": "7.2.x.snap", "sha256": "ab", "bundle": operator_bundle }),
+        ),
+        owner: Some(super::RestoreConsent {
+            account: "alice".into(),
+            consent: owner,
+        }),
+        at: Some(6),
+    };
+    let stated = |m: &SystemMachine| m.state.restore_older_args("app", "7.2.x.snap", "ab", "b0");
+    let older = stated(&m);
+    assert_eq!(older["point"]["file"]["group"], 2, "{older}");
+    let mut other = |field: &str, value: Value| {
+        let mut args = older.clone();
+        args[field] = value;
+        consent(&mut alice, "app", "__restore_older", &args)
+    };
+    for (why, c) in [
+        ("another backup", other("backup", json!("8.2.x.snap"))),
+        ("another bundle", other("bundle", json!("b9"))),
+        ("another restore point", other("point", json!(null))),
+    ] {
+        assert!(m.run(restore("b0", "b0", c)).is_err(), "{why}");
+    }
+    let c = consent(&mut alice, "app", "__undo_upgrade", &older);
+    assert!(m.run(restore("b0", "b0", c)).is_err(), "another method");
+    // A crafted entry pairing the consented backup with another bundle.
+    let c = consent(&mut alice, "app", "__restore_older", &older);
+    assert!(
+        m.run(restore("b9", "b0", c.clone())).is_err(),
+        "the bundle run"
+    );
+    // The restore point made again, at the same time: another one.
+    m.state.apps.get_mut("app").unwrap().restore_point = Some(point(7));
+    assert!(
+        m.run(restore("b0", "b0", c)).is_err(),
+        "a restore point made again"
+    );
+    m.state.apps.get_mut("app").unwrap().restore_point = Some(point(2));
+    let c = consent(&mut alice, "app", "__restore_older", &stated(&m));
+    let _ok = m.run(restore("b0", "b0", c.clone())).unwrap();
+    m.state.apps.get_mut("app").unwrap().restore = None;
+    m.state.apps.get_mut("app").unwrap().restore_point = Some(point(2));
+    assert_eq!(
+        m.run(restore("b0", "b0", c)).unwrap_err(),
+        "that consent was used already",
+        "the same consent, with a new operator signature"
+    );
+}
+
+/// An imported pinned instance keeps its pin, or takes it again from its release in the
+/// slice where the record lost it, only where its package here is held by the same signer;
+/// where it is held by another, or by none, the import is refused.
+#[test]
+fn an_import_keeps_a_pinned_instance_on_its_lineage() {
+    use super::{BackupHolder, ImportedApp, OUTSIDE_LINEAGE};
+    let old = lineage_fixture();
+    let holder = BackupHolder::Org("org".into());
+    let slice = old.state.holder_slice(&holder);
+    let pinned = old.state.apps["kv"].lineage.clone();
+    assert!(pinned.is_some() && slice.apps.contains_key("kv"));
+    let fresh = |theirs: Option<&str>| {
+        let mut m = SystemMachine::default();
+        let _ok = m.run_unproven(genesis(Governance::default())).unwrap();
+        register(&mut m, 1, "replica");
+        if let Some(signer) = theirs {
+            let mut p = old.state.packages["p"].clone();
+            p.signer_id = signer.into();
+            let _prev = m.state.packages.insert("p".into(), p);
+        }
+        m
+    };
+    let import = |slice: &super::HolderSlice| SystemCmd::ImportHolder {
+        holder: holder.clone(),
+        slice: Box::new(slice.clone()),
+        slice_sha256: "cd".repeat(32),
+        public_key: "ef".repeat(32),
+        seed: 1,
+        apps: vec![ImportedApp {
+            app_id: "kv".into(),
+            replicas: vec![1],
+            source: crate::types::RestoreSource {
+                name: "app-kv.rbak".into(),
+                sha256: "ab".repeat(32),
+                index: 9,
+            },
+        }],
+        at: 7,
+        proof: Value::Null,
+    };
+    let mut stripped = slice.clone();
+    stripped.apps.get_mut("kv").unwrap().lineage = None;
+    let mut unshipped = slice.clone();
+    let _gone = unshipped.packages.remove("p");
+    for (why, slice) in [("kept", &slice), ("stripped", &stripped)] {
+        let mut m = fresh(None);
+        let _ok = m.run_unproven(import(slice)).unwrap();
+        assert_eq!(m.state.apps["kv"].lineage, pinned, "{why}");
+        let mut m = fresh(Some("did:key:z"));
+        let _ok = m.run_unproven(import(slice)).unwrap();
+        assert_eq!(
+            m.state.apps["kv"].lineage, pinned,
+            "{why}, same signer here"
+        );
+        let mut m = fresh(Some("did:key:other"));
+        assert_eq!(
+            m.run_unproven(import(slice)).unwrap_err(),
+            OUTSIDE_LINEAGE,
+            "{why}, another signer here"
+        );
+        assert!(!m.state.apps.contains_key("kv"));
+    }
+    let mut m = fresh(None);
+    assert_eq!(
+        m.run_unproven(import(&unshipped)).unwrap_err(),
+        OUTSIDE_LINEAGE,
+        "the package nowhere"
+    );
+    // A record that names no release, created before its package's releases were installed,
+    // still moves forward once imported.
+    let mut bare = slice.clone();
+    let kv = bare.apps.get_mut("kv").unwrap();
+    kv.release = None;
+    kv.created_at = 1;
+    let mut m = fresh(None);
+    m.state.attributes_by_release = true;
+    let _ok = m.run_unproven(import(&bare)).unwrap();
+    assert_eq!(m.state.apps["kv"].release, None, "governance as imported");
+    m.state.apps.get_mut("kv").unwrap().restore = None;
+    let _ok = m
+        .run_unproven(upgrade_to("kv", "alice", "b-1.1.0", Some(("p", "1.1.0"))))
+        .unwrap();
+}
+
+/// An imported record's release (named, else the one its bundle is recorded from) must ship its
+/// bundle as this cluster holds that package, under the same signer: one held here under
+/// another signer, with other bytes, is refused.
+#[test]
+fn an_import_refuses_a_release_that_does_not_ship_its_bundle_here() {
+    use super::{BackupHolder, ImportedApp};
+    let old = lineage_fixture();
+    let holder = BackupHolder::Org("org".into());
+    let slice = old.state.holder_slice(&holder);
+    let mut m = SystemMachine::default();
+    let _ok = m.run_unproven(genesis(Governance::default())).unwrap();
+    register(&mut m, 1, "replica");
+    let mut theirs = old.state.packages["q"].clone();
+    theirs.signer_id = "did:key:other".into();
+    let v = theirs.versions.get_mut("1.0.0").unwrap();
+    let _prev = v.services.insert(String::new(), "b-other".into());
+    let _prev = m.state.packages.insert("q".into(), theirs);
+    let import = SystemCmd::ImportHolder {
+        holder: holder.clone(),
+        slice: Box::new(slice),
+        slice_sha256: "cd".repeat(32),
+        public_key: "ef".repeat(32),
+        seed: 1,
+        apps: vec![ImportedApp {
+            app_id: "plain".into(),
+            replicas: vec![1],
+            source: crate::types::RestoreSource {
+                name: "app-plain.rbak".into(),
+                sha256: "ab".repeat(32),
+                index: 9,
+            },
+        }],
+        at: 7,
+        proof: Value::Null,
+    };
+    let refused = m.run_unproven(import.clone()).unwrap_err();
+    assert!(refused.message().contains("ship"), "{refused}");
+    assert!(!m.state.apps.contains_key("plain"));
+    // A record that names no release is judged by the release its bundle is recorded from.
+    let SystemCmd::ImportHolder { mut slice, .. } = import.clone() else {
+        unreachable!()
+    };
+    slice.apps.get_mut("plain").unwrap().release = None;
+    let mut bare = import;
+    if let SystemCmd::ImportHolder { slice: s, .. } = &mut bare {
+        *s = slice;
+    }
+    let refused = m.run_unproven(bare).unwrap_err();
+    assert!(refused.message().contains("ship"), "{refused}");
+    assert!(!m.state.apps.contains_key("plain"));
+}
+
+/// A run's upgrade is held to the lineage as any other: the rule is the instance's.
+#[test]
+fn a_runs_upgrade_keeps_a_pinned_instance_on_its_lineage() {
+    let mut m = lineage_fixture();
+    let mut in_run = upgrade_to("kv", "alice", "b-q", Some(("q", "1.0.0")));
+    if let SystemCmd::UpgradeApp { run, .. } = &mut in_run {
+        *run = Some("r1".into());
+    }
+    assert_eq!(m.run_unproven(in_run).unwrap_err(), super::OUTSIDE_LINEAGE);
+    assert_eq!(m.state.apps["kv"].bundle, "b-1.1.0");
+}
+
+/// A move to another organization keeps the pin.
+#[test]
+fn a_moved_instance_keeps_its_pin() {
+    let (mut m, mut alice, _bob) = moving();
+    let pin = Some(crate::types::AppLineage {
+        package: "p".into(),
+        signer_id: "did:key:z".into(),
+        floor: "1.0.0".into(),
+    });
+    m.state.apps.get_mut("oa").unwrap().lineage = pin.clone();
+    let args = super::move_app_args("new", true);
+    let _ok = m
+        .run(move_app(
+            "oa",
+            "new",
+            "alice",
+            true,
+            consent(&mut alice, "oa", "__move", &args),
+        ))
+        .unwrap();
+    assert_eq!(m.state.apps["oa"].lineage, pin);
 }
 
 /// A pinning release names a semver version, so its instances can move forward; a release

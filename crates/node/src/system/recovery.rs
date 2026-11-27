@@ -50,6 +50,11 @@ const CODE_IN_USE: Rejection =
     Rejection::new(RejectionKind::Rejected, "that recovery code is in use");
 /// Removing a recovery code from an account that has none.
 const NO_CODE_SET: Rejection = Rejection::new(RejectionKind::Rejected, "no recovery code is set");
+/// An imported app's release that does not ship its bundle as this cluster holds the package.
+const RELEASE_NOT_SHIPPED_HERE: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "an imported app's release does not ship its bundle on this cluster",
+);
 /// An organization recovery started for its owner.
 const OWNS_ALREADY: Rejection = Rejection::new(
     RejectionKind::Rejected,
@@ -729,10 +734,15 @@ fn import_holder(
             let _prev = state.bundles.insert(hash.clone(), bundle.clone());
         }
     }
+    let mut pins = BTreeMap::new();
     for app in &apps {
         let record = &slice.apps[&app.app_id];
         if !state.bundles.contains_key(&record.bundle) {
             return Err(RESTORE_BUNDLE_GONE.into());
+        }
+        let _prev = pins.insert(app.app_id.clone(), imported_lineage(state, &slice, record)?);
+        if !imported_release_ships(state, &slice, record) {
+            return Err(RELEASE_NOT_SHIPPED_HERE);
         }
     }
     // Checked: from here nothing is refused.
@@ -746,6 +756,7 @@ fn import_holder(
     let mut groups = Vec::new();
     for app in apps {
         let mut record = slice.apps[&app.app_id].clone();
+        record.lineage = pins.remove(&app.app_id).flatten();
         let group = state.next_group.max(1) + 1;
         state.next_group = group;
         record.group = group;
@@ -765,6 +776,68 @@ fn import_holder(
     };
     let _prev = state.backup_keys.insert(holder.key(), key);
     Ok(json!({ "apps": groups }))
+}
+
+/// Whether `record`'s release (named, else the one the slice records its bundle from), as this
+/// cluster will hold its package (here, else the slice's), ships its bundle under the signer the
+/// slice holds it under. A raw bundle, from no release, passes.
+fn imported_release_ships(state: &SystemState, slice: &HolderSlice, record: &AppRecord) -> bool {
+    let Some(r) = record
+        .release
+        .as_ref()
+        .or_else(|| slice.bundles.get(&record.bundle)?.package.as_ref())
+    else {
+        return true;
+    };
+    let theirs = slice.packages.get(&r.package);
+    let Some(held) = state.packages.get(&r.package).or(theirs) else {
+        return false;
+    };
+    theirs.is_none_or(|t| t.signer_id == held.signer_id)
+        && held
+            .versions
+            .get(&r.version)
+            .is_some_and(|v| v.parts(&r.package).any(|(h, _)| h == record.bundle))
+}
+
+/// The lineage `record` keeps on import: its own, else its release's as the slice records it,
+/// and only where this cluster will hold that package under the same signer.
+///
+/// # Errors
+/// [`OUTSIDE_LINEAGE`] when the package is held under another signer, or by none.
+fn imported_lineage(
+    state: &SystemState,
+    slice: &HolderSlice,
+    record: &AppRecord,
+) -> Result<Option<AppLineage>, Rejection> {
+    let from_slice = || {
+        let r = record
+            .release
+            .as_ref()
+            .or_else(|| slice.bundles.get(&record.bundle)?.package.as_ref())?;
+        let p = slice.packages.get(&r.package)?;
+        let _pinned = p
+            .versions
+            .get(&r.version)
+            .filter(|v| !v.lineage.is_free())?;
+        Some(AppLineage {
+            package: r.package.clone(),
+            signer_id: p.signer_id.clone(),
+            floor: r.version.clone(),
+        })
+    };
+    let Some(pin) = record.lineage.clone().or_else(from_slice) else {
+        return Ok(None);
+    };
+    let held = state
+        .packages
+        .get(&pin.package)
+        .or(slice.packages.get(&pin.package));
+    if held.is_some_and(|p| p.signer_id == pin.signer_id) {
+        Ok(Some(pin))
+    } else {
+        Err(OUTSIDE_LINEAGE)
+    }
 }
 
 /// An import is of an organization or account this cluster does not hold,

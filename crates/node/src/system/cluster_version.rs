@@ -883,6 +883,9 @@ impl SystemCmd {
                 ..
             } => vec![Feature::TeamCloseDropsBelow],
             Self::SetAllApps { .. } => vec![Feature::AllApps],
+            Self::RestoreApp { owner: Some(_), .. } => {
+                vec![Feature::RestoreApp, Feature::PinnedLineage]
+            }
             Self::RestoreApp { .. } | Self::FinishRestore { .. } => vec![Feature::RestoreApp],
             Self::RenameOrg { .. } => vec![Feature::RenameOrg],
             Self::AttributeByRelease => vec![Feature::AttributeByRelease],

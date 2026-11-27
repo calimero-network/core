@@ -5113,6 +5113,17 @@ pub struct RestorePoint {
     pub extra: Map<String, Value>,
 }
 
+/// An owner's or admin's step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`POST /apps/{app}/restore-consent`; `point` is the restore point its open undo would revert, by its time, target and snapshot): the operator's restore carries it as `owner`, with the operator's signature naming the same bundle, to take a pinned instance (its record's `lineage`) from that backup onto that bundle, older than the release it runs, while that undo is open at a time no earlier than the upgrade and any upgrade logged since. Spent once.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RestoreConsent {
+    pub account: String,
+    /// Free-form JSON: its shape is not this API's (see the description around it for whose it is).
+    pub consent: Value,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct UndoPartRestorePoint {
     pub node: u64,
