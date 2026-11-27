@@ -2176,6 +2176,18 @@ async fn a_node_that_hosts_no_replica_reads_the_upload_from_the_leader() {
     }
     let leader = f.leader();
     assert_ne!(leader, first, "the first replica still leads");
+    // The upload is charged in the system log: keep its leader running too.
+    for _ in 0..30 {
+        if !f.node(first).system.status().is_leader {
+            break;
+        }
+        let _r = f.node(second).system.raft().trigger().elect().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    assert!(
+        !f.node(first).system.status().is_leader,
+        "the first replica still leads the system group"
+    );
     f.c.stop(first).await;
     let up = f.clients[leader]
         .apps()
