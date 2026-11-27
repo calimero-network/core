@@ -97,6 +97,7 @@ the same way. Compute runs on job nodes have their own caps
 | One sealed request, one HTTP body | 64 MiB | `MAX_SEALED_BYTES`, `DefaultBodyLimit` |
 | A raw development bundle | 16 MiB | `bundle_put` |
 | One blob (an uploaded file, a package `.mpk`, uploaded or fetched from a registry) | 47 MiB: it reaches the other nodes base64-encoded in one sealed request | `MAX_BLOB_BYTES`, `MAX_MPK_BYTES` |
+| Plain blobs one component app holds | 100 000 blobs, 10 GiB; `429 QUOTA_EXCEEDED` past either | `MAX_COMPONENT_BLOBS`, `MAX_APP_BLOB_BYTES` |
 | Metadata (organization, member, team, app) | 16 KiB of JSON | `MAX_METADATA_BYTES` |
 | Passkeys per account | 10 | `AddPasskey` |
 | Registered web origins | 8 per package, 4096 per cluster, 255 bytes each | `MAX_ORIGINS_PER_PACKAGE`, `MAX_PACKAGE_ORIGINS`, `MAX_ORIGIN_BYTES` |
@@ -180,7 +181,7 @@ refusal is `429 QUOTA_EXCEEDED`.
 | API keys | 50 |
 | Organizations owned (every one from cluster version 1.0.0-rc.32; before, the personal one not counted) | 20 |
 | Accounts on the cluster | 100 000 |
-| Stored file bytes per organization (`maxFileBytesPerOrg`) | 50 GB |
+| Stored file bytes per organization (`maxFileBytesPerOrg`; uploaded plain blobs count too from cluster version 1.0.0-rc.39) | 50 GB |
 | Concurrent compute runs per organization (`maxConcurrentRunsPerOrg`) | 4 |
 | Reserved compute fuel per organization (`computeFuelPerOrg`) | 10 times `MAX_COMPUTE_FUEL` |
 | Teams per organization, app teams included (`maxTeamsPerOrg`) | 1000 (`MAX_TEAMS_PER_ORG`) |
@@ -227,7 +228,8 @@ Code: `system::Quotas`, set with `POST /ops/quotas`.
 
 Live in the system state and are checked at apply, so every node enforces the same limits; refusals
 are `429 QUOTA_EXCEEDED`.
-`maxFileBytesPerOrg` counts the plaintext bytes of a component's files.
+`maxFileBytesPerOrg` counts the plaintext bytes of a component's files, and from
+`Feature::MeteredBlobs` the bytes of the plain blobs uploaded to it (`BlobRecord::metered`).
 `SystemState::app_file_bytes` holds them per app, and `payer_file_bytes` is its sum per payer
 (`usage::payer`), kept in step by `set_app_file_bytes`.
 `SystemCmd::ChargeFileBytes { app_id, delta }` refuses a charge past the quota and floors a release

@@ -637,6 +637,11 @@ pub enum ComponentCmd {
         mime: String,
         /// The entry timestamp: its idle time starts here.
         ts_ms: u64,
+        /// The uploader charged `size` to the quota
+        /// ([`Feature::MeteredBlobs`](crate::system::cluster_version::Feature::MeteredBlobs));
+        /// absent in an entry an earlier release logged, which charged nothing.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        metered: bool,
     },
     /// The app's owner deleted a blob: the app no longer holds it, whatever refers to it.
     #[serde(rename = "componentBlobForget")]
@@ -1653,15 +1658,21 @@ impl AppMachine {
                 size,
                 mime,
                 ts_ms,
+                metered,
             }) => {
                 let c = &mut self.state.component;
                 c.head.last_ts_ms = c.head.last_ts_ms.max(ts_ms);
-                let held =
-                    parse_hex32(&id).is_some_and(|raw| c.blobs.upload(tx, raw, size, &mime, ts_ms));
-                if held {
+                let took = parse_hex32(&id)
+                    .and_then(|raw| c.blobs.upload(tx, raw, size, &mime, ts_ms, metered));
+                if took.is_some() {
                     c.head.note_write(ts_ms);
                 }
-                host_answer(index, held, "the app holds too many blobs")
+                // Whether this entry holds the uploader's charge; the uploader gives back one
+                // it does not.
+                Applied {
+                    result: json!({ "metered": took == Some(true) }),
+                    ..host_answer(index, took.is_some(), "the app holds too many blobs")
+                }
             }
             Ok(ComponentCmd::File {
                 mark,
@@ -3213,6 +3224,7 @@ mod tests {
             size: 9,
             mime: "text/plain".into(),
             ts_ms: 2,
+            metered: false,
         })
         .unwrap();
         assert_eq!(
@@ -3279,6 +3291,7 @@ mod tests {
             size: 3,
             mime: "text/plain".into(),
             ts_ms: 600,
+            metered: false,
         })
         .unwrap();
         assert_eq!(r.apply(7, &blob).status, Status::Ok);

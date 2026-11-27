@@ -195,3 +195,49 @@ class BlobGrants(DeepCase):
         self._judge(w, s)
         self._revoke_and_grant(rey, s)
         self._judge(w, s)
+
+
+def _blob_bytes(p, org):
+    """The bytes `GET /auth/usage` charges `org` for, as `p` sees them."""
+    return int(p.get("auth/usage")["fileBytes"].get(org, 0))
+
+
+@case
+class BlobUsage(DeepCase):
+    name = "blob-usage"
+    area = "Blobs and files"
+    since = "1.0.0-rc.39"
+    seeds = ("two plain blobs uploaded to an app of a fresh organization, one of them uploaded twice, and one "
+             "deleted by the owner")
+    verifies = ("the organization's `fileBytes` in `/auth/usage` counts each held blob once and not the deleted "
+                "one; on the new release another upload adds its size and a delete gives it back")
+
+    def _upload(self, w, p, app, label, size, seed):
+        path = scratch(w, "blob-usage") / f"{label}.bin"
+        path.write_bytes(random.Random(seed).randbytes(size))
+        up = p.cli("blob", "upload", "--instance", app, str(path))
+        return up.get("blobId") or up.get("id")
+
+    def populate(self, w):
+        gil = person(w, "gil")
+        org = new_org(gil, "Blob Usage Org")
+        app = gil.deploy(kv_wasm(w), "blob-usage", org=org)
+        s = {"org": org, "app": app, "held": {}}
+        for label, size, seed in (("kept", 7_000, 21), ("gone", 3_000, 22)):
+            s["held"][label] = {"id": self._upload(w, gil, app, label, size, seed), "size": size}
+        # The same bytes again hold no second charge.
+        self._upload(w, gil, app, "kept-again", 7_000, 21)
+        gil.raw("delete", f"apps/{app}/blobs/{s['held'].pop('gone')['id']}")
+        return s
+
+    def check(self, w, s):
+        gil = person(w, "gil")
+        want = sum(b["size"] for b in s["held"].values())
+        until("the organization's blob bytes", lambda: eq(_blob_bytes(gil, s["org"]), want, "fileBytes"), 30)
+
+    def exercise(self, w, s):
+        gil = person(w, "gil")
+        s["held"]["new"] = {"id": self._upload(w, gil, s["app"], "new", 5_000, 23), "size": 5_000}
+        self.check(w, s)
+        gil.raw("delete", f"apps/{s['app']}/blobs/{s['held'].pop('new')['id']}")
+        self.check(w, s)

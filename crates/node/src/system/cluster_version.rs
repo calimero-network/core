@@ -264,6 +264,12 @@ pub enum Feature {
     /// this one refuses, holds it below the version; so are the three quotas, which an earlier
     /// release drops, written only from it.
     StateCaps,
+    /// `componentBlob { metered }` in an app's log: an uploaded blob's bytes are charged to the
+    /// app's payer (`ChargeFileBytes`) and given back when the app forgets it
+    /// (`component::blobs::BlobRecord::metered`). An earlier release ignores the field and would
+    /// keep no record of the charge, so it would never give it back. Below it, uploads are not
+    /// charged. No system entry names it: the API reads the logged version before an upload.
+    MeteredBlobs,
     /// A component app's xcall carries its chain's budget (`XcallOut::budget`), and apply
     /// dead-letters one sent with none left
     /// ([Chain budget](https://calimero-network.github.io/core/protocol/xcall/#chain-budget)).
@@ -273,7 +279,7 @@ pub enum Feature {
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 59] = [
+pub const FEATURES: [Feature; 60] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -332,6 +338,7 @@ pub const FEATURES: [Feature; 59] = [
     Feature::DeploymentTransfer,
     Feature::SessionHolders,
     Feature::StateCaps,
+    Feature::MeteredBlobs,
     Feature::XcallBudget,
 ];
 
@@ -398,14 +405,15 @@ impl Feature {
             Self::DeploymentTransfer => "deploymentTransfer",
             Self::SessionHolders => "sessionHolders",
             Self::StateCaps => "stateCaps",
+            Self::MeteredBlobs => "meteredBlobs",
             Self::XcallBudget => "xcallBudget",
         }
     }
 
     /// Whether a system entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
     /// `InviteCreatorStanding`, `BackupKeyApprovers` and `StateCaps` are rules apply reads from
-    /// the logged version: no entry names them. `XcallBudget` is carried by app entries, which
-    /// the leader shapes from the logged version.
+    /// the logged version, and `MeteredBlobs` and `XcallBudget` are fields of an app's entry,
+    /// which the leader shapes from the logged version: no system entry names them.
     #[must_use]
     pub const fn names_an_entry(self) -> bool {
         !matches!(
@@ -414,6 +422,7 @@ impl Feature {
                 | Self::InviteCreatorStanding
                 | Self::BackupKeyApprovers
                 | Self::StateCaps
+                | Self::MeteredBlobs
                 | Self::XcallBudget
         )
     }
@@ -478,7 +487,9 @@ impl Feature {
             | Self::BackupKeyApprovers
             | Self::DeploymentNeedsRecovery
             | Self::DeploymentTransfer => "1.0.0-rc.38",
-            Self::SessionHolders | Self::StateCaps | Self::XcallBudget => "1.0.0-rc.39",
+            Self::SessionHolders | Self::StateCaps | Self::MeteredBlobs | Self::XcallBudget => {
+                "1.0.0-rc.39"
+            }
         }
     }
 }
@@ -1400,6 +1411,7 @@ mod tests {
             | Feature::InviteCreatorStanding
             | Feature::BackupKeyApprovers
             | Feature::StateCaps
+            | Feature::MeteredBlobs
             | Feature::XcallBudget => unreachable!("no system entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
