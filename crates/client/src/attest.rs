@@ -159,7 +159,11 @@ pub fn interval_report_data(
 /// `ATTEST_INTERVAL_SIG_DOMAIN ‖ nonce ‖ app_hash ‖ transport_key`, the
 /// caller's nonce and what the per-request quote's report data would bind.
 #[must_use]
-pub fn interval_message(nonce: &[u8; 32], app_hash: &[u8; 32], transport_key: &[u8; 32]) -> Vec<u8> {
+pub fn interval_message(
+    nonce: &[u8; 32],
+    app_hash: &[u8; 32],
+    transport_key: &[u8; 32],
+) -> Vec<u8> {
     let mut m = ATTEST_INTERVAL_SIG_DOMAIN.to_vec();
     m.extend_from_slice(nonce);
     m.extend_from_slice(app_hash);
@@ -2146,7 +2150,16 @@ mod tests {
 
     async fn check_interval(doc: &AttestationDoc, nonce: [u8; 32]) -> eyre::Result<()> {
         let interval = doc.interval.as_ref().expect("an interval answer");
-        verify_interval(doc, interval, &nonce, &[0; 32], &[1; 32], &mock_policy(), NOW).await
+        verify_interval(
+            doc,
+            interval,
+            &nonce,
+            &[0; 32],
+            &[1; 32],
+            &mock_policy(),
+            NOW,
+        )
+        .await
     }
 
     /// An interval answer verifies for the nonce its key signed, under a
@@ -2156,34 +2169,65 @@ mod tests {
     async fn an_interval_answer_is_refused_unless_signed_bound_and_fresh() {
         let nonce = [2; 32];
         let ok = interval_doc(nonce, NOW - 10, &Interval::default());
-        check_interval(&ok, nonce).await.expect("a fresh, signed, bound answer");
+        check_interval(&ok, nonce)
+            .await
+            .expect("a fresh, signed, bound answer");
 
         let refused = |doc: AttestationDoc, why: &'static str| async move {
             let e = check_interval(&doc, nonce).await.expect_err(why);
             assert!(format!("{e:#}").contains(why), "{e:#} names {why}");
         };
         refused(
-            interval_doc(nonce, NOW, &Interval { signed_nonce: Some([9; 32]), ..Interval::default() }),
+            interval_doc(
+                nonce,
+                NOW,
+                &Interval {
+                    signed_nonce: Some([9; 32]),
+                    ..Interval::default()
+                },
+            ),
             "did not sign this nonce",
         )
         .await;
         refused(
-            interval_doc(nonce, NOW - INTERVAL_QUOTE_MAX_AGE_SECS - 1, &Interval::default()),
+            interval_doc(
+                nonce,
+                NOW - INTERVAL_QUOTE_MAX_AGE_SECS - 1,
+                &Interval::default(),
+            ),
             "old, more than",
         )
         .await;
         refused(
-            interval_doc(nonce, NOW + INTERVAL_QUOTE_MAX_SKEW_SECS + 1, &Interval::default()),
+            interval_doc(
+                nonce,
+                NOW + INTERVAL_QUOTE_MAX_SKEW_SECS + 1,
+                &Interval::default(),
+            ),
             "ahead of this clock",
         )
         .await;
         refused(
-            interval_doc(nonce, NOW, &Interval { bound_key: Some([3; 32]), ..Interval::default() }),
+            interval_doc(
+                nonce,
+                NOW,
+                &Interval {
+                    bound_key: Some([3; 32]),
+                    ..Interval::default()
+                },
+            ),
             "does not bind",
         )
         .await;
         refused(
-            interval_doc(nonce, NOW, &Interval { bad_signature: true, ..Interval::default() }),
+            interval_doc(
+                nonce,
+                NOW,
+                &Interval {
+                    bad_signature: true,
+                    ..Interval::default()
+                },
+            ),
             "did not sign this nonce",
         )
         .await;
@@ -2209,7 +2253,10 @@ mod tests {
             .unwrap()
             .as_secs();
         let fresh = interval_doc(nonce, now, &Interval::default());
-        assert_eq!(verify(&fresh, &nonce, &mock_policy()).await.unwrap(), [1; 32]);
+        assert_eq!(
+            verify(&fresh, &nonce, &mock_policy()).await.unwrap(),
+            [1; 32]
+        );
         assert!(verify(&fresh, &[4; 32], &mock_policy()).await.is_err());
         let with_kms = AttestationDoc {
             kms: Some(KmsKeys::default()),

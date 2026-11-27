@@ -2548,12 +2548,12 @@ extension CalimeroClient {
 
         /// The node's attestation: `GET /attestation` (`attestation`).
         ///
-        /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+        /// In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
         ///
         /// **Who:** anyone.
         @discardableResult
-        public func attestation(nonce: Swift.String, app: Swift.String? = nil, appHash: Swift.String? = nil, purpose: Operations.Attestation.Input.Query.PurposePayload? = nil) async throws -> Components.Schemas.AttestationDoc {
-            let input = Operations.Attestation.Input(query: .init(nonce: nonce, app: app, appHash: appHash, purpose: purpose))
+        public func attestation(nonce: Swift.String, app: Swift.String? = nil, appHash: Swift.String? = nil, purpose: Operations.Attestation.Input.Query.PurposePayload? = nil, form: Operations.Attestation.Input.Query.FormPayload? = nil) async throws -> Components.Schemas.AttestationDoc {
+            let input = Operations.Attestation.Input(query: .init(nonce: nonce, app: app, appHash: appHash, purpose: purpose, form: form))
             return try await client.perform { api in
                 try await api.attestation(input).ok.body.json
             }

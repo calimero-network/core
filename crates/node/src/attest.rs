@@ -300,7 +300,11 @@ impl IntervalQuotes {
     /// Make a new interval key and its quote over `transport_key` through
     /// `quoter` ([`Lane::Peer`]: anonymous requests never hold it up), and
     /// answer with them from now on.
-    pub async fn refresh(&self, quoter: &Quoter, transport_key: [u8; 32]) -> Result<(), QuoteError> {
+    pub async fn refresh(
+        &self,
+        quoter: &Quoter,
+        transport_key: [u8; 32],
+    ) -> Result<(), QuoteError> {
         let key = ed25519_dalek::SigningKey::from_bytes(&calimero_identity::random::<32>());
         let quote_nonce = calimero_identity::random::<32>();
         let issued_at = unix_now();

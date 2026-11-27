@@ -7593,8 +7593,7 @@ async fn new_clients_attest_and_sign_in_while_the_quote_queue_is_full() {
     let mut failed = Vec::new();
     for _ in 0..CLIENTS {
         let client = c.client(0);
-        let answer =
-            tokio::time::timeout(Duration::from_secs(10), client.sign_in(&mut pk)).await;
+        let answer = tokio::time::timeout(Duration::from_secs(10), client.sign_in(&mut pk)).await;
         match answer {
             Ok(Ok(_)) => {}
             Ok(Err(e)) => failed.push(format!("{e:#}")),
