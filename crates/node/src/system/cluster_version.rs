@@ -256,10 +256,18 @@ pub enum Feature {
     /// with `holder_proof`: an earlier release drops the proof and would revoke a bound
     /// session for a copy of its old token that a later one refuses.
     SessionHolders,
+    /// Bounds on what one organization and one account keep in the system state: teams per
+    /// organization (`maxTeamsPerOrg`) and metadata bytes per organization and per owning
+    /// account (`maxMetadataBytesPerOrg`, `maxMetadataBytesPerAccount`), checked at apply
+    /// (`SystemState::check_state_caps`). No entry changes shape: apply reads the logged
+    /// version, so a log replays unchanged, and an earlier release, which would apply what
+    /// this one refuses, holds it below the version; so are the three quotas, which an earlier
+    /// release drops, written only from it.
+    StateCaps,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 57] = [
+pub const FEATURES: [Feature; 58] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -317,6 +325,7 @@ pub const FEATURES: [Feature; 57] = [
     Feature::DeploymentNeedsRecovery,
     Feature::DeploymentTransfer,
     Feature::SessionHolders,
+    Feature::StateCaps,
 ];
 
 impl Feature {
@@ -381,17 +390,21 @@ impl Feature {
             Self::DeploymentNeedsRecovery => "deploymentNeedsRecovery",
             Self::DeploymentTransfer => "deploymentTransfer",
             Self::SessionHolders => "sessionHolders",
+            Self::StateCaps => "stateCaps",
         }
     }
 
     /// Whether an entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
-    /// `InviteCreatorStanding` and `BackupKeyApprovers` are rules apply reads from the logged
-    /// version: no entry names them.
+    /// `InviteCreatorStanding`, `BackupKeyApprovers` and `StateCaps` are rules apply reads from
+    /// the logged version: no entry names them.
     #[must_use]
     pub const fn names_an_entry(self) -> bool {
         !matches!(
             self,
-            Self::HeldTeamGrants | Self::InviteCreatorStanding | Self::BackupKeyApprovers
+            Self::HeldTeamGrants
+                | Self::InviteCreatorStanding
+                | Self::BackupKeyApprovers
+                | Self::StateCaps
         )
     }
 
@@ -455,7 +468,7 @@ impl Feature {
             | Self::BackupKeyApprovers
             | Self::DeploymentNeedsRecovery
             | Self::DeploymentTransfer => "1.0.0-rc.38",
-            Self::SessionHolders => "1.0.0-rc.39",
+            Self::SessionHolders | Self::StateCaps => "1.0.0-rc.39",
         }
     }
 }
@@ -1375,7 +1388,8 @@ mod tests {
             })),
             Feature::HeldTeamGrants
             | Feature::InviteCreatorStanding
-            | Feature::BackupKeyApprovers => unreachable!("no entry names {feature:?}"),
+            | Feature::BackupKeyApprovers
+            | Feature::StateCaps => unreachable!("no entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",

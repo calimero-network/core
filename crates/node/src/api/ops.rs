@@ -835,6 +835,19 @@ async fn ops_quotas_set(
     if quotas.max_fuel_per_developer_per_day != 0 {
         node.require_current_release("a fuel cap").await?;
     }
+    // The bounds on the system state: an earlier release drops them, as it drops the fuel cap.
+    let defaults = crate::system::Quotas::default();
+    if (
+        quotas.max_teams_per_org,
+        quotas.max_metadata_bytes_per_org,
+        quotas.max_metadata_bytes_per_account,
+    ) != (
+        defaults.max_teams_per_org,
+        defaults.max_metadata_bytes_per_org,
+        defaults.max_metadata_bytes_per_account,
+    ) {
+        node.require_features(&[Feature::StateCaps]).await?;
+    }
     // Signed over the whole merged limits (`cluster / __set_quotas /
     // { quotas }`, 428 first), so a change made in between is not signed
     // over by mistake: the retry merges again and must match.
