@@ -177,19 +177,77 @@ Do A first (done). Do C when the control-plane **write** rate — mostly session
 and app/org creation — outgrows one three-voter group, folding in D. Treat B as
 an interim only; it does not scale with tenants.
 
+## Scope classification (the first real obstacle)
+
+Routing a command needs its [`Scope`]: which organization (if any) owns the
+change. The obstacle, found while wiring this up, is that **scope is not a pure
+function of the command**. Some commands name their organization directly
+(`CreateOrg`, `UpdateTeam`, an org-scoped approval). Many do not: `CreateApp`
+carries an `AppRecord` whose org is inside it, but `UpgradeApp`, `MoveApp`,
+`ScopeApps` and the session/recovery commands name an **app id** or an **account
+id** whose owning organization is only known by **reading system state**. So the
+scope layer models four cases — `Cluster`, `Org(id)`, `OfApp(id)`,
+`OfAccount(id)` — and resolving the last two to a tenant is a **read of the
+state**, i.e. a cross-shard read once the owning org lives in a different shard
+than the command is routed from. This is the same coupling that makes `CreateApp`
+read the fleet quota and the release, and it is why the migration is staged
+around the cross-shard-read design rather than a mechanical log split.
+
 ## What is in code today
 
-`crates/node/src/system/shard.rs` is the placement seam and nothing more:
+`crates/node/src/system/shard.rs` is the routing layer, gated off:
 
-- `ShardId` (`Root` | `Tenant(OrgId)`), `Scope` (`Cluster` | `Org`), `Placement`.
-- `area_placement(Area)` and `shard_for(area, scope)` — the table above, tested.
+- `ShardId` (`Root` | `Tenant(OrgId)`); `Scope` (`Cluster` | `Org` | `OfApp` |
+  `OfAccount`); `Placement` and `area_placement(Area)` (the area table above).
+- `tenant_of(scope, resolve_org)` resolves a scope to its owning organization,
+  reading state through `resolve_org` for the `OfApp`/`OfAccount` cases (the
+  cross-shard read; a `|_| None` resolver leaves it unresolved for now).
+- `shard_for(active, tenant)` is the **gate**: it returns `Tenant(org)` only when
+  sharding is active and the tenant resolved, otherwise `Root`. So wiring it into
+  the routers is behaviour-preserving until a later slice turns the gate on.
 - `resolve(&ShardId) -> GroupId` returns the single `SYSTEM_GROUP` for every
-  shard, so **routing is unchanged**. The migration gives each tenant shard its
-  own group id here and wires `resolve` into the system router
-  (`crates/node/src/system/routing.rs`) and `Node`'s read/write paths.
+  shard, so **routing is unchanged**; a later slice gives each tenant shard its
+  own group id here.
 
-Having the placement decision in one typed, tested place lets the rest of the
-node be written and reviewed against shards before any state is actually split.
+All of it is unit-tested and inert — nothing calls it on the hot path yet.
+
+## Migration plan (staged)
+
+Each slice compiles, is behaviour-preserving until the one that flips the gate,
+and is reviewed on its own. Ordered so the hard design (cross-shard reads) is
+settled before any state moves.
+
+1. **Routing layer, gated off** *(this slice)*. `shard.rs`: scope model,
+   `tenant_of`, the gated `shard_for`, `resolve`. No caller yet.
+2. **Scope extraction.** An exhaustive `scope_of(&SystemCmd) -> Scope` mirroring
+   `SystemCmd::area`, classifying every variant (the enum is large; this is where
+   the per-command org lookup for `OfApp`/`OfAccount` is pinned down). Tested
+   per-variant against the state the lookup reads.
+3. **Wire the seam into the routers, still gated off.** `system/routing.rs` and
+   `Node`'s system read/write paths ask `resolve(shard_for(active=false, …))`,
+   which is `SYSTEM_GROUP` for every command — a no-op that removes the
+   dead-code marker and proves the integration points.
+4. **Cross-shard reads.** The mechanism for a tenant shard to read root state
+   (fleet quota, a release) and owning-org lookups at a read index within O2's
+   freshness model. This is the keystone; everything above is cheap, this is not.
+5. **Tenant-group lifecycle.** Creating, opening, placing (reusing
+   `placement.rs`/`grow_voters`), moving and retiring a per-tenant Raft group of
+   the `SystemMachine`; routing a tenant's commands and reads to it.
+6. **The feature gate.** A real `Feature` in `system::cluster_version::FEATURES`
+   with its ship release, refused below the cluster version — deliberately **not**
+   added until this slice, because an entry in that release-versioned array is a
+   compatibility commitment that belongs with the code that first proposes a
+   tenant-sharding command, not with scaffolding.
+7. **The state-split migration + cutover.** Read the single system state, write
+   each org's slice into its tenant group, digest-verify each shard against the
+   source, then the declared one-way cutover (`[[cutover]]`, `!` in the PR title,
+   mdma's `CUTOVERS`) with its `upgrade_cases/` + `DeepCase`.
+
+Slices 1–3 are behaviour-preserving plumbing; 4 is the research; 5–7 are the
+migration proper and ship behind the gate and the cutover. This PR is slice 1.
+
+Having the routing decision in one typed, tested place lets the rest of the node
+be written and reviewed against shards before any state is actually split.
 
 ## Open questions / risks
 

@@ -1,38 +1,35 @@
 //! Where a system command's state lives once the system group shards by tenant.
 //!
-//! **This is a seam, not yet a behaviour change.** Today the control plane is a
-//! single Raft group of three voters (`SYSTEM_GROUP`, `membership::SYSTEM_VOTERS`)
-//! holding every [`Area`]. At fleet scale that one group is the ceiling for
-//! control-plane writes. The scalable split is by
-//! **tenant** (organization): an organization's own control-plane state —​ its
-//! members and teams, its apps, its sessions —​ moves to a per-tenant shard,
-//! while cluster-wide state (the fleet, the package registry, the sign-up and
-//! deployment policy) stays in a single **root** group. Leaders then spread
-//! across nodes per tenant instead of funnelling through one.
+//! **This is the routing layer of the migration, still gated off.** Today the
+//! control plane is a single Raft group of three voters (`SYSTEM_GROUP`,
+//! `membership::SYSTEM_VOTERS`) holding every [`Area`]. At fleet scale that one
+//! group is the ceiling for control-plane writes. The scalable split is by
+//! **tenant** (organization): an organization's own control-plane state moves to
+//! a per-tenant shard, while cluster-wide state stays in a single **root** group.
 //!
-//! This module encodes only the first, safe step: *which shard each command's
-//! scope belongs to*. [`resolve`] maps every shard to the single existing system
-//! group, so nothing moves yet; the migration fills this seam behind a feature
-//! gate and a declared cutover (see the design note linked below). Keeping the
-//! placement decision in one typed place is what lets the rest of the node be
-//! written against shards before any state is actually split.
+//! This module decides *which shard a command's scope belongs to* and resolves a
+//! shard to a Raft group. The decision is gated: [`shard_for`] routes everything
+//! to the single [`SYSTEM_GROUP`] until tenant sharding is active **and** the
+//! command's tenant is known, so wiring it into the routers changes no behaviour
+//! until a later slice turns the gate on and creates per-tenant groups. Keeping
+//! the decision in one typed, tested place lets the rest of the node be written
+//! against shards before any state is split.
 //!
-//! Design: <https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>.
-//! The coupling that makes **tenant** the right seam (and `Area` the wrong one)
-//! —​ a single `CreateApp` reads the fleet quota, the caller's org membership and
-//! the release —​ is argued there and in [`Placement::Scoped`].
+//! The migration plan and the cross-shard reads this implies are in the design
+//! note: <https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>.
 
 #![allow(
     dead_code,
-    reason = "the tenant-shard placement seam: the migration wires it into routing; \
-              until then only its own tests exercise it"
+    reason = "the tenant-shard routing layer: later migration slices wire it into \
+              the system routers and turn the gate on; until then only its own tests \
+              exercise it"
 )]
 
 use calimero_log::GroupId;
 
 use crate::node::SYSTEM_GROUP;
 use crate::system::Area;
-use crate::types::OrgId;
+use crate::types::{AccountId, AppId, OrgId};
 
 /// Which control-plane shard a piece of state lives in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,15 +42,23 @@ pub(crate) enum ShardId {
     Tenant(OrgId),
 }
 
-/// The scope a system command acts on, taken from the command itself (its
-/// `actor`, its target org, or neither). A command that names no organization is
-/// cluster-wide.
+/// The scope a system command acts on, read from the command itself. Some
+/// commands name their organization directly ([`Scope::Org`]); others name an
+/// app or an account whose **owning organization is the tenant**, read from
+/// system state at routing time ([`Scope::OfApp`], [`Scope::OfAccount`]) — the
+/// cross-shard read the migration must perform, and the reason scope is not a
+/// pure function of the command (see the design note). A command that names no
+/// organization at all is cluster-wide ([`Scope::Cluster`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Scope {
     /// Cluster-wide: no single organization owns the change.
     Cluster,
-    /// Scoped to one organization.
+    /// Scoped to the named organization.
     Org(OrgId),
+    /// Scoped to the organization that owns the named app.
+    OfApp(AppId),
+    /// Scoped to the organization context of the named account.
+    OfAccount(AccountId),
 }
 
 /// How an [`Area`]'s commands place: the structural half of the decision, before
@@ -64,26 +69,20 @@ pub(crate) enum Placement {
     Root,
     /// Always a tenant shard: the state belongs to one organization.
     Tenant,
-    /// Governance —​ follows the command's scope. An org-scoped approval, update
+    /// Governance — follows the command's scope. An org-scoped approval, update
     /// policy or deployment lives in that tenant's shard; a cluster-wide one in
-    /// the root group ([`shard_for`]).
+    /// the root group.
     Scoped,
 }
 
 /// Where an [`Area`]'s state belongs. The split follows the data, not the code
-/// layout: the fleet, packages, compute accounting, the sign-up policy and the
-/// cluster-wide deployment/update policy are root; an organization's structure,
-/// its apps and its accounts' sessions and recovery are tenant; the three
-/// governance areas depend on each command's scope.
-///
-/// `Accounts` is the subtle one. An account is a cluster-wide identity, but the
-/// write-heavy part —​ sessions, refreshes and API keys —​ is what the control
-/// plane's write rate is mostly made of, and each belongs to the account's
-/// organization context, so the area places as `Tenant`; the account-identity
-/// records a tenant needs are read across shards (or cached), the same
-/// cross-shard read `CreateApp` already needs for the fleet quota and the
-/// release. That coupling, not the area boundary, is why the design shards by
-/// tenant rather than by area.
+/// layout: the fleet, packages, compute accounting and the sign-up policy are
+/// root; an organization's structure, its apps and its accounts' sessions and
+/// recovery are tenant; the three governance areas depend on each command's
+/// scope. `Accounts` places as `Tenant` because the write-heavy part (sessions,
+/// refreshes, API keys) belongs to the account's organization context, with the
+/// account-identity records read across shards — the same coupling `CreateApp`
+/// already has.
 pub(crate) const fn area_placement(area: Area) -> Placement {
     match area {
         Area::Fleet | Area::Packages | Area::Compute | Area::SignUp => Placement::Root,
@@ -92,21 +91,37 @@ pub(crate) const fn area_placement(area: Area) -> Placement {
     }
 }
 
-/// The shard a command places in, from its area and the scope it acts on. A
-/// `Tenant` or scoped-to-an-org command needs a `Scope::Org`; a root or
-/// cluster-scoped one ignores the scope. A `Tenant`/`Scoped` area with a
-/// `Cluster` scope has no tenant to place in and falls back to the root group,
-/// where the single-group deployment keeps every such command today.
-pub(crate) fn shard_for(area: Area, scope: &Scope) -> ShardId {
-    match (area_placement(area), scope) {
-        (Placement::Root, _) | (_, Scope::Cluster) => ShardId::Root,
-        (Placement::Tenant | Placement::Scoped, Scope::Org(org)) => ShardId::Tenant(org.clone()),
+/// The organization a command's scope belongs to, or `None` for cluster-wide.
+/// For [`Scope::OfApp`] and [`Scope::OfAccount`] the owning organization is read
+/// from system state through `resolve_org` (the cross-shard read); a resolver
+/// that cannot answer (or the `|_| None` used before the state is wired in)
+/// leaves the tenant unresolved, and [`shard_for`] then routes to the root.
+pub(crate) fn tenant_of(
+    scope: &Scope,
+    resolve_org: impl Fn(&Scope) -> Option<OrgId>,
+) -> Option<OrgId> {
+    match scope {
+        Scope::Cluster => None,
+        Scope::Org(org) => Some(org.clone()),
+        Scope::OfApp(_) | Scope::OfAccount(_) => resolve_org(scope),
+    }
+}
+
+/// The shard a command routes to, gated. Until tenant sharding is `active`, or
+/// while a tenant-scoped command's organization is unresolved, everything routes
+/// to the single root group — so wiring this into the routers is behaviour-
+/// preserving until a later slice turns the gate on and creates per-tenant
+/// groups.
+pub(crate) fn shard_for(active: bool, tenant: Option<OrgId>) -> ShardId {
+    match (active, tenant) {
+        (true, Some(org)) => ShardId::Tenant(org),
+        _ => ShardId::Root,
     }
 }
 
 /// The Raft group a shard is served by. Until the system log is split every
-/// shard —​ root and tenant alike —​ is the single [`SYSTEM_GROUP`], so routing
-/// is unchanged; the migration gives each tenant shard its own group id here.
+/// shard — root and tenant alike — is the single [`SYSTEM_GROUP`], so routing is
+/// unchanged; a later slice gives each tenant shard its own group id here.
 pub(crate) const fn resolve(_shard: &ShardId) -> GroupId {
     SYSTEM_GROUP
 }
@@ -119,13 +134,6 @@ mod tests {
     fn cluster_wide_areas_place_in_the_root() {
         for area in [Area::Fleet, Area::Packages, Area::Compute, Area::SignUp] {
             assert_eq!(area_placement(area), Placement::Root, "{area:?}");
-            assert_eq!(shard_for(area, &Scope::Cluster), ShardId::Root, "{area:?}");
-            // A root area ignores an org scope: it has no tenant home.
-            assert_eq!(
-                shard_for(area, &Scope::Org("acme".into())),
-                ShardId::Root,
-                "{area:?}"
-            );
         }
     }
 
@@ -133,32 +141,60 @@ mod tests {
     fn an_organizations_own_areas_place_in_its_tenant_shard() {
         for area in [Area::Apps, Area::Accounts, Area::Recovery, Area::Orgs] {
             assert_eq!(area_placement(area), Placement::Tenant, "{area:?}");
-            assert_eq!(
-                shard_for(area, &Scope::Org("acme".into())),
-                ShardId::Tenant("acme".into()),
-                "{area:?}"
-            );
         }
     }
 
     #[test]
-    fn governance_follows_the_commands_scope() {
+    fn governance_areas_follow_the_commands_scope() {
         for area in [Area::Approvals, Area::Deployments, Area::Updates] {
             assert_eq!(area_placement(area), Placement::Scoped, "{area:?}");
-            // An org-scoped governance command lives in that tenant's shard...
-            assert_eq!(
-                shard_for(area, &Scope::Org("acme".into())),
-                ShardId::Tenant("acme".into()),
-                "{area:?}"
-            );
-            // ...a cluster-wide one in the root.
-            assert_eq!(shard_for(area, &Scope::Cluster), ShardId::Root, "{area:?}");
         }
+    }
+
+    #[test]
+    fn a_named_org_is_its_own_tenant_a_cluster_scope_has_none() {
+        let none = |_: &Scope| None;
+        assert_eq!(tenant_of(&Scope::Cluster, none), None);
+        assert_eq!(
+            tenant_of(&Scope::Org("acme".into()), none),
+            Some("acme".into())
+        );
+    }
+
+    #[test]
+    fn an_app_or_account_scope_resolves_its_org_from_state() {
+        // The resolver stands in for the cross-shard read of the owning org.
+        let owner = |s: &Scope| match s {
+            Scope::OfApp(_) | Scope::OfAccount(_) => Some("acme".to_owned()),
+            _ => None,
+        };
+        assert_eq!(
+            tenant_of(&Scope::OfApp("app1".into()), owner),
+            Some("acme".into())
+        );
+        assert_eq!(
+            tenant_of(&Scope::OfAccount("alice".into()), owner),
+            Some("acme".into())
+        );
+        // Before the state is wired in, the tenant is unresolved.
+        assert_eq!(tenant_of(&Scope::OfApp("app1".into()), |_| None), None);
+    }
+
+    #[test]
+    fn the_gate_keeps_everything_on_the_root_until_sharding_is_active() {
+        // Off: even a known tenant routes to the root group.
+        assert_eq!(shard_for(false, Some("acme".into())), ShardId::Root);
+        assert_eq!(shard_for(false, None), ShardId::Root);
+        // On: a known tenant routes to its shard; an unresolved one still roots.
+        assert_eq!(
+            shard_for(true, Some("acme".into())),
+            ShardId::Tenant("acme".into())
+        );
+        assert_eq!(shard_for(true, None), ShardId::Root);
     }
 
     #[test]
     fn every_shard_resolves_to_the_single_group_today() {
-        // The seam changes no routing until the system log is split.
         assert_eq!(resolve(&ShardId::Root), SYSTEM_GROUP);
         assert_eq!(resolve(&ShardId::Tenant("acme".into())), SYSTEM_GROUP);
     }
