@@ -1521,6 +1521,26 @@ impl Node {
         }
     }
 
+    /// Wait until this node hosts organization `org`'s tenant group and its
+    /// applied state holds the org (the node's reconcile forms and seeds it once
+    /// `CreateOrg` commits on root), so a command routed to it finds it. Gives up
+    /// at `deadline`; the write then falls back to the root group and the caller
+    /// surfaces its refusal, as a system write that never found a leader does.
+    async fn await_tenant_ready(&self, org: &crate::types::OrgId, deadline: tokio::time::Instant) {
+        loop {
+            let ready = self
+                .tenants
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(org)
+                .is_some_and(|g| g.read_local(|m, _| m.state.orgs.contains_key(org)));
+            if ready || tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Organization `org`'s record, read from the shard that owns it
     /// ([`Node::sys_org`]). The membership methods on [`SystemState`] take the
     /// org this returns, so they read an app's organization from its tenant
@@ -1611,6 +1631,15 @@ impl Node {
         // count of tries, which a leaderless group used up in about 7.5 s
         // (`a_system_write_waits_for_a_leader_until_its_deadline`).
         let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
+        // A command bound for a tenant group must find it formed and seeded with
+        // its org: an organization's first command can arrive before the node
+        // has opened and seeded the tenant group its `CreateOrg` allocated (that
+        // happens on the next reconcile). Wait for it, rather than fall back to
+        // the root group, where role-aware apply refuses a command its area has
+        // moved off root.
+        if let crate::system::shard::ShardId::Tenant(org) = &shard {
+            self.await_tenant_ready(org, deadline).await;
+        }
         for attempt in 0_u32.. {
             let Ok(written) =
                 tokio::time::timeout_at(deadline, self.system_shard(&shard).write(bytes.clone()))
