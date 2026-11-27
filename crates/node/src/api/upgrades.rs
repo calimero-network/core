@@ -301,7 +301,7 @@ pub(crate) async fn upgrade_app(
     owner_holds(node, |g| g.app_upgrades, "app upgrades")?;
     let owner_approves = owner_approves(node).await;
     if let Some(e) = node.sys(|s| upgrade_refusal(s, &app, &account, owner_approves)) {
-        return Err(e);
+        return Err(super::apps::hidden_from(node, &app, Some(&account), e));
     }
     // A version alone means the app's own package and service: the release
     // it runs, not merely one shipping its WASM; named by the record even once

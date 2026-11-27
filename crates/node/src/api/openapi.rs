@@ -2538,12 +2538,12 @@ fn operations() -> Vec<Op> {
         delete("/apps/{app}", "app_delete", Session, "Delete an app")
             .about("The owner or an organization admin. An instance whose release created apps with it (`uses` with `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).")
             .ok("#AppDeleted")
-            .errors(&[(409, "UNIT_MEMBER"), (409, "FEATURE_NOT_ACTIVE")]),
+            .errors(&[(404, "NOT_FOUND"), (409, "UNIT_MEMBER"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/metadata", "app_metadata", SignedIn, "Set an app's metadata")
             .about("The owner or an organization admin; 16 KiB at most. `metadata` is the caller's own JSON, free-form, kept as given.")
             .json::<super::MetadataBody>("#MetadataBody")
             .ok("{}")
-            .errors(&[(413, "TOO_LARGE")]),
+            .errors(&[(404, "NOT_FOUND"), (413, "TOO_LARGE")]),
         get("/apps/{app}/storage", "app_storage", AppAccess, "What an app stores")
             .about("Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).")
             .ok("#AppStorage"),
@@ -2619,7 +2619,7 @@ fn operations() -> Vec<Op> {
             .json::<super::UpgradeBody>("{ bundle?: string, package?: string, version?: string, service?: string, confirm?: #Confirm, migrate?: string }")
             .ok("#UpgradeApplied")
             .step_up()
-            .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "OUTSIDE_DEPLOYMENT"), (409, "OUTSIDE_UNIT_RANGE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (409, "FEATURE_NOT_ACTIVE"), (422, "UPGRADE_FAILED")]),
+            .errors(&[(404, "NOT_FOUND"), (400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "OUTSIDE_DEPLOYMENT"), (409, "OUTSIDE_UNIT_RANGE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (409, "FEATURE_NOT_ACTIVE"), (422, "UPGRADE_FAILED")]),
         get("/apps/{app}/update", "app_update", AppAccess, "Whether an update is available for an app")
             .about("For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else \"Nothing changes where your data goes\" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.")
             .ok("#UpdateView")
@@ -2679,7 +2679,8 @@ fn operations() -> Vec<Op> {
         post("/apps/{app}/access", "app_access", Session, "Set who may reach an app")
             .about("`grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.")
             .json::<super::AccessBody>("{ grants: #Grant[] }")
-            .ok("{}"),
+            .ok("{}")
+            .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/invites", "app_invite_create", AccountHolder, "Invite someone to an instance")
             .about("A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. `412` first.")
             .json::<super::AppInviteBody>("{ ttlSecs?: uint, uses?: uint, scope?: any, confirm?: #Confirm }")
@@ -2716,10 +2717,12 @@ fn operations() -> Vec<Op> {
             .about("The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.")
             .json::<super::TransferBody>("{ to: string, confirm?: #Confirm }")
             .ok("null")
-            .step_up(),
+            .step_up()
+            .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/delegations", "app_delegations", SignedIn, "What you let an app do as you")
             .about("The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.")
-            .ok("#Delegations"),
+            .ok("#Delegations")
+            .errors(&[(404, "NOT_FOUND")]),
         put("/apps/{app}/delegations/{target}", "app_delegate", AccountHolder, "Let an app call another as you")
             .about("The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none. A session opened on an app's frontend is refused (`403`): the app asks on the consent page instead (`POST /consent/requests { kind: \"delegate\" }`).")
             .json::<super::apps::DelegateBody>("{ confirm?: #Confirm }")
@@ -2735,7 +2738,7 @@ fn operations() -> Vec<Op> {
             .json::<super::MoveBody>("{ toOrg: string, bringMembers?: bool, confirm?: #Confirm }")
             .ok("#AppMoved")
             .step_up()
-            .errors(&[(409, "FEATURE_NOT_ACTIVE")]),
+            .errors(&[(404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         get("/apps/{app}/links", "app_links", AppAccess, "List an app's links to the apps its release uses")
             .about("One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.")
             .ok("#AppLinkList"),
@@ -2744,13 +2747,13 @@ fn operations() -> Vec<Op> {
             .json::<super::apps::LinkBody>("{ app: string, confirm?: #Confirm }")
             .ok("#LinkRow")
             .step_up()
-            .errors(&[(400, "NOT_ATTACHABLE"), (403, "FORBIDDEN"), (409, "NOT_AN_ATTACH_REFERENCE"), (409, "WRONG_PACKAGE"), (409, "FEATURE_NOT_ACTIVE")]),
+            .errors(&[(404, "NOT_FOUND"), (400, "NOT_ATTACHABLE"), (403, "FORBIDDEN"), (409, "NOT_AN_ATTACH_REFERENCE"), (409, "WRONG_PACKAGE"), (409, "FEATURE_NOT_ACTIVE")]),
         delete("/apps/{app}/links/{name}", "app_unlink", AccountHolder, "Detach an app attached to an app")
             .about("Whoever manages the app. A member made with the instance is never detached.")
             .json::<super::apps::UnlinkBody>("{ confirm?: #Confirm }")
             .ok("{}")
             .step_up()
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_ATTACHED"), (409, "FEATURE_NOT_ACTIVE")]),
+            .errors(&[(404, "NOT_FOUND"), (403, "FORBIDDEN"), (404, "NOT_ATTACHED"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/blobs", "blob_upload", AppAccess, "Upload a blob")
             .about("A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.")
             .query::<super::BlobUploadQuery>("{ sealed?: bool }")
@@ -2887,7 +2890,8 @@ fn operations() -> Vec<Op> {
         post("/orgs/{org}/metadata", "org_metadata", SignedIn, "Set an organization's metadata")
             .about("`metadata` is the caller's own JSON, free-form, kept as given.")
             .json::<super::MetadataBody>("#MetadataBody")
-            .ok("{}"),
+            .ok("{}")
+            .errors(&[(404, "NOT_FOUND")]),
         get("/orgs/{org}/usage", "org_usage", SignedIn, "An organization's usage")
             .about("An admin: how many apps the organization develops, what their runs used today (decimal strings) and the cluster's quotas; a member gets `403`.")
             .ok("#OrgUsage")
@@ -2912,7 +2916,8 @@ fn operations() -> Vec<Op> {
         post("/orgs/{org}/members/{account}/metadata", "member_metadata", SignedIn, "Set a member's metadata")
             .about("`metadata` is the caller's own JSON, free-form, kept as given.")
             .json::<super::MetadataBody>("#MetadataBody")
-            .ok("{}"),
+            .ok("{}")
+            .errors(&[(404, "NOT_FOUND")]),
         get("/orgs/{org}/members", "org_members", AccountHolder, "Members' lockout risk")
             .about("`detail=security` (the only listing: without it, or with another value, `400 BAD_REQUEST`), the owner or an admin: each member's passkeys (`1`, `2` or `\"3+\"`), recovery code, last active UTC day and sessions. `403` below admin, `404` outside the organization.")
             .query::<super::MembersQuery>(r#"{ detail?: "security" }"#)
@@ -2943,14 +2948,16 @@ fn operations() -> Vec<Op> {
         post("/orgs/{org}/teams", "team_create", Session, "Create a team")
             .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only). A package-bound session: only its own package's teams (its app team and the teams below it): `parent` one of them.")
             .json::<super::TeamBody>("#TeamBody")
-            .ok("#TeamCreated"),
+            .ok("#TeamCreated")
+            .errors(&[(404, "NOT_FOUND")]),
         get("/orgs/{org}/teams/{team}", "team_get", SignedIn, "One team")
             .ok("#TeamView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/teams/{team}", "team_update", Session, "Update a team")
             .about("Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team, moved only within.")
             .json::<super::TeamUpdateBody>("#TeamUpdateBody")
-            .ok("{}"),
+            .ok("{}")
+            .errors(&[(404, "NOT_FOUND")]),
         delete("/orgs/{org}/teams/{team}", "team_delete", Session, "Delete a team")
             .about("With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.")
             .opt_json::<super::TeamDeleteBody>("#TeamDeleteBody")
