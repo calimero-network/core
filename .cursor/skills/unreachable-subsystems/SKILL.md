@@ -70,7 +70,7 @@ Both look alive. What tracing outward found:
   string `"Did not dial"` in a log message.** Zero real consumers.
 - `ClientKey` was used by `GetContextClientKeysResponse`, which was used by
   `Client::get_context_client_keys`, which was used by
-  `meroctl context get <ctx> client-keys` — a **shipped subcommand**.
+  the `context get <ctx> client-keys` subcommand — a **shipped subcommand**.
 
 That last chain is the instructive one. It has a CLI anchor, so it should be
 alive. But the client method calls `admin-api/contexts/{id}/client-keys`, and

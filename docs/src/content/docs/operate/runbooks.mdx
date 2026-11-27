@@ -319,7 +319,7 @@ FEATURE_NOT_ACTIVE` while an older node is registered):
 ```bash
 # on a machine that is not a node; keep operator-backup.key offline
 meroctl ops recovery-keygen --out operator-backup.key
-meroctl --operator-key-file operator.key ops backup-key --public-key <publicKey printed above>
+meroctl --operator-key-file operator.key ops backup-key --public-key <publicKey>
 meroctl ops backup-key          # { holder: "operator", key: { publicKey, setAt, setBy }, apps }
 ```
 
