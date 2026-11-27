@@ -95,17 +95,12 @@ fn ticket_call() -> Value {
 }
 
 #[test]
-fn a_prompt_is_posted_as_json_with_its_retry_key_and_no_api_key() {
+fn a_prompt_is_posted_as_json_with_a_retry_key_and_no_api_key() {
     let request = http_request(&ask("Capital of France?"), "run-7");
     assert_eq!(request.method, "POST");
     assert_eq!(request.url, ENDPOINT);
-    assert_eq!(
-        request.headers,
-        [
-            ("content-type".to_owned(), "application/json".to_owned()),
-            ("idempotency-key".to_owned(), "run-7".to_owned()),
-        ]
-    );
+    let names: Vec<&str> = request.headers.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["content-type", "idempotency-key"]);
     assert_eq!(
         body_of(&request),
         json!({
@@ -284,4 +279,40 @@ fn an_error_reaches_the_app_as_a_typed_code() {
     for (e, code, fields) in cases {
         assert_eq!(AppError::from(e), AppError::with_fields(code, fields));
     }
+}
+
+fn retry_key(prompt: &Prompt, scope: &str) -> String {
+    let request = http_request(prompt, scope);
+    let (_, key) = request
+        .headers
+        .iter()
+        .find(|(n, _)| n == "idempotency-key")
+        .expect("a retry key");
+    key.clone()
+}
+
+#[test]
+fn the_retry_key_is_stable_per_request_and_differs_across_apps_and_prompts() {
+    let paris = ask("Capital of France?");
+    let rome = ask("Capital of Italy?");
+    let key = retry_key(&paris, "app-1\0a.2.3.0");
+    assert_eq!(
+        key,
+        retry_key(&paris, "app-1\0a.2.3.0"),
+        "a retry sends the same key"
+    );
+    assert_ne!(
+        key,
+        retry_key(&rome, "app-1\0a.2.3.0"),
+        "a second prompt in one action"
+    );
+    assert_ne!(
+        key,
+        retry_key(&paris, "app-2\0a.2.3.0"),
+        "another app at the same log position"
+    );
+    assert!(
+        !key.contains("a.2.3.0"),
+        "the log position is not sent as is"
+    );
 }

@@ -13,6 +13,7 @@ use calimero_sdk::prelude::*;
 use calimero_sdk::Request;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 /// NEAR AI Cloud's chat completions: the URL an app's manifest declares in `outbound`.
 pub const ENDPOINT: &str = "https://cloud-api.near.ai/v1/chat/completions";
@@ -193,7 +194,7 @@ impl From<Error> for AppError {
 /// [`Error`]: not sent, an error status, or an answer with nothing to use.
 pub fn chat(ctx: &mut ActionCtx, request: &Prompt) -> Result<Answer, Error> {
     let response = ctx
-        .fetch(&http_request(request, &ctx.key()))
+        .fetch(&http_request(request, &retry_scope(ctx)))
         .map_err(|e| Error::NotSent {
             reason: fetch_reason(e),
         })?;
@@ -208,14 +209,26 @@ fn fetch_reason(e: AppError) -> String {
     }
 }
 
+/// This app's action, as the node names it on every attempt.
+fn retry_scope(ctx: &ActionCtx) -> String {
+    format!("{}\0{}", env::app_id(), ctx.key())
+}
+
 /// The POST of `prompt`; no `authorization`: the node attaches the bound key.
-/// `retry_key` is stable across the node's retries of the action, so NEAR AI answers a retry once.
-fn http_request(prompt: &Prompt, retry_key: &str) -> Request {
+/// The retry key hashes app, action and body: stable across retries, apart across apps and prompts.
+fn http_request(prompt: &Prompt, scope: &str) -> Request {
     // SAFETY: every map key is a `String`, and serde_json writes a non-finite float as null.
     let body = serde_json::to_vec(prompt).expect("a prompt is JSON");
+    let retry_key = hex::encode(
+        Sha256::new()
+            .chain_update(scope.as_bytes())
+            .chain_update([0])
+            .chain_update(&body)
+            .finalize(),
+    );
     Request::post(ENDPOINT, body)
         .header("content-type", "application/json")
-        .header("idempotency-key", retry_key)
+        .header("idempotency-key", &retry_key)
 }
 
 /// The part of NEAR AI's response kept; serde skips the rest.
