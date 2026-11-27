@@ -7550,6 +7550,70 @@ async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
     }
 }
 
+/// Anonymous `/attestation` requests that keep a node's quote queue full,
+/// each quote taking a second as a TDX quote does, must not keep a new client
+/// from connecting: each new `Client` attests the node (its interval quote,
+/// with its own nonce signed by the key that quote binds) and signs in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn new_clients_attest_and_sign_in_while_the_quote_queue_is_full() {
+    const LOADERS: usize = 40;
+    const CLIENTS: usize = 5;
+    let c = Cluster::start(3).await;
+    let (_alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let loaded = c.nodes[0].as_ref().unwrap().node.config.public_url.clone();
+    calimero_node::testing::slow_quotes(&loaded, Duration::from_secs(1));
+    let url = c.urls[0].clone();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let loaders: Vec<_> = (0..LOADERS)
+        .map(|_| {
+            let (url, stop) = (url.clone(), std::sync::Arc::clone(&stop));
+            tokio::spawn(async move {
+                let http = reqwest::Client::new();
+                let mut busy = 0_u32;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let nonce = hex::encode(calimero_identity::random::<32>());
+                    let Ok(r) = http
+                        .get(format!("{url}attestation?nonce={nonce}"))
+                        .send()
+                        .await
+                    else {
+                        continue;
+                    };
+                    if r.status().as_u16() == 503 {
+                        busy += 1;
+                    }
+                }
+                busy
+            })
+        })
+        .collect();
+    // The queue is full before the first client connects.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let mut failed = Vec::new();
+    for _ in 0..CLIENTS {
+        let client = c.client(0);
+        let answer =
+            tokio::time::timeout(Duration::from_secs(10), client.sign_in(&mut pk)).await;
+        match answer {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => failed.push(format!("{e:#}")),
+            Err(_) => failed.push("no answer in 10 s".to_owned()),
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut busy = 0;
+    for l in loaders {
+        busy += l.await.unwrap();
+    }
+    assert!(busy > 0, "the anonymous quote queue was never full");
+    assert!(
+        failed.is_empty(),
+        "{} of {CLIENTS} new clients could not attest and sign in: {failed:?}",
+        failed.len()
+    );
+}
+
 /// A system write the group cannot commit answers `503 UNAVAILABLE` in
 /// bounded time instead of waiting forever. eu-shared-2 (2026-10-30): its
 /// system group could not commit, and a sign-up and a node registration each

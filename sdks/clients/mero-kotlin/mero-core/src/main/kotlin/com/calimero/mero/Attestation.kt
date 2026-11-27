@@ -1,8 +1,10 @@
 package com.calimero.mero
 
 import com.calimero.mero.crypto.Hex
+import com.calimero.mero.crypto.concat
 import com.calimero.mero.crypto.fromBase64
 import com.calimero.mero.crypto.randomBytes
+import com.calimero.mero.crypto.sha256
 import com.calimero.mero.http.PlainJsonHttp
 import com.calimero.mero.http.trimBase
 import com.calimero.mero.tee.DEFAULT_COLLATERAL_MIRROR
@@ -47,6 +49,11 @@ import okhttp3.OkHttpClient
  * not be a debug TD; and its registers must be the release's image for the trusted profile,
  * `locked-read-only` unless a debug profile is explicitly allowed. Nothing here reads the
  * environment: mock quotes pass only with `allowMock`.
+ *
+ * The client asks for the interval form (`form=interval`): the node answers from a quote it makes
+ * once a minute over an Ed25519 key of its own and signs this request's nonce with that key, so no
+ * quote is made per request. A node that does not know the form answers a quote over this nonce,
+ * checked as above. Spec: https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes
  */
 
 /** The oldest mero-tee release core's Rust client trusts by default (`attest::DEFAULT_MIN_RELEASE`). */
@@ -54,6 +61,21 @@ const val DEFAULT_MIN_RELEASE: String = "2.3.109"
 
 /** The mock quote format development clusters use. */
 const val MOCK_QUOTE_HEADER: String = "MOCK_TDX_QUOTE_V1"
+
+/** The `form` that asks `GET /attestation` for the interval form (core's `INTERVAL_FORM`). */
+const val INTERVAL_FORM: String = "interval"
+
+/** Domain of an interval quote's binding (core's `ATTEST_INTERVAL_KEY_DOMAIN`). */
+const val INTERVAL_KEY_DOMAIN: String = "calimero.tee-attest.interval-key.v1"
+
+/** Domain of what an interval key signs (core's `ATTEST_INTERVAL_SIG_DOMAIN`). */
+const val INTERVAL_SIG_DOMAIN: String = "calimero.tee-attest.interval-sig.v1\u0000"
+
+/** The oldest interval quote taken, by its `issuedAt` and this clock (core's `INTERVAL_QUOTE_MAX_AGE_SECS`). */
+const val INTERVAL_QUOTE_MAX_AGE_SECS: Long = 300
+
+/** How far ahead of this clock an interval quote may be dated (core's `INTERVAL_QUOTE_MAX_SKEW_SECS`). */
+const val INTERVAL_QUOTE_MAX_SKEW_SECS: Long = 60
 
 /** Where [CloudReleasePolicy] gets the release's signed measurements from. Untrusted either way. */
 sealed interface ReleaseSource {
@@ -165,6 +187,8 @@ data class CloudPolicy(
     val verifyQuote: VerifyTransportQuote? = null,
     /** The app bundle hash (hex) the quote must bind, when talking to one app. */
     val appHash: String? = null,
+    /** The current time in milliseconds, which an interval quote's age is judged by. For tests. */
+    val now: () -> Long = System::currentTimeMillis,
 ) {
     companion object {
         /** Mock attestation allowed: `merod local` and other `--dev` clusters only. */
@@ -193,7 +217,71 @@ data class AttestationDoc(
     val cluster: String = "",
     val node: Long = 0,
     val mock: Boolean = false,
+    /** With `form=interval`, from a node that has a current interval quote. */
+    val interval: IntervalProof? = null,
 )
+
+/** What a `form=interval` answer adds (core's `IntervalProof`). */
+@Serializable
+data class IntervalProof(
+    /** The interval key (Ed25519) the quote binds, hex. */
+    val key: String,
+    /** The first half of the quote's report data, which the node chose, hex. */
+    val quoteNonce: String,
+    /** When the node made the quote, Unix seconds by its clock. */
+    val issuedAt: Long,
+    /** Ed25519 over [intervalMessage], hex. */
+    val signature: String,
+)
+
+private fun u64be(n: Long): ByteArray = ByteArray(8) { i -> (n ushr (56 - 8 * i)).toByte() }
+
+/** An interval quote's report data after its nonce (core's `interval_key_binding`). */
+fun intervalKeyBinding(
+    transportKey: ByteArray,
+    intervalKey: ByteArray,
+    issuedAt: Long,
+): ByteArray = sha256(concat(INTERVAL_KEY_DOMAIN.encodeToByteArray(), transportKey, intervalKey, u64be(issuedAt)))
+
+/** What an interval key signs for one request (core's `interval_message`). */
+fun intervalMessage(
+    nonce: ByteArray,
+    appHash: ByteArray,
+    transportKey: ByteArray,
+): ByteArray = concat(INTERVAL_SIG_DOMAIN.encodeToByteArray(), nonce, appHash, transportKey)
+
+/**
+ * The interval form (core's `verify_interval`): the quote is fresh by [CloudPolicy.now], the interval
+ * key signed this [nonce], [appHash] and [transportKey], and the quote binds that key, the transport
+ * key and the time. Throws [TeeTrustException] when it does not check out.
+ */
+@Suppress("ThrowsCount", "LongParameterList")
+internal suspend fun verifyInterval(
+    doc: AttestationDoc,
+    interval: IntervalProof,
+    nonce: ByteArray,
+    appHash: ByteArray,
+    transportKey: ByteArray,
+    policy: CloudPolicy,
+    httpClient: OkHttpClient,
+) {
+    val now = policy.now() / 1000
+    if (interval.issuedAt > now + INTERVAL_QUOTE_MAX_SKEW_SECS) {
+        throw TeeTrustException("The interval quote is dated ${interval.issuedAt - now}s ahead of this clock")
+    }
+    if (now - interval.issuedAt > INTERVAL_QUOTE_MAX_AGE_SECS) {
+        throw TeeTrustException(
+            "The interval quote is ${now - interval.issuedAt}s old, more than the ${INTERVAL_QUOTE_MAX_AGE_SECS}s this client takes",
+        )
+    }
+    val key = Hex.decode(interval.key, "interval.key", 32)
+    val signature = Hex.decode(interval.signature, "interval.signature", 64)
+    if (!verifyStrict(key, intervalMessage(nonce, appHash, transportKey), signature)) {
+        throw TeeTrustException("The interval key did not sign this nonce, app and transport key")
+    }
+    val quoteNonce = Hex.decode(interval.quoteNonce, "interval.quoteNonce", 32)
+    verifyQuoteBinding(doc, quoteNonce, intervalKeyBinding(transportKey, key, interval.issuedAt), policy, "interval key", httpClient)
+}
 
 /** The release a node says it runs. Its claim only: the quote must match it. */
 @Serializable
@@ -354,6 +442,7 @@ suspend fun fetchAttestedKey(
             .toHttpUrl()
             .newBuilder()
             .addQueryParameter("nonce", nonce)
+            .addQueryParameter("form", INTERVAL_FORM)
             .apply { policy.appHash?.let { addQueryParameter("appHash", it) } }
             .build()
             .toString()
@@ -367,6 +456,11 @@ suspend fun fetchAttestedKey(
         }
     val transportKey = Hex.decode(doc.transportKey, "transportKey", 32)
     val inner = policy.appHash?.let { Hex.decode(it, "appHash", 32) } ?: ByteArray(32)
+    val interval = doc.interval
+    if (interval != null) {
+        verifyInterval(doc, interval, Hex.decode(nonce, "nonce", 32), inner, transportKey, policy, httpClient)
+        return transportKey
+    }
     verifyQuoteBinding(doc, Hex.decode(nonce, "nonce", 32), transportKeyBinding(inner, transportKey), policy, "transport key", httpClient, bound = "transport key, app")
     return transportKey
 }

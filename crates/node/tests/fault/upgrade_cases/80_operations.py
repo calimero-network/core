@@ -486,3 +486,11 @@ not_covered("Operations", "Peers' quotes queued apart from anonymous `/attestati
             "it stores nothing and changes no answer: a node of an earlier release sends no header and is queued with "
             "anyone, as before, so a roll has no data to carry. `a_flood_of_attestations_does_not_keep_peers_from_attesting` "
             "(`cluster.rs`) and `a_peer_passes_a_full_anonymous_queue` (`attest.rs`) cover it on one build")
+
+not_covered("Operations", "Interval quotes (`GET /attestation?form=interval`, `attest::IntervalQuotes`, `IntervalProof`)",
+            "it stores nothing: the interval key and its quote live in memory and are made again at every start, so a "
+            "roll has no data to carry. While a cluster rolls, the new nodes ask the old ones for the form, which they "
+            "ignore and answer with a quote over the nonce as before, and the old nodes ask the new ones for nothing "
+            "new, so every roll in the upgrade path attests across both releases. "
+            "`new_clients_attest_and_sign_in_while_the_quote_queue_is_full` (`cluster.rs`) and "
+            "`an_interval_answer_verifies_for_its_own_request_only` (`attest.rs`) cover it on one build")

@@ -27,6 +27,18 @@ transport_binding | SHA-256(JCS(kms)))`. Opt in: a document without `kms` is che
 exactly as before. mero-js does not ask for it yet; the attestation verifier
 (mero-tee) recomputes it, pinned by `the_kms_binding_matches_the_published_vector`.
 
+`HttpAttestor` (every client and peer channel) asks `GET /attestation` for the interval form
+(`form=interval`, `INTERVAL_FORM`): the node answers from a quote it makes once a minute over an
+Ed25519 interval key held in memory, `report_data = quoteNonce || SHA-256("calimero.tee-attest.interval-key.v1"
+| transport_key | interval_key | u64_be(issuedAt))` (`interval_report_data`), with `interval`
+(`IntervalProof`): that key's signature over `"calimero.tee-attest.interval-sig.v1\0" | nonce |
+app_hash | transport_key` (`interval_message`). `verify` takes a document with `interval` only through
+`verify_interval`: `issuedAt` at most `INTERVAL_QUOTE_MAX_AGE_SECS` old and
+`INTERVAL_QUOTE_MAX_SKEW_SECS` ahead by this clock, the strict signature over this nonce, then the
+same quote check (`verify_quote`) over `quoteNonce` and the interval binding. A document without
+`interval` (a node before the form, or one with no current interval quote) is checked as before.
+mero-js, mero-kotlin and mero-swift ask for and check the form the same way.
+
 The receipt-key binding hashes `Governance::canonical`, the governance JSON in
 declaration order; `deployments` and `deployers` are written only when not the
 defaults (`open`, `operator`), so a default cluster binds the bytes it did before

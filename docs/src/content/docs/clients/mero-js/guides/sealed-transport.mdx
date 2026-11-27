@@ -70,6 +70,14 @@ as core's Rust client judges it (`attest::verify`, `Measurements::Release`):
 6. Its report data must be the client's nonce and
    `SHA-256("calimero.tee-attest.transport-key.v1" ‖ app_hash ‖ transport_key)`.
 
+The client asks for the [interval form](/protocol/tee-attestation/#interval-quotes)
+(`form=interval`): a node answers from a quote it makes once a minute over a key of its
+own, and signs the client's nonce with that key, so attesting never waits for a quote.
+Then the signature must be that key's over the nonce, the app hash and the transport
+key, the quote must be at most 5 minutes old by the client's clock, and its report
+data must bind that key, the transport key and the time instead. A node that answers
+without `interval` (an older release) is checked as in step 6.
+
 `releaseSource: 'github'` reads the release from GitHub, as the Rust client
 does; GitHub sends no CORS headers, so that works in Node only.
 
