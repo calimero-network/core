@@ -315,19 +315,6 @@ extension CalimeroClient {
             }
         }
 
-        /// Consent to restoring a pinned instance to older code: `POST /apps/{app}/restore-consent` (`app_restore_consent`).
-        ///
-        /// An owner or admin of the app's organization, while an undo of its last upgrade is open, with a step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`bundle`: what the backup's state runs; `point`: the restore point the open undo would revert): answers the consent the operator's restore (`POST /ops/apps/{app}/restore`, `owner`) carries to restore a pinned instance (its record's `lineage`) from that backup to code older than the release it runs. `403 FORBIDDEN` for anyone else and `409 UNDO_WINDOW_PASSED` once the undo closed, before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.39.
-        ///
-        /// **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
-        @discardableResult
-        public func restoreConsent(app: Swift.String, backup: Swift.String, sha256: Swift.String, bundle: Swift.String, passkey: (any PasskeyProvider)? = nil) async throws -> Components.Schemas.RestoreConsent {
-            let input = Operations.AppRestoreConsent.Input(path: .init(app: app), body: .json(.init(backup: backup, sha256: sha256, bundle: bundle)))
-            return try await client.perform(passkey: passkey) { api in
-                try await api.appRestoreConsent(input).ok.body.json
-            }
-        }
-
         /// One compute run: `GET /apps/{app}/runs/{run}` (`app_run`).
         ///
         /// Its record without arguments or keys: method, state, `cancelRequested`, `startTsMs`, attempts, input and output ids (sizes and SHA-256 only for callers who may list the app's files), usage, and `progress` as the leader last polled it.

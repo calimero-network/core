@@ -894,7 +894,7 @@ Code: `system.rs` (`SystemState::within_lineage`, `SystemState::lineage_of`), `s
 
 - `PackageVersion::lineage` records the manifest's `lineage`; `Feature::PinnedLineage` gates installing a pinning release.
 - `CreateApp` and `UpgradeApp` set `AppRecord::lineage` from the release that governs the instance, and never clear it; the classifier's `pinsLineage` (`Release::pinned`) is judged at apply from `PackageVersion::lineage`.
-- `on_lineage` (package and signer, any order) judges an undo; `ships_on_lineage`, `restores_older` and `owner_takes_older` a restore (`RestoreApp::owner`, `RestoreConsent`); `imported_lineage` an `ImportHolder`'s record.
+- `on_lineage` (package and signer, any order) judges an undo; `ships_on_lineage` and `restores_older` a restore (never below the floor); `imported_lineage` an `ImportHolder`'s record.
 - `within_lineage` runs before the step-up, in `run_upgrade` before `__upgrade` reaches the group, and in `UpgradeApp`'s apply, without an operator exemption.
 
 ### Runtime requirements

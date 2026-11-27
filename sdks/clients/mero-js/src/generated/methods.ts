@@ -414,15 +414,6 @@ export function createRoutes(api: RouteClient) {
       publicLinkRevoke: (args: operations['public_link_revoke']['parameters']['path'] & Partial<NonNullable<operations['public_link_revoke']['requestBody']>['content']['application/json']>, options?: MethodOptions): Promise<operations['public_link_revoke']['responses'][200]['content']['application/json']> =>
         route(api, {"method":"DELETE","path":"/apps/{app}/public-links/{link}","pathParams":["app","link"],"query":[],"body":"fields","optionalBody":true,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['public_link_revoke']['responses'][200]['content']['application/json']>,
       /**
-       * Consent to restoring a pinned instance to older code.
-       *
-       * `POST /apps/{app}/restore-consent` (`app_restore_consent`). **Who:** an account holder (a passkey session not bound to an app's frontend).
-       * Answers `412 CONFIRM_REQUIRED` first: give `confirm` (here or on the client); the passkey must verify the user `required`.
-       * A `421 WRONG_NODE` moves the client to the next node of the cluster.
-       */
-      restoreConsent: (args: operations['app_restore_consent']['parameters']['path'] & operations['app_restore_consent']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['app_restore_consent']['responses'][200]['content']['application/json']> =>
-        route(api, {"method":"POST","path":"/apps/{app}/restore-consent","pathParams":["app"],"query":[],"body":"fields","optionalBody":false,"reply":"json","stepUp":true,"userVerification":"required"}, args as unknown as Record<string, unknown>, options) as Promise<operations['app_restore_consent']['responses'][200]['content']['application/json']>,
-      /**
        * One compute run.
        *
        * `GET /apps/{app}/runs/{run}` (`app_run`). **Who:** whoever the app's grants admit (`anyone`: any signed-in account).

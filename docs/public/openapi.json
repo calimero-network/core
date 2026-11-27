@@ -6896,181 +6896,6 @@
         }
       }
     },
-    "/apps/{app}/restore-consent": {
-      "post": {
-        "operationId": "app_restore_consent",
-        "tags": [
-          "Apps"
-        ],
-        "x-calimero-group": "apps",
-        "summary": "Consent to restoring a pinned instance to older code",
-        "description": "An owner or admin of the app's organization, while an undo of its last upgrade is open, with a step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`bundle`: what the backup's state runs; `point`: the restore point the open undo would revert): answers the consent the operator's restore (`POST /ops/apps/{app}/restore`, `owner`) carries to restore a pinned instance (its record's `lineage`) from that backup to code older than the release it runs. `403 FORBIDDEN` for anyone else and `409 UNDO_WINDOW_PASSED` once the undo closed, before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.39.\n\n**Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.",
-        "security": [
-          {
-            "session": []
-          }
-        ],
-        "x-calimero-who": "an account holder (a passkey session not bound to an app's frontend)",
-        "x-calimero-sealed": true,
-        "x-calimero-step-up": true,
-        "x-calimero-user-verification": "required",
-        "parameters": [
-          {
-            "name": "app",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "backup": {
-                    "type": "string"
-                  },
-                  "sha256": {
-                    "type": "string"
-                  },
-                  "bundle": {
-                    "type": "string"
-                  },
-                  "confirm": {
-                    "$ref": "#/components/schemas/Confirm"
-                  }
-                },
-                "required": [
-                  "backup",
-                  "sha256",
-                  "bundle"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RestoreConsent"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "`EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE`",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "EXPIRED_CHALLENGE",
-              "UNKNOWN_CHALLENGE"
-            ]
-          },
-          "401": {
-            "description": "`UNAUTHENTICATED`: no, unknown, expired or revoked credential",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "UNAUTHENTICATED"
-            ]
-          },
-          "403": {
-            "description": "`FORBIDDEN`: the credential may not do this (scope, role, governance, read-only)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "FORBIDDEN"
-            ]
-          },
-          "404": {
-            "description": "`NOT_FOUND`: no such object, or one the caller may not see",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "NOT_FOUND"
-            ]
-          },
-          "409": {
-            "description": "`FEATURE_NOT_ACTIVE`; `UNDO_WINDOW_PASSED`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "FEATURE_NOT_ACTIVE",
-              "UNDO_WINDOW_PASSED"
-            ],
-            "x-calimero-details": {
-              "FEATURE_NOT_ACTIVE": {
-                "$ref": "#/components/schemas/FeatureNotActive"
-              }
-            }
-          },
-          "412": {
-            "description": "`CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`.",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "CONFIRM_REQUIRED"
-            ],
-            "x-calimero-details": {
-              "CONFIRM_REQUIRED": {
-                "$ref": "#/components/schemas/ConfirmRequired"
-              }
-            }
-          },
-          "421": {
-            "description": "`WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "x-calimero-codes": [
-              "WRONG_NODE"
-            ]
-          }
-        }
-      }
-    },
     "/apps/{app}/runs": {
       "get": {
         "operationId": "app_runs",
@@ -16513,7 +16338,7 @@
         ],
         "x-calimero-group": "ops",
         "summary": "Restore an app from its sealed backup",
-        "description": "Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), and to code older than the release it runs only with `owner`, an owner's or admin's consent while an undo of its last upgrade is open (`POST /apps/{app}/restore-consent`; else `409 LINEAGE_OLDER_RELEASE`), each before the signature is asked for.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
+        "description": "Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the signature is asked for.\n\n**Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.",
         "security": [
           {
             "opsToken": []
@@ -16559,9 +16384,6 @@
                   },
                   "operatorProof": {
                     "$ref": "#/components/schemas/OperatorProof"
-                  },
-                  "owner": {
-                    "$ref": "#/components/schemas/RestoreConsent"
                   }
                 },
                 "additionalProperties": false
@@ -36390,22 +36212,6 @@
           "by"
         ],
         "description": "An app's one undo (`POST /apps/{app}/undo`): the release and bundle its last upgrade moved it from (`fromRelease`, `fromBundle`) and to, when (`at`, the start of the week to undo it) and by whom (`policy:auto-update` for an update that applied on its own), the run it was part of (a unit's members undo with their instance), the app group's snapshot (`file`: the node that holds it, absent where the upgrade ran nothing on the group) and `undoneAt` while an undo's restore is under way."
-      },
-      "RestoreConsent": {
-        "type": "object",
-        "properties": {
-          "account": {
-            "type": "string"
-          },
-          "consent": {
-            "description": "Free-form JSON: its shape is not this API's (see the description around it for whose it is)."
-          }
-        },
-        "required": [
-          "account",
-          "consent"
-        ],
-        "description": "An owner's or admin's step-up over `<app> / __restore_older / { backup, sha256, bundle, point }` (`POST /apps/{app}/restore-consent`; `point` is the restore point its open undo would revert, by its time, target and snapshot): the operator's restore carries it as `owner`, with the operator's signature naming the same bundle, to take a pinned instance (its record's `lineage`) from that backup onto that bundle, older than the release it runs, while that undo is open at a time no earlier than the upgrade and any upgrade logged since. Spent once."
       },
       "UndoPart": {
         "type": "object",
