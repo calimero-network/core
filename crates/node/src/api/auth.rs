@@ -149,6 +149,7 @@ async fn register_begin(
     sealed: Option<Extension<SealedSession>>,
     Json(body): Json<RegisterBegin>,
 ) -> ApiResult<Json<PasskeyChallenge>> {
+    account_name_fits(&body.name)?;
     refuse_sign_up(&node, body.invite.as_deref()).await?;
     let rp_id = begin_rp_id(&node, body.origin.as_deref()).await?;
     let challenge = random::<32>();
@@ -1880,6 +1881,9 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/auth/passkey/login/finish", post(login_finish))
         // Anyone may begin these, so their bodies stay small (the router's
         // own limit, inside which this one applies, is the sealed envelope's).
+        .route_layer(axum::extract::DefaultBodyLimit::max(
+            MAX_PASSKEY_CEREMONY_BYTES,
+        ))
         .route("/auth/passkeys/add/begin", post(passkey_add_begin))
         .route("/auth/passkeys/add/finish", post(passkey_add_finish))
         .route(
