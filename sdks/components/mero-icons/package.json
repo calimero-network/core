@@ -3,7 +3,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "version": "1.0.0-rc.38",
+  "version": "1.0.0-rc.39",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/calimero-network/core.git",

@@ -27,7 +27,7 @@ the same methods, the same typed errors, the same retry and failover rules.
 - Docs: <https://calimero-network.github.io/core/clients/mero-swift/>
 
 ```swift
-.package(url: "https://github.com/calimero-network/core", exact: "1.0.0-rc.38"),
+.package(url: "https://github.com/calimero-network/core", exact: "1.0.0-rc.39"),
 // a target:
 .product(name: "MeroKit", package: "core"),
 ```
