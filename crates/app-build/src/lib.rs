@@ -287,10 +287,20 @@ pub fn build_components_cached(
 /// the crate and the SDK, its macros, its old name and the WIT (`calimero:app`), which are
 /// every path a guest here reaches outside its own directory; see [`cache_key`].
 pub fn build_in_repo_cache(crate_dir: &Path) -> EyreResult<BuiltApp> {
+    build_in_repo_cache_with(crate_dir, &[])
+}
+
+/// [`build_in_repo_cache`] for a guest with path dependencies beyond the SDK (`path_deps`,
+/// e.g. the crate a test guest exercises), which the cache key then hashes too.
+pub fn build_in_repo_cache_with(crate_dir: &Path, path_deps: &[&Path]) -> EyreResult<BuiltApp> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let crates = root.join("crates");
-    let also = ["sdk", "sdk-macros", "app-sdk", "app-wit"].map(|c| crates.join(c));
-    let also: Vec<&Path> = also.iter().map(PathBuf::as_path).collect();
+    let sdk = ["sdk", "sdk-macros", "app-sdk", "app-wit"].map(|c| crates.join(c));
+    let also: Vec<&Path> = sdk
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(path_deps.iter().copied())
+        .collect();
     // The target dir cargo would use, as the node's test harness reads it.
     let target =
         std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from);

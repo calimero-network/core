@@ -26,6 +26,7 @@ CASES = [
     ("a tool no node links skips the upgrade path", ["crates/search/bench/src/main.rs"], R),
     ("the component SDK runs the workspace jobs and the upgrade path (this tree's kv)", ["crates/sdk/src/lib.rs"], ALL),
     ("a component app runs the workspace jobs and the standalone apps", ["apps/kv-store/src/lib.rs"], RA),
+    ("a plugin crate runs the workspace jobs", ["sdks/plugins/connectors/nearai/src/lib.rs"], R),
     ("a lint script runs the workspace jobs", ["scripts/check-naming.sh"], R),
     ("the guest builder runs every job (the apps' tests build with it)", ["crates/app-build/src/lib.rs"], ALL),
     ("the app engine runs the standalone apps (their harness runs on it)", ["crates/app-engine-wasmtime/src/lib.rs"], ALL),

@@ -76,6 +76,7 @@ WORKFLOWS = {
             *EVERY_JOB,
             "crates/*",
             "apps/*",
+            "sdks/plugins/*",
             # Every script ci-checks.yml runs (ci-scope-test.py keeps this complete),
             # and what those scripts read.
             "scripts/check-like-ci.py",
