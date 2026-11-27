@@ -3843,6 +3843,12 @@ impl Node {
         req: &ViewRequest,
         searches: Option<&SearchBudget>,
     ) -> Result<ViewAnswer, ApiError> {
+        // Every view (`/views`, `/intents` and `/methods` naming one, a forwarded
+        // one, a synchronous xcall's) comes through here: refuse oversize
+        // arguments before any lookup, forward or run.
+        if component::args_len(&req.args) > MAX_ARGS_BYTES {
+            return Err(component::args_too_large());
+        }
         let app = self.app(&req.app_id).await?;
         self.refuse_while_restoring(&app).await?;
         if app.executor == Kind::Wasmer {

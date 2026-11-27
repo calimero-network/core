@@ -39,7 +39,7 @@ error the guest's host call returns.
 | Files | 16 open; 2 GiB each; 64 MiB written per run (2 GiB in a compute run); 1,000 new files per run; 1 MiB per read | `MAX_OPEN_FILES`, `MAX_FILE_BYTES`, `MAX_RUN_FILE_BYTES`, `MAX_COMPUTE_FILE_BYTES`, `MAX_NEW_FILES`, `MAX_READ_CHUNK` |
 | Blob download grant | 1 day at most | `MAX_GRANT_TTL_SECS` |
 | Compute runs started | 16 per run; 64 active per app; 64 inputs, 64 KiB of arguments | `MAX_STARTS_PER_RUN`, `MAX_ACTIVE_RUNS`, `MAX_RUN_INPUTS`, `MAX_COMPUTE_ARGS_BYTES` |
-| Call arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
+| Call and view arguments | 512 KiB (`413 ARGS_TOO_LARGE`, before anything runs) | `MAX_ARGS_BYTES` |
 
 A soft limit answers a fixed string, which depends only on the run's own calls,
 so every node gives the same answer. `events.emit` answers `too many events`,
