@@ -971,6 +971,7 @@ fn mpk_full(
         wasm: Some(artifact("app.wasm", wasm)),
         abi: None,
         compute: None,
+        sandbox: None,
         links: None,
         frontend: (!frontend.is_empty()).then(|| calimero_bundle::BundleFrontend {
             entry: frontend[0].0.to_owned(),

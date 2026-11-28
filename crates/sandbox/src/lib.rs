@@ -27,6 +27,42 @@ use std::path::PathBuf;
 #[cfg(target_os = "linux")]
 pub use run::Run;
 
+/// Elsewhere than Linux there is no sandbox: [`Run::create`] answers `Unsupported`.
+#[cfg(not(target_os = "linux"))]
+pub struct Run(std::convert::Infallible);
+
+#[cfg(not(target_os = "linux"))]
+impl Run {
+    pub fn create(
+        _config: &Config,
+        _id: &str,
+        _image: Image,
+        _limits: &Limits,
+    ) -> Result<Self, SandboxError> {
+        Err(SandboxError::Unsupported)
+    }
+
+    pub fn exec(&self, _req: &ExecRequest) -> Result<ExecOutcome, SandboxError> {
+        match self.0 {}
+    }
+
+    pub fn usage(&self) -> Usage {
+        match self.0 {}
+    }
+
+    pub fn write(&self, _path: &str, _bytes: &[u8]) -> Result<(), SandboxError> {
+        match self.0 {}
+    }
+
+    pub fn read(&self, _path: &str, _max: u32) -> Result<Vec<u8>, SandboxError> {
+        match self.0 {}
+    }
+
+    pub fn collect(&self, _path: &str) -> Result<(std::fs::File, u64), SandboxError> {
+        match self.0 {}
+    }
+}
+
 /// The first argument that makes the node's binary act as a sandbox's init.
 pub const INIT_ARG: &str = "__calimero_sandbox_init";
 
@@ -98,6 +134,19 @@ impl Image {
         Self {
             root: PathBuf::from("/"),
         }
+    }
+}
+
+/// The images this release's sandbox job nodes carry, by the name a sandbox method's ABI gives
+/// (`sandbox.image`). Install refuses a release naming any other.
+pub const IMAGES: &[&str] = &["host"];
+
+/// The image named `name`, if this release carries it.
+#[must_use]
+pub fn image(name: &str) -> Option<Image> {
+    match name {
+        "host" => Some(Image::host()),
+        _ => None,
     }
 }
 

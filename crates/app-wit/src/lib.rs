@@ -8,10 +8,20 @@
 pub const WIT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/wit");
 
 /// The fully qualified world every app component targets.
-pub const WORLD: &str = "calimero:app/app@0.5.7";
+pub const WORLD: &str = "calimero:app/app@0.5.8";
 
 /// The fully qualified world of a component holding only an app's compute methods.
-pub const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.7";
+pub const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.8";
+
+/// The fully qualified world of a component holding an app's sandbox methods: the compute world
+/// plus the `sandbox` interface.
+pub const SANDBOX_WORLD: &str = "calimero:app/sandbox-run@0.5.8";
+
+/// Whether an ABI's `world` names the sandbox world ([`SANDBOX_WORLD`]; it first exists at 0.5.8).
+#[must_use]
+pub fn names_sandbox_world(world: &str) -> bool {
+    world == SANDBOX_WORLD
+}
 
 /// Whether an ABI's `world` names the compute world: [`COMPUTE_WORLD`], or the same world at
 /// an older `0.5` patch, which a compute component built before the newest patch names (an
@@ -34,17 +44,17 @@ pub fn names_compute_world(world: &str) -> bool {
 pub const MAX_RANDOM_BYTES_PER_CALL: usize = 1024 * 1024;
 
 const ALLOWED_IMPORTS: &[&str] = &[
-    "calimero:app/types@0.5.7",
-    "calimero:app/storage@0.5.7",
-    "calimero:app/context@0.5.7",
-    "calimero:app/events@0.5.7",
-    "calimero:app/blobs@0.5.7",
-    "calimero:app/search@0.5.7",
-    "calimero:app/files@0.5.7",
-    "calimero:app/xcall@0.5.7",
-    "calimero:app/action@0.5.7",
-    "calimero:app/runs@0.5.7",
-    "calimero:app/rebuild@0.5.7",
+    "calimero:app/types@0.5.8",
+    "calimero:app/storage@0.5.8",
+    "calimero:app/context@0.5.8",
+    "calimero:app/events@0.5.8",
+    "calimero:app/blobs@0.5.8",
+    "calimero:app/search@0.5.8",
+    "calimero:app/files@0.5.8",
+    "calimero:app/xcall@0.5.8",
+    "calimero:app/action@0.5.8",
+    "calimero:app/runs@0.5.8",
+    "calimero:app/rebuild@0.5.8",
     "wasi:io/error@0.2.12",
     "wasi:io/poll@0.2.12",
     "wasi:io/streams@0.2.12",
@@ -60,9 +70,26 @@ const ALLOWED_IMPORTS: &[&str] = &[
 ];
 
 const COMPUTE_ALLOWED_IMPORTS: &[&str] = &[
-    "calimero:app/types@0.5.7",
-    "calimero:app/files@0.5.7",
-    "calimero:app/job@0.5.7",
+    "calimero:app/types@0.5.8",
+    "calimero:app/files@0.5.8",
+    "calimero:app/job@0.5.8",
+    "wasi:io/error@0.2.12",
+    "wasi:io/poll@0.2.12",
+    "wasi:io/streams@0.2.12",
+    "wasi:clocks/wall-clock@0.2.12",
+    "wasi:clocks/monotonic-clock@0.2.12",
+    "wasi:random/random@0.2.12",
+    "wasi:random/insecure-seed@0.2.12",
+    "wasi:cli/stdout@0.2.12",
+    "wasi:cli/stderr@0.2.12",
+    "wasi:cli/environment@0.2.12",
+];
+
+const SANDBOX_ALLOWED_IMPORTS: &[&str] = &[
+    "calimero:app/types@0.5.8",
+    "calimero:app/files@0.5.8",
+    "calimero:app/job@0.5.8",
+    "calimero:app/sandbox@0.5.8",
     "wasi:io/error@0.2.12",
     "wasi:io/poll@0.2.12",
     "wasi:io/streams@0.2.12",
@@ -97,6 +124,12 @@ pub fn allowed_imports() -> &'static [&'static str] {
 #[must_use]
 pub fn compute_allowed_imports() -> &'static [&'static str] {
     COMPUTE_ALLOWED_IMPORTS
+}
+
+/// Interfaces the sandbox world imports: the compute world's and `sandbox`.
+#[must_use]
+pub fn sandbox_allowed_imports() -> &'static [&'static str] {
+    SANDBOX_ALLOWED_IMPORTS
 }
 
 /// Interfaces accepted at install but stubbed by the host; not part of the world.

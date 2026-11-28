@@ -357,6 +357,8 @@ pub struct VerifiedWasm {
     pub bytes: Option<Arc<[u8]>>,
     /// The service's compute component, when the manifest declares one.
     pub compute: Option<Arc<[u8]>>,
+    /// The service's sandbox component, when the manifest declares one.
+    pub sandbox: Option<Arc<[u8]>>,
     /// The service's pipeline files by archive path, in manifest order.
     pub pipelines: Vec<(String, Arc<[u8]>)>,
 }
@@ -440,8 +442,8 @@ impl VerifiedBundle {
             if let Some(wasm) = artifact.wasm {
                 let _ = wanted.insert(wasm.path.as_str(), u64::MAX);
             }
-            if let Some(compute) = artifact.compute {
-                let _ = wanted.insert(compute.path.as_str(), u64::MAX);
+            for component in [artifact.compute, artifact.sandbox].into_iter().flatten() {
+                let _ = wanted.insert(component.path.as_str(), u64::MAX);
             }
             for file in artifact.pipelines {
                 let bound = wanted.entry(file.path.as_str()).or_insert(0);
@@ -466,14 +468,17 @@ impl VerifiedBundle {
                     Ok::<_, eyre::Report>(bytes)
                 })
                 .transpose()?;
-            let compute = artifact
-                .compute
-                .map(|c| {
-                    let bytes = take_artifact(&found, &c.path)?;
-                    verify_artifact_digest(c, &bytes)?;
-                    Ok::<_, eyre::Report>(bytes)
-                })
-                .transpose()?;
+            let component = |artifact: Option<&BundleArtifact>| {
+                artifact
+                    .map(|c| {
+                        let bytes = take_artifact(&found, &c.path)?;
+                        verify_artifact_digest(c, &bytes)?;
+                        Ok::<_, eyre::Report>(bytes)
+                    })
+                    .transpose()
+            };
+            let compute = component(artifact.compute)?;
+            let sandbox = component(artifact.sandbox)?;
             let pipelines = artifact
                 .pipelines
                 .iter()
@@ -487,6 +492,7 @@ impl VerifiedBundle {
                 name: artifact.name.map(str::to_owned),
                 bytes,
                 compute,
+                sandbox,
                 pipelines,
             });
         }

@@ -1152,6 +1152,8 @@ pub struct OpsPoolsPoolsValue {
     pub runs_per_node: u64,
     #[serde(rename = "maxMemoryMib")]
     pub max_memory_mib: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<bool>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -8202,6 +8204,8 @@ pub struct OpsPoolsSetRequestPoolsValue {
     pub runs_per_node: u64,
     #[serde(rename = "maxMemoryMib")]
     pub max_memory_mib: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

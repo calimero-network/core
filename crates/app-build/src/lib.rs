@@ -28,7 +28,9 @@ pub const ABI_SECTION: &str = "calimero:abi";
 /// The target an app component is built for.
 pub const TARGET: &str = "wasm32-wasip2";
 const COMPUTE_CFG: &str = "calimero_compute"; // selects the compute world in the SDK and macros
-const COMPUTE_TARGET_SUBDIR: &str = "compute"; // inside the target dir, so the two builds never invalidate each other
+const COMPUTE_TARGET_SUBDIR: &str = "compute"; // inside the target dir, so the builds never invalidate each other
+const SANDBOX_CFG: &str = "calimero_sandbox"; // with the compute cfg, selects the sandbox-run world
+const SANDBOX_TARGET_SUBDIR: &str = "sandbox";
 const TARGET_LOCK: &str = ".calimero-app-build.lock"; // inside the target dir
 const SHARED_TARGET: &str = "shared"; // the cache's one cargo target dir, under `<cache>/target`
 const HEADER_LEN: usize = 8;
@@ -71,41 +73,73 @@ impl Built {
 }
 
 /// An app's components: the one replicas run and, when it declares compute methods, the one
-/// job nodes run.
+/// job nodes run, and when it declares sandbox methods, the one sandbox job nodes run.
 #[derive(Debug)]
 pub struct BuiltApp {
     pub app: Built,
     pub compute: Option<Built>,
+    pub sandbox: Option<Built>,
+}
+
+/// Which component of a crate a build makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Component {
+    App,
+    Compute,
+    Sandbox,
 }
 
 /// Builds the crate at `crate_dir` into `target_dir` and returns the component.
 pub fn build_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
-    build(crate_dir, target_dir, false)
+    build(crate_dir, target_dir, Component::App)
 }
 
 /// Builds the compute component of the crate at `crate_dir`: the same crate with
 /// `--cfg calimero_compute`, into `target_dir/compute`.
 pub fn build_compute_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
-    build(crate_dir, &target_dir.join(COMPUTE_TARGET_SUBDIR), true)
+    build(
+        crate_dir,
+        &target_dir.join(COMPUTE_TARGET_SUBDIR),
+        Component::Compute,
+    )
+}
+
+/// Builds the sandbox component of the crate at `crate_dir`: the same crate with
+/// `--cfg calimero_compute --cfg calimero_sandbox`, into `target_dir/sandbox`.
+pub fn build_sandbox_component(crate_dir: &Path, target_dir: &Path) -> EyreResult<Built> {
+    build(
+        crate_dir,
+        &target_dir.join(SANDBOX_TARGET_SUBDIR),
+        Component::Sandbox,
+    )
+}
+
+/// Whether an app ABI declares a method of `kind`.
+fn declares(abi: Option<&Value>, kind: &str) -> bool {
+    abi.and_then(|abi| abi["methods"].as_object())
+        .is_some_and(|methods| methods.values().any(|m| m["kind"] == kind))
 }
 
 /// Builds the crate's app component and, when its ABI declares compute methods, its compute
-/// component.
+/// component, and when it declares sandbox methods, its sandbox component.
 pub fn build_components(crate_dir: &Path, target_dir: &Path) -> EyreResult<BuiltApp> {
     let app = build_component(crate_dir, target_dir)?;
-    let has_compute = app
-        .abi
-        .as_ref()
-        .and_then(|abi| abi["methods"].as_object())
-        .is_some_and(|methods| methods.values().any(|m| m["kind"] == "compute"));
-    let compute = has_compute
+    let compute = declares(app.abi.as_ref(), "compute")
         .then(|| build_compute_component(crate_dir, target_dir))
         .transpose()?;
-    Ok(BuiltApp { app, compute })
+    let sandbox = declares(app.abi.as_ref(), "sandbox")
+        .then(|| build_sandbox_component(crate_dir, target_dir))
+        .transpose()?;
+    Ok(BuiltApp {
+        app,
+        compute,
+        sandbox,
+    })
 }
 
-/// `CARGO_ENCODED_RUSTFLAGS` as cargo would read it (`RUSTFLAGS` when unset), plus the compute cfg.
-fn compute_rustflags() -> String {
+/// `CARGO_ENCODED_RUSTFLAGS` as cargo would read it (`RUSTFLAGS` when unset), plus the
+/// component's cfgs.
+fn component_rustflags(component: Component) -> String {
     let mut flags: Vec<String> = match (
         std::env::var("CARGO_ENCODED_RUSTFLAGS"),
         std::env::var("RUSTFLAGS"),
@@ -116,6 +150,9 @@ fn compute_rustflags() -> String {
     };
     flags.retain(|flag| !flag.is_empty());
     flags.extend(["--cfg".to_owned(), COMPUTE_CFG.to_owned()]);
+    if component == Component::Sandbox {
+        flags.extend(["--cfg".to_owned(), SANDBOX_CFG.to_owned()]);
+    }
     flags.join("\x1f")
 }
 
@@ -123,7 +160,7 @@ fn compute_rustflags() -> String {
 /// `crate_dir`, so a relative `target_dir` (the caller's, relative to the
 /// caller's directory) is made absolute first; passed as is, it would land
 /// under the crate (`<crate>/<crate>/target`).
-fn cargo_build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Command> {
+fn cargo_build(crate_dir: &Path, target_dir: &Path, component: Component) -> EyreResult<Command> {
     let mut cargo = Command::new("cargo");
     let _ = cargo
         .args(["build", "--release", "--target", TARGET])
@@ -132,8 +169,8 @@ fn cargo_build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult
         .arg(std::path::absolute(target_dir)?)
         .current_dir(crate_dir)
         .stdin(Stdio::null());
-    if compute {
-        let _ = cargo.env("CARGO_ENCODED_RUSTFLAGS", compute_rustflags());
+    if component != Component::App {
+        let _ = cargo.env("CARGO_ENCODED_RUSTFLAGS", component_rustflags(component));
     }
     Ok(cargo)
 }
@@ -151,11 +188,11 @@ fn missing_tool(tool: &str, e: std::io::Error) -> eyre::Report {
     }
 }
 
-fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built> {
+fn build(crate_dir: &Path, target_dir: &Path, component: Component) -> EyreResult<Built> {
     // Builds into one target dir race on its artifacts across threads and processes.
     std::fs::create_dir_all(target_dir)?;
     let _lock = lock_exclusive(&target_dir.join(TARGET_LOCK))?;
-    let output = cargo_build(crate_dir, target_dir, compute)?
+    let output = cargo_build(crate_dir, target_dir, component)?
         .output()
         .map_err(|e| missing_tool("cargo", e))?;
     if !output.status.success() {
@@ -201,11 +238,12 @@ fn build(crate_dir: &Path, target_dir: &Path, compute: bool) -> EyreResult<Built
 }
 
 /// An app's components as the cache keeps them: the app component and, when it declares
-/// compute methods, the compute component.
+/// compute or sandbox methods, those components.
 #[derive(Clone, Debug)]
 pub struct CachedApp {
     pub app: Vec<u8>,
     pub compute: Option<Vec<u8>>,
+    pub sandbox: Option<Vec<u8>>,
 }
 
 /// Builds `crate_dir` like [`build_component`], reusing a result cached under `cache_dir`.
@@ -223,8 +261,9 @@ pub fn build_component_cached(
 
 /// Builds `crate_dir` like [`build_components`], reusing a result cached under `cache_dir`.
 ///
-/// The app component is `<name>-<key>.wasm` and the compute one `<name>-<key>.compute.wasm`,
-/// written first, so an app file that exists says the compute decision is final too.
+/// The app component is `<name>-<key>.wasm`, the compute one `<name>-<key>.compute.wasm` and the
+/// sandbox one `<name>-<key>.sandbox.wasm`, both written first, so an app file that exists says
+/// the other decisions are final too.
 pub fn build_components_cached(
     crate_dir: &Path,
     also_hash: &[&Path],
@@ -238,7 +277,12 @@ pub fn build_components_cached(
     let read = |key: &str| {
         let app = std::fs::read(cached(key, "wasm")).ok()?;
         let compute = std::fs::read(cached(key, "compute.wasm")).ok();
-        Some(CachedApp { app, compute })
+        let sandbox = std::fs::read(cached(key, "sandbox.wasm")).ok();
+        Some(CachedApp {
+            app,
+            compute,
+            sandbox,
+        })
     };
     if let Some(hit) = read(&cache_key(crate_dir, also_hash)?) {
         return Ok(hit);
@@ -269,12 +313,16 @@ pub fn build_components_cached(
     if let Some(compute) = &built.compute {
         write("compute.wasm", &compute.component)?;
     }
+    if let Some(sandbox) = &built.sandbox {
+        write("sandbox.wasm", &sandbox.component)?;
+    }
     write("wasm", &built.app.component)?;
     // Dropping `lock` closes it, which releases the lock.
     drop(lock);
     Ok(CachedApp {
         app: built.app.component,
         compute: built.compute.map(|c| c.component),
+        sandbox: built.sandbox.map(|c| c.component),
     })
 }
 
@@ -309,6 +357,7 @@ pub fn build_in_repo_cache_with(crate_dir: &Path, path_deps: &[&Path]) -> EyreRe
     Ok(BuiltApp {
         app: Built::from_component(cached.app)?,
         compute: cached.compute.map(Built::from_component).transpose()?,
+        sandbox: cached.sandbox.map(Built::from_component).transpose()?,
     })
 }
 
@@ -525,14 +574,19 @@ fn lift_abi(bytes: &[u8]) -> EyreResult<(Vec<u8>, Option<Value>)> {
 mod tests {
     use std::path::Path;
 
-    use super::{cargo_build, missing_tool};
+    use super::{cargo_build, missing_tool, Component};
 
     // `meroctl app build apps/kv-store/logic` from the repository root used to
     // hand cargo `--target-dir apps/kv-store/logic/target` while running it in
     // the crate, so the build landed in `apps/kv-store/logic/apps/kv-store/logic/target`.
     #[test]
     fn a_relative_target_dir_is_the_callers_not_the_crates() {
-        let cargo = cargo_build(Path::new("apps/kv"), Path::new("apps/kv/target"), false).unwrap();
+        let cargo = cargo_build(
+            Path::new("apps/kv"),
+            Path::new("apps/kv/target"),
+            Component::App,
+        )
+        .unwrap();
         let args: Vec<_> = cargo.get_args().collect();
         let at = args.iter().position(|a| *a == "--target-dir").unwrap();
         let target = Path::new(args[at + 1]);

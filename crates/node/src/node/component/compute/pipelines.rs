@@ -1579,6 +1579,7 @@ steps:
             let config = PoolConfig {
                 runs_per_node: *runs,
                 max_memory_mib: *memory,
+                sandbox: false,
             };
             let _prev = s.pools.insert((*name).to_owned(), config);
         }

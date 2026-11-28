@@ -229,6 +229,8 @@ pub enum Engine {
     App,
     /// The compute engine a release's compute components are prepared on.
     Compute,
+    /// The sandbox engine a release's sandbox components are prepared on.
+    Sandbox,
 }
 
 impl Node {
@@ -248,6 +250,7 @@ impl Node {
         let wasm = match engine {
             Engine::App => self.app_engine_arc(),
             Engine::Compute => self.compute_engine_arc(),
+            Engine::Sandbox => self.sandbox_engine_arc(),
         };
         let hash = hash.to_owned();
         let (prepared, component) = self

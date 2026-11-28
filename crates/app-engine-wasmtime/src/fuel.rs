@@ -92,6 +92,7 @@ pub(crate) fn charge_calls(linker: &mut Linker<StoreData>, world: World) -> wasm
     match world {
         World::App => crate::bindings::charge_calls(linker)?,
         World::Compute => crate::compute::charge_calls(linker)?,
+        World::Sandbox => crate::sandbox::charge_calls(linker)?,
     }
     crate::bindings::charge_files(linker)?;
     charge_wasi(linker)

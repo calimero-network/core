@@ -75,6 +75,7 @@ fn release_shipping(package: &str, wasm: Vec<u8>) -> Vec<u8> {
         interfaces: None,
         wasm: Some(artifact("app.wasm", wasm.as_slice())),
         compute: None,
+        sandbox: None,
         abi: None,
         links: None,
         frontend: None,

@@ -1266,6 +1266,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             compute: job
                 .map(|j| BTreeMap::from([(String::new(), j.to_owned())]))
                 .unwrap_or_default(),
+            sandbox: false,
             part_sizes: BTreeMap::new(),
             metadata: Value::Null,
             outbound: Vec::new(),
@@ -1377,6 +1378,7 @@ fn a_compute_release_is_charged_each_parts_own_size() {
             source: BundleSource::Upload,
             services: BTreeMap::from([(String::new(), main.to_owned())]),
             compute: BTreeMap::from([(String::new(), job.to_owned())]),
+            sandbox: false,
             part_sizes: BTreeMap::from([(main.to_owned(), 30), (job.to_owned(), 7)]),
             metadata: Value::Null,
             outbound: Vec::new(),
@@ -1424,6 +1426,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             source: BundleSource::Upload,
             services: BTreeMap::from([(String::new(), main.to_owned())]),
             compute: BTreeMap::from([(String::new(), job.to_owned())]),
+            sandbox: false,
             part_sizes: BTreeMap::new(),
             metadata: Value::Null,
             outbound: Vec::new(),

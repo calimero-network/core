@@ -928,6 +928,7 @@ dependencies = [
  "calimero-outbound",
  "calimero-pipeline",
  "calimero-primitives",
+ "calimero-sandbox",
  "calimero-sealed",
  "calimero-search",
  "calimero-tee-attestation",

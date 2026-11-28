@@ -26,6 +26,8 @@ pub enum Kind {
     Timer,
     Action,
     Compute,
+    /// A sandbox method: a compute method that drives a Linux sandbox on a sandbox job node.
+    Sandbox,
     /// A kind this reader does not know (a newer SDK's).
     Other(String),
 }
@@ -39,6 +41,7 @@ impl Kind {
             "timer" => Self::Timer,
             "action" => Self::Action,
             "compute" => Self::Compute,
+            "sandbox" => Self::Sandbox,
             other => Self::Other(other.to_owned()),
         }
     }
@@ -52,6 +55,7 @@ impl Kind {
             Self::Timer => "timer",
             Self::Action => "action",
             Self::Compute => "compute",
+            Self::Sandbox => "sandbox",
             Self::Other(other) => other,
         }
     }

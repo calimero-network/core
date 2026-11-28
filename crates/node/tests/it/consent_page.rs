@@ -80,6 +80,7 @@ fn release_of(
         }),
         abi: None,
         compute: None,
+        sandbox: None,
         links: d.frontend.map(|f| calimero_bundle::BundleLinks {
             frontend: Some(f.to_owned()),
             github: None,

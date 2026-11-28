@@ -387,6 +387,11 @@ pub struct BundleService {
     /// service declares no compute methods. An older node ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute: Option<BundleArtifact>,
+    /// The service's sandbox component, the one sandbox job nodes run; absent when the
+    /// service declares no sandbox methods. A node before sandbox runs ignores it, and refuses
+    /// the release's ABI, whose sandbox methods it does not know.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<BundleArtifact>,
     /// The service's pipelines: YAML files over its compute methods. An older node ignores them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pipelines: Vec<BundleArtifact>,
@@ -527,6 +532,10 @@ pub struct BundleManifest {
     /// `services` is non-empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compute: Option<BundleArtifact>,
+    /// Single-service sandbox component (see [`BundleService::sandbox`]). Ignored when
+    /// `services` is non-empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<BundleArtifact>,
     /// Single-service pipelines (see [`BundleService::pipelines`]). Ignored when `services`
     /// is non-empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -596,6 +605,7 @@ pub struct WasmArtifact<'a> {
     /// The app component; `None` for a single-service bundle that ships only a compute component.
     pub wasm: Option<&'a BundleArtifact>,
     pub compute: Option<&'a BundleArtifact>,
+    pub sandbox: Option<&'a BundleArtifact>,
     pub pipelines: &'a [BundleArtifact],
 }
 
@@ -621,6 +631,7 @@ impl BundleManifest {
                     name: Some(&s.name),
                     wasm: Some(&s.wasm),
                     compute: s.compute.as_ref(),
+                    sandbox: s.sandbox.as_ref(),
                     pipelines: &s.pipelines,
                 })
                 .collect(),
@@ -628,6 +639,7 @@ impl BundleManifest {
                 name: None,
                 wasm: self.wasm.as_ref(),
                 compute: self.compute.as_ref(),
+                sandbox: self.sandbox.as_ref(),
                 pipelines: &self.pipelines,
             }],
             _ => Vec::new(),
@@ -641,6 +653,7 @@ impl BundleManifest {
             wasm,
             abi,
             compute,
+            sandbox,
             pipelines,
             services,
             frontend,
@@ -675,6 +688,9 @@ impl BundleManifest {
         if let Some(compute) = compute {
             artifacts.push(("compute".to_owned(), compute));
         }
+        if let Some(sandbox) = sandbox {
+            artifacts.push(("sandbox".to_owned(), sandbox));
+        }
         for (i, pipeline) in pipelines.iter().enumerate() {
             artifacts.push((format!("pipelines[{i}]"), pipeline));
         }
@@ -685,6 +701,9 @@ impl BundleManifest {
             }
             if let Some(compute) = &service.compute {
                 artifacts.push((format!("services[{i}].compute"), compute));
+            }
+            if let Some(sandbox) = &service.sandbox {
+                artifacts.push((format!("services[{i}].sandbox"), sandbox));
             }
             for (j, pipeline) in service.pipelines.iter().enumerate() {
                 artifacts.push((format!("services[{i}].pipelines[{j}]"), pipeline));
@@ -1524,6 +1543,30 @@ mod tests {
         .unwrap();
         let fields: Vec<_> = services.artifacts().into_iter().map(|(f, _)| f).collect();
         assert_eq!(fields, ["services[0].wasm", "services[0].compute"]);
+    }
+
+    #[test]
+    fn sandbox_components_are_artifacts_the_node_path_checks() {
+        let manifest: BundleManifest = serde_json::from_str(&manifest_json(
+            r#""sandbox": { "path": "sandbox.wasm", "hash": "00", "size": 1 },"#,
+        ))
+        .unwrap();
+        let fields: Vec<_> = manifest.artifacts().into_iter().map(|(f, _)| f).collect();
+        assert_eq!(fields, ["wasm", "sandbox"]);
+        assert!(manifest.wasm_artifacts()[0].sandbox.is_some());
+
+        let services: BundleManifest = serde_json::from_str(
+            r#"{
+                "version": "1.0", "package": "p", "appVersion": "1.0.0", "minRuntimeVersion": "0.1.0",
+                "services": [
+                    { "name": "a", "wasm": { "path": "a.wasm", "hash": "00", "size": 1 },
+                      "sandbox": { "path": "a.sandbox.wasm", "hash": "00", "size": 1 } }
+                ]
+            }"#,
+        )
+        .unwrap();
+        let fields: Vec<_> = services.artifacts().into_iter().map(|(f, _)| f).collect();
+        assert_eq!(fields, ["services[0].wasm", "services[0].sandbox"]);
     }
 
     #[test]

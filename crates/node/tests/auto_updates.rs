@@ -65,6 +65,7 @@ fn release_of(
         }),
         abi: None,
         compute: None,
+        sandbox: None,
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),

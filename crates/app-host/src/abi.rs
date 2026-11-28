@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use calimero_app_wit::names_compute_world;
+use calimero_app_wit::{names_compute_world, names_sandbox_world};
 use serde_json::{Map, Value};
 
 use crate::engine::PrepareError;
@@ -18,6 +18,15 @@ pub const MAX_COMPUTE_MEMORY_MIB: u32 = 4_096;
 /// Most wall time a compute method may declare.
 pub const MAX_COMPUTE_WALL_SECS: u32 = 900;
 
+/// Most vCPUs a sandbox method may declare.
+pub const MAX_SANDBOX_VCPUS: u32 = 4;
+/// Most memory a sandbox method may declare for everything its commands start.
+pub const MAX_SANDBOX_MEMORY_MIB: u32 = 8_192;
+/// Most workspace a sandbox method may declare.
+pub const MAX_SANDBOX_WORKSPACE_MIB: u32 = 20_480;
+/// Most bytes of a sandbox method's image name.
+pub const MAX_SANDBOX_IMAGE_BYTES: usize = 128;
+
 /// What a method is for; timers are the only methods with an interval.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MethodKind {
@@ -27,7 +36,8 @@ pub enum MethodKind {
     Timer,
     /// Runs outside the log on the leader, with outbound HTTP; started, never called.
     Action,
-    /// Runs on a job node under these caps; only the node starts it.
+    /// Runs on a job node under these caps; only the node starts it. A sandbox method (ABI
+    /// kind `sandbox`) is a compute method whose caps carry `sandbox`.
     Compute(ComputeCaps),
 }
 
@@ -39,6 +49,27 @@ pub struct ComputeCaps {
     pub wall_secs: u32,
     /// The ABI name of the `computeResult` method.
     pub result: String,
+    /// Set for a sandbox method: it runs on a sandbox job node and drives a Linux sandbox.
+    pub sandbox: Option<SandboxCaps>,
+}
+
+impl ComputeCaps {
+    /// Whether this is a sandbox method's.
+    #[must_use]
+    pub fn is_sandbox(&self) -> bool {
+        self.sandbox.is_some()
+    }
+}
+
+/// What a sandbox method declares for the Linux sandbox its driver runs commands in: caps for
+/// everything those commands start, and the image they run in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SandboxCaps {
+    pub vcpus: u32,
+    pub memory_mib: u32,
+    pub workspace_mib: u32,
+    /// The image's name in the node's image catalog.
+    pub image: String,
 }
 
 /// One method's attributes.
@@ -104,12 +135,11 @@ impl Abi {
             .iter()
             .map(|(name, method)| Ok((name.clone(), method_abi(name, method)?)))
             .collect::<Result<BTreeMap<_, _>, PrepareError>>()?;
-        if top
-            .get("world")
-            .and_then(Value::as_str)
-            .is_some_and(names_compute_world)
-        {
-            check_compute_world(&methods)?;
+        let world = top.get("world").and_then(Value::as_str);
+        if world.is_some_and(names_compute_world) {
+            check_component_world(&methods, false)?;
+        } else if world.is_some_and(names_sandbox_world) {
+            check_component_world(&methods, true)?;
         } else {
             check_compute(&methods)?;
         }
@@ -129,7 +159,8 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
         Some("view") => MethodKind::View,
         Some("timer") => MethodKind::Timer,
         Some("action") => MethodKind::Action,
-        Some("compute") => MethodKind::Compute(compute_caps(fields, name)?),
+        Some("compute") => MethodKind::Compute(compute_caps(fields, name, false)?),
+        Some("sandbox") => MethodKind::Compute(compute_caps(fields, name, true)?),
         other => return Err(bad(format!("{name}: unknown kind {other:?}"))),
     };
     let every = match fields.get("every") {
@@ -142,6 +173,12 @@ fn method_abi(name: &str, json: &Value) -> Result<MethodAbi, PrepareError> {
     if !matches!(kind, MethodKind::Compute(_)) && fields.contains_key("compute") {
         return Err(bad(format!(
             "{name}: `compute` is only for compute methods"
+        )));
+    }
+    if !matches!(&kind, MethodKind::Compute(c) if c.is_sandbox()) && fields.contains_key("sandbox")
+    {
+        return Err(bad(format!(
+            "{name}: `sandbox` is only for sandbox methods"
         )));
     }
     let compute_result = flag(fields, "computeResult", name)?;
@@ -200,8 +237,13 @@ fn search_fields(json: &Value) -> Result<BTreeMap<String, Vec<String>>, PrepareE
     Ok(out)
 }
 
-/// The `compute` object of a compute method; fuel is required, memory and wall default to the maxima.
-fn compute_caps(fields: &Map<String, Value>, name: &str) -> Result<ComputeCaps, PrepareError> {
+/// The `compute` object of a compute or sandbox method; fuel is required, memory and wall
+/// default to the maxima. A sandbox method also declares `sandbox`.
+fn compute_caps(
+    fields: &Map<String, Value>,
+    name: &str,
+    sandbox: bool,
+) -> Result<ComputeCaps, PrepareError> {
     let caps = fields
         .get("compute")
         .ok_or_else(|| bad(format!("{name}: a compute method declares `compute`")))?;
@@ -229,11 +271,56 @@ fn compute_caps(fields: &Map<String, Value>, name: &str) -> Result<ComputeCaps, 
     within(fuel, MAX_COMPUTE_FUEL, "fuel")?;
     within(memory_mib, MAX_COMPUTE_MEMORY_MIB.into(), "memoryMib")?;
     within(wall_secs, MAX_COMPUTE_WALL_SECS.into(), "wallSecs")?;
+    let sandbox = if sandbox {
+        Some(sandbox_caps(fields, name)?)
+    } else {
+        None
+    };
     Ok(ComputeCaps {
         fuel,
         memory_mib: u32::try_from(memory_mib).unwrap_or(u32::MAX),
         wall_secs: u32::try_from(wall_secs).unwrap_or(u32::MAX),
         result,
+        sandbox,
+    })
+}
+
+/// The `sandbox` object of a sandbox method: `{ vcpus, memoryMib, workspaceMib, image }`,
+/// every number in `1..=` its maximum and the image a non-empty name.
+fn sandbox_caps(fields: &Map<String, Value>, name: &str) -> Result<SandboxCaps, PrepareError> {
+    let caps = fields
+        .get("sandbox")
+        .ok_or_else(|| bad(format!("{name}: a sandbox method declares `sandbox`")))?;
+    let caps = object(caps, name)?;
+    let number = |key: &str, max: u32| -> Result<u32, PrepareError> {
+        let value = caps
+            .get(key)
+            .ok_or_else(|| bad(format!("{name}: sandbox.{key} is required")))?;
+        value
+            .as_u64()
+            .and_then(|v| u32::try_from(v).ok())
+            .filter(|v| (1..=max).contains(v))
+            .ok_or_else(|| {
+                bad(format!(
+                    "{name}: sandbox.{key} is not in 1..={max}: {value}"
+                ))
+            })
+    };
+    let image = caps
+        .get("image")
+        .and_then(Value::as_str)
+        .filter(|i| !i.is_empty() && i.len() <= MAX_SANDBOX_IMAGE_BYTES)
+        .ok_or_else(|| {
+            bad(format!(
+                "{name}: sandbox.image is required, at most {MAX_SANDBOX_IMAGE_BYTES} bytes"
+            ))
+        })?
+        .to_owned();
+    Ok(SandboxCaps {
+        vcpus: number("vcpus", MAX_SANDBOX_VCPUS)?,
+        memory_mib: number("memoryMib", MAX_SANDBOX_MEMORY_MIB)?,
+        workspace_mib: number("workspaceMib", MAX_SANDBOX_WORKSPACE_MIB)?,
+        image,
     })
 }
 
@@ -253,15 +340,23 @@ fn check_compute(methods: &BTreeMap<String, MethodAbi>) -> Result<(), PrepareErr
     Ok(())
 }
 
-/// A compute component's ABI lists compute methods only; their result methods live in the
-/// app's own ABI.
-fn check_compute_world(methods: &BTreeMap<String, MethodAbi>) -> Result<(), PrepareError> {
+/// A compute component's ABI lists compute methods only, and a sandbox component's sandbox
+/// methods only; their result methods live in the app's own ABI.
+fn check_component_world(
+    methods: &BTreeMap<String, MethodAbi>,
+    sandbox: bool,
+) -> Result<(), PrepareError> {
+    let (component, kind) = if sandbox {
+        ("sandbox", "sandbox")
+    } else {
+        ("compute", "compute")
+    };
     match methods
         .iter()
-        .find(|(_, m)| !matches!(m.kind, MethodKind::Compute(_)))
+        .find(|(_, m)| !matches!(&m.kind, MethodKind::Compute(c) if c.is_sandbox() == sandbox))
     {
         Some((name, _)) => Err(bad(format!(
-            "{name}: a compute component runs compute methods only"
+            "{name}: a {component} component runs {kind} methods only"
         ))),
         None => Ok(()),
     }

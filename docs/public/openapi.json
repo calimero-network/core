@@ -19388,6 +19388,9 @@
                           "type": "integer",
                           "format": "int64",
                           "minimum": 0
+                        },
+                        "sandbox": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -30561,6 +30564,9 @@
                   "type": "integer",
                   "format": "int64",
                   "minimum": 0
+                },
+                "sandbox": {
+                  "type": "boolean"
                 }
               },
               "required": [

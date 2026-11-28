@@ -17,6 +17,7 @@ mod files;
 mod fuel;
 mod overlay;
 mod runs;
+mod sandbox;
 mod search;
 mod state;
 mod time;
@@ -24,8 +25,9 @@ mod types;
 mod xcall;
 
 pub use abi::{
-    Abi, ComputeCaps, MethodAbi, MethodKind, MAX_COMPUTE_FUEL, MAX_COMPUTE_MEMORY_MIB,
-    MAX_COMPUTE_WALL_SECS, SUPPORTED_ABI_VERSIONS,
+    Abi, ComputeCaps, MethodAbi, MethodKind, SandboxCaps, MAX_COMPUTE_FUEL, MAX_COMPUTE_MEMORY_MIB,
+    MAX_COMPUTE_WALL_SECS, MAX_SANDBOX_IMAGE_BYTES, MAX_SANDBOX_MEMORY_MIB, MAX_SANDBOX_VCPUS,
+    MAX_SANDBOX_WORKSPACE_MIB, SUPPORTED_ABI_VERSIONS,
 };
 pub use action::{
     subcall_key, ActionHost, ActionStart, HttpExchange, HttpHost, HttpRequest, HttpResponse,
@@ -65,6 +67,10 @@ pub use runs::{
     NOT_A_COMPUTE_METHOD, NO_ACTIVE_RUN, NO_COMPUTE_COMPONENT, RUN_ARGS_TOO_LARGE,
     RUN_DUPLICATE_INPUT, RUN_INPUTS_TOO_LARGE, RUN_INPUT_MISSING, RUN_RECORDS_UNREADABLE,
     RUN_TOO_MANY_ACTIVE, RUN_TOO_MANY_INPUTS, RUN_TOO_MANY_STARTS,
+};
+pub use sandbox::{
+    SandboxExec, SandboxExecResult, SandboxFailure, SandboxHost, MAX_SANDBOX_REQUEST_BYTES,
+    MAX_SANDBOX_WRITE_BYTES, NO_SANDBOX, SANDBOX_REQUEST_TOO_LARGE, SANDBOX_UNAVAILABLE,
 };
 pub use search::{
     NoSearch, SearchHit, SearchHost, SearchMode, SearchPage, SearchQuery, MAX_SEARCH_LIMIT,

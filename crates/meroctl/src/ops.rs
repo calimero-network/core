@@ -129,7 +129,8 @@ pub enum OpsCmd {
     },
     /// The compute pools and the runs each takes at once.
     Pools,
-    /// Set the compute pools, JSON `{ name: { runsPerNode, maxMemoryMib } }`.
+    /// Set the compute pools, JSON `{ name: { runsPerNode, maxMemoryMib, sandbox? } }`; a
+    /// `sandbox` pool takes sandbox runs only, on job nodes started with `--sandbox`.
     SetPools {
         pools: String,
     },

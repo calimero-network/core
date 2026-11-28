@@ -12,10 +12,10 @@ use calimero_app_host::{
     parse_blob_id, stored_key, Abi, Audience, Budget, Caller, ComputeCaps, ComputeCtx, Directory,
     Event, FileError, FileInfo, FileRead, FileWrite, Files, HostCore, HostDenied, HttpRequest,
     InvalidInvocation, Invocation, InvocationKind, MemoryFiles, MethodKind, NewFile, OrgRole,
-    PrepareError, ReadError, Status, TrapKind, Usage, FILE_CORRUPT, FILE_FAILED, FILE_TOO_LARGE,
-    FILE_UNAVAILABLE, GENERATION, MAX_COMPUTE_FILE_BYTES, MAX_COMPUTE_FUEL,
+    PrepareError, ReadError, SandboxCaps, Status, TrapKind, Usage, FILE_CORRUPT, FILE_FAILED,
+    FILE_TOO_LARGE, FILE_UNAVAILABLE, GENERATION, MAX_COMPUTE_FILE_BYTES, MAX_COMPUTE_FUEL,
     MAX_COMPUTE_RESULT_BYTES, MAX_FILE_BYTES, MAX_PROGRESS_STEP_BYTES, MAX_RUN_FILE_BYTES,
-    RUN_WROTE_TOO_MUCH,
+    MAX_SANDBOX_VCPUS, RUN_WROTE_TOO_MUCH,
 };
 use serde_json::{json, Value};
 
@@ -315,7 +315,8 @@ fn compute_methods_read_their_caps_and_default_memory_and_wall() {
             fuel: 5,
             memory_mib: 4096,
             wall_secs: 900,
-            result: "onDone".to_owned()
+            result: "onDone".to_owned(),
+            sandbox: None,
         })
     );
     assert!(abi.methods["onDone"].compute_result);
@@ -371,7 +372,7 @@ fn bad_compute_caps_are_refused() {
 fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
     let only_digest = json!({
         "abiVersion": 1,
-        "world": "calimero:app/compute@0.5.7",
+        "world": "calimero:app/compute@0.5.8",
         "methods": { "digest": { "kind": "compute", "compute": { "fuel": 5, "result": "onDone" } } },
     });
     let abi = Abi::from_json(&only_digest).unwrap();
@@ -390,11 +391,120 @@ fn a_compute_world_abi_lists_compute_methods_without_their_result_methods() {
         MethodKind::Compute(_)
     ));
     let mut app_world = only_digest;
-    app_world["world"] = json!("calimero:app@0.5.7");
+    app_world["world"] = json!("calimero:app@0.5.8");
     assert!(matches!(
         Abi::from_json(&app_world),
         Err(PrepareError::BadAbi(_))
     ));
+}
+
+fn sandbox_method(sandbox: Value) -> Value {
+    json!({
+        "build": {
+            "kind": "sandbox",
+            "compute": { "fuel": 5, "result": "onDone" },
+            "sandbox": sandbox,
+        },
+        "onDone": { "kind": "call", "computeResult": true },
+    })
+}
+
+#[test]
+fn sandbox_methods_are_compute_methods_with_sandbox_caps() {
+    let caps = json!({ "vcpus": 2, "memoryMib": 1024, "workspaceMib": 512, "image": "host" });
+    let abi = abi(sandbox_method(caps)).unwrap();
+    let MethodKind::Compute(compute) = &abi.methods["build"].kind else {
+        panic!("a sandbox method is a compute method");
+    };
+    assert_eq!(
+        compute.sandbox,
+        Some(SandboxCaps {
+            vcpus: 2,
+            memory_mib: 1024,
+            workspace_mib: 512,
+            image: "host".to_owned(),
+        })
+    );
+    assert!(compute.is_sandbox());
+    assert_eq!(compute.result, "onDone");
+}
+
+#[test]
+fn bad_sandbox_caps_are_refused() {
+    let ok = json!({ "vcpus": 1, "memoryMib": 256, "workspaceMib": 64, "image": "host" });
+    let with = |key: &str, value: Value| {
+        let mut caps = ok.clone();
+        caps[key] = value;
+        caps
+    };
+    let mut without_image = ok.clone();
+    let _ = without_image.as_object_mut().unwrap().remove("image");
+    for caps in [
+        with("vcpus", json!(0)),
+        with("vcpus", json!(MAX_SANDBOX_VCPUS + 1)),
+        with("memoryMib", json!(8_193)),
+        with("workspaceMib", json!(20_481)),
+        with("workspaceMib", json!("64")),
+        with("image", json!("")),
+        with("image", json!("x".repeat(129))),
+        without_image,
+        json!(3),
+    ] {
+        assert!(
+            matches!(
+                abi(sandbox_method(caps.clone())),
+                Err(PrepareError::BadAbi(_))
+            ),
+            "{caps}"
+        );
+    }
+    // `sandbox` without the kind, and the kind without `sandbox`, are both refused.
+    assert!(matches!(
+        abi(json!({
+            "digest": { "kind": "compute", "compute": { "fuel": 5, "result": "onDone" }, "sandbox": ok },
+            "onDone": { "kind": "call", "computeResult": true },
+        })),
+        Err(PrepareError::BadAbi(_))
+    ));
+    assert!(matches!(
+        abi(json!({
+            "build": { "kind": "sandbox", "compute": { "fuel": 5, "result": "onDone" } },
+            "onDone": { "kind": "call", "computeResult": true },
+        })),
+        Err(PrepareError::BadAbi(_))
+    ));
+}
+
+#[test]
+fn a_sandbox_world_abi_lists_sandbox_methods_only_and_a_compute_world_abi_none() {
+    let build = json!({
+        "kind": "sandbox",
+        "compute": { "fuel": 5, "result": "onDone" },
+        "sandbox": { "vcpus": 1, "memoryMib": 256, "workspaceMib": 64, "image": "host" },
+    });
+    let digest = json!({ "kind": "compute", "compute": { "fuel": 5, "result": "onDone" } });
+    let component = |world: &str, methods: Value| {
+        Abi::from_json(&json!({ "abiVersion": 1, "world": world, "methods": methods }))
+    };
+    let sandbox_world = "calimero:app/sandbox-run@0.5.8";
+    let compute_world = "calimero:app/compute@0.5.8";
+    assert!(component(sandbox_world, json!({ "build": build })).is_ok());
+    for (world, methods) in [
+        (sandbox_world, json!({ "build": build, "digest": digest })),
+        (
+            sandbox_world,
+            json!({ "build": build, "bump": { "kind": "call" } }),
+        ),
+        (compute_world, json!({ "build": build })),
+    ] {
+        assert!(
+            matches!(
+                component(world, methods.clone()),
+                Err(PrepareError::BadAbi(_))
+            ),
+            "{world} {methods}"
+        );
+    }
 }
 
 /// A provider whose every operation fails the way the test chose.

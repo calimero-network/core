@@ -6167,6 +6167,7 @@ fn mpk_bound(
         }),
         abi: None,
         compute: None,
+        sandbox: None,
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),

@@ -811,7 +811,13 @@ impl Node {
                 let slot = s.run_slot(app_id, &rec.run);
                 let pool = match slot {
                     Some(_) => s.dispatch_pool(app_id, &rec.run).unwrap_or_default(),
-                    None => s.pool_for(rec.caps.memory_mib).unwrap_or_default(),
+                    None => {
+                        let sandbox = rec
+                            .compute_bundle
+                            .as_deref()
+                            .is_some_and(|b| s.is_sandbox_bundle(b));
+                        s.pool_for(rec.caps.memory_mib, sandbox).unwrap_or_default()
+                    }
                 };
                 let state = match slot {
                     None => "unplaced",
@@ -987,6 +993,12 @@ impl Drive<'_> {
             Some(_) if !self.node.nodes_behind_release().await.is_empty() => None,
             named => named.clone(),
         };
+        // A sandbox component runs on a sandbox job node: the run takes a sandbox pool.
+        let sandbox = self
+            .rec
+            .compute_bundle
+            .as_deref()
+            .is_some_and(|bundle| self.node.sys(|s| s.is_sandbox_bundle(bundle)));
         let cmd = SystemCmd::AcquireRun {
             app: app_id.clone(),
             run: run.clone(),
@@ -994,6 +1006,7 @@ impl Drive<'_> {
             fuel: self.rec.caps.fuel,
             memory_mib: self.rec.caps.memory_mib,
             pool,
+            sandbox,
         };
         let answer = match self.node.sys_write(&cmd).await {
             Ok(answer) => serde_json::from_value::<AcquireAnswer>(answer),

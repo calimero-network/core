@@ -102,5 +102,6 @@ method_attribute!(
     every,
     allow,
     compute,
-    compute_result
+    compute_result,
+    sandbox
 );

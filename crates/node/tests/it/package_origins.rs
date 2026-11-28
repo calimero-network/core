@@ -75,6 +75,7 @@ fn release_with(package: &str, version: &str, frontend: &[(&str, &[u8])]) -> Vec
         interfaces: None,
         wasm: Some(artifact("app.wasm", wasm.as_slice())),
         compute: None,
+        sandbox: None,
         abi: None,
         links: None,
         frontend: (!frontend.is_empty()).then(|| calimero_bundle::BundleFrontend {

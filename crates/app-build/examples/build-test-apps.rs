@@ -22,6 +22,7 @@ const GUESTS: &[&str] = &[
     "apps/fixture-kv",
     "apps/fixture-notes-v1",
     "apps/fixture-notes-v2",
+    "apps/fixture-sandbox",
     "apps/rooms",
     "apps/team-space",
 ];
@@ -61,10 +62,10 @@ fn main() -> eyre::Result<()> {
             "{:>6.1}s  {}{}",
             one.elapsed().as_secs_f64(),
             guest.strip_prefix(&root).unwrap_or(guest).display(),
-            if built.compute.is_some() {
-                " (+ compute)"
-            } else {
-                ""
+            match (&built.compute, &built.sandbox) {
+                (Some(_), _) => " (+ compute)",
+                (None, Some(_)) => " (+ sandbox)",
+                (None, None) => "",
             },
         );
     }

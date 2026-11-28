@@ -96,10 +96,47 @@ pub struct Service {
     pub wasm: Option<Vec<u8>>,
     /// Its compute component, when the release ships one.
     pub compute: Option<Vec<u8>>,
+    /// Its sandbox component, when the release ships one in place of a compute component.
+    pub sandbox: Option<Vec<u8>>,
 }
 
 /// The refusal when a compute-only package's component declares no compute method.
 pub const NO_COMPUTE_METHODS: &str = "NO_COMPUTE_METHODS";
+
+/// The refusal when a release has both compute and sandbox methods: its one job component
+/// holds the one kind or the other.
+pub const SANDBOX_WITH_COMPUTE: &str = "SANDBOX_WITH_COMPUTE";
+
+/// The refusal when a sandbox method names an image this release's sandbox job nodes do not
+/// carry ([`calimero_sandbox::IMAGES`]).
+pub const UNKNOWN_IMAGE: &str = "UNKNOWN_IMAGE";
+
+/// Every sandbox method of `abi` names an image this release carries.
+fn images_known(abi: &Abi, service: &str) -> Result<(), ApiError> {
+    for (name, method) in &abi.methods {
+        let MethodKind::Compute(caps) = &method.kind else {
+            continue;
+        };
+        let Some(sandbox) = &caps.sandbox else {
+            continue;
+        };
+        if !calimero_sandbox::IMAGES.contains(&sandbox.image.as_str()) {
+            return Err(of_service(
+                ApiError::bad_request(
+                    UNKNOWN_IMAGE,
+                    &format!(
+                        "{name}: no image {:?}; this release carries {:?}",
+                        sandbox.image,
+                        calimero_sandbox::IMAGES
+                    ),
+                ),
+                service,
+                true,
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// The refusal when a compute component's methods or caps differ from the main ABI's.
 pub const COMPUTE_ABI_MISMATCH: &str = "COMPUTE_ABI_MISMATCH";
@@ -161,6 +198,7 @@ fn verify_sync(mpk: &Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiErr
             name: w.name.unwrap_or_default(),
             wasm: w.bytes.map(|b| b.to_vec()),
             compute: w.compute.map(|c| c.to_vec()),
+            sandbox: w.sandbox.map(|c| c.to_vec()),
             pipelines: w
                 .pipelines
                 .into_iter()
@@ -171,13 +209,14 @@ fn verify_sync(mpk: &Arc<[u8]>) -> Result<(VerifiedBundle, Vec<Service>), ApiErr
     Ok((bundle, wasm))
 }
 
-/// A service's compute component must run exactly the compute methods its main ABI declares:
-/// the same names, each with the same kind and caps (fuel, memory, wall time, result method).
-fn compute_abi_agrees(main: &Abi, compute: &Abi) -> Result<(), String> {
+/// A service's compute component (a sandbox component, with `sandbox`) must run exactly the
+/// compute (sandbox) methods its main ABI declares: the same names, each with the same kind and
+/// caps (fuel, memory, wall time, result method, and a sandbox method's sandbox).
+fn compute_abi_agrees(main: &Abi, compute: &Abi, sandbox: bool) -> Result<(), String> {
     let declared = |abi: &Abi| -> BTreeMap<String, MethodKind> {
         abi.methods
             .iter()
-            .filter(|(_, m)| matches!(m.kind, MethodKind::Compute(_)))
+            .filter(|(_, m)| matches!(&m.kind, MethodKind::Compute(c) if c.is_sandbox() == sandbox))
             .map(|(name, m)| (name.clone(), m.kind.clone()))
             .collect()
     };
@@ -449,14 +488,33 @@ impl Node {
         let mut wasm_by_hash = BTreeMap::new();
         let mut part_sizes = BTreeMap::new();
         let mut only_compute = false;
+        let mut ships_sandbox = false;
         let mut service_pipelines: pipelines::ServicePipelines = (Vec::new(), None);
         for Service {
             name: service,
             wasm: bytes,
             compute: job,
+            sandbox,
             pipelines: files,
         } in wasm
         {
+            // A service's one job component holds its compute methods or its sandbox methods.
+            let (job, job_engine, is_sandbox) = match (job, sandbox) {
+                (Some(_), Some(_)) => {
+                    return Err(of_service(
+                        ApiError::new(
+                            422,
+                            SANDBOX_WITH_COMPUTE,
+                            "a release ships compute methods or sandbox methods, not both",
+                        ),
+                        &service,
+                        true,
+                    ))
+                }
+                (None, Some(sandbox)) => (Some(sandbox), Engine::Sandbox, true),
+                (job, None) => (job, Engine::Compute, false),
+            };
+            ships_sandbox |= is_sandbox;
             if !files.is_empty() && !service.is_empty() {
                 return Err(ApiError::new(
                     422,
@@ -471,7 +529,7 @@ impl Node {
                 })?;
                 let job_hash = hex::encode(calimero_identity::sha256(&job));
                 let (prepared, job) = self
-                    .compile(Engine::Compute, actor, &job_hash, job)
+                    .compile(job_engine, actor, &job_hash, job)
                     .await
                     .map_err(|e| compile_refusal(e, &service, true))?;
                 if !prepared
@@ -485,6 +543,7 @@ impl Node {
                         "a package with only a compute component must declare at least one compute method",
                     ));
                 }
+                images_known(&prepared.abi, &service)?;
                 if !files.is_empty() {
                     service_pipelines = (files, Some(pipelines::compute_caps(&prepared.abi)));
                 }
@@ -508,16 +567,32 @@ impl Node {
             if let Some(job) = job {
                 let job_hash = hex::encode(calimero_identity::sha256(&job));
                 let (prepared, job) = self
-                    .compile(Engine::Compute, actor, &job_hash, job)
+                    .compile(job_engine, actor, &job_hash, job)
                     .await
                     .map_err(|e| compile_refusal(e, &service, true))?;
-                compute_abi_agrees(&main.abi, &prepared.abi).map_err(|why| {
+                compute_abi_agrees(&main.abi, &prepared.abi, is_sandbox).map_err(|why| {
                     of_service(
                         ApiError::bad_request(COMPUTE_ABI_MISMATCH, &why),
                         &service,
                         false,
                     )
                 })?;
+                images_known(&prepared.abi, &service)?;
+                // The methods of the other kind would have no component to run them.
+                let other_kind = main.abi.methods.values().any(
+                    |m| matches!(&m.kind, MethodKind::Compute(c) if c.is_sandbox() != is_sandbox),
+                );
+                if other_kind {
+                    return Err(of_service(
+                        ApiError::new(
+                            422,
+                            SANDBOX_WITH_COMPUTE,
+                            "a release ships compute methods or sandbox methods, not both",
+                        ),
+                        &service,
+                        false,
+                    ));
+                }
                 job_caps = Some(pipelines::compute_caps(&prepared.abi));
                 let _prev = compute.insert(service.clone(), job_hash.clone());
                 let _prev = part_sizes.insert(job_hash.clone(), job.len() as u64);
@@ -613,6 +688,7 @@ impl Node {
                 source,
                 services,
                 compute,
+                sandbox: ships_sandbox,
                 pipelines: pipeline_refs,
                 part_sizes,
                 metadata,

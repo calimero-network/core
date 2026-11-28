@@ -57,6 +57,7 @@ fn release(package: &str, guests: Option<calimero_bundle::GuestPolicy>) -> Vec<u
         interfaces: None,
         wasm: Some(artifact("app.wasm", wasm.as_slice())),
         compute: None,
+        sandbox: None,
         abi: None,
         links: None,
         frontend: None,

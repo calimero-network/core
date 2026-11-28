@@ -36,6 +36,7 @@ pub mod error;
 pub mod files;
 pub mod guards;
 pub mod json;
+pub mod sandbox;
 pub mod search;
 pub mod store;
 pub mod table;
@@ -49,8 +50,9 @@ pub mod testing;
 pub mod __private;
 
 // What the `app` macros wrap their per-component items in: `__calimero_app_only!` keeps its
-// tokens in the app component's build and drops them in the compute component's, and
-// `__calimero_compute_only!` the reverse. The cfg is declared here, not in app crates.
+// tokens in the app component's build only, `__calimero_compute_only!` in the compute
+// component's (`calimero_compute`) and `__calimero_sandbox_only!` in the sandbox component's
+// (`calimero_compute` and `calimero_sandbox`). The cfgs are declared here, not in app crates.
 #[cfg(not(calimero_compute))]
 #[doc(hidden)]
 #[macro_export]
@@ -65,17 +67,31 @@ macro_rules! __calimero_app_only {
     ($($tokens:tt)*) => {};
 }
 
-#[cfg(calimero_compute)]
+#[cfg(all(calimero_compute, not(calimero_sandbox)))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __calimero_compute_only {
     ($($tokens:tt)*) => { $($tokens)* };
 }
 
-#[cfg(not(calimero_compute))]
+#[cfg(not(all(calimero_compute, not(calimero_sandbox))))]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __calimero_compute_only {
+    ($($tokens:tt)*) => {};
+}
+
+#[cfg(calimero_sandbox)]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __calimero_sandbox_only {
+    ($($tokens:tt)*) => { $($tokens)* };
+}
+
+#[cfg(not(calimero_sandbox))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __calimero_sandbox_only {
     ($($tokens:tt)*) => {};
 }
 

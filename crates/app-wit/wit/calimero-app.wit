@@ -1,4 +1,4 @@
-package calimero:app@0.5.7;
+package calimero:app@0.5.8;
 
 interface types {
   type account-id = string;
@@ -156,6 +156,33 @@ interface job {
   progress: func(percent: u8, step: string);   // the last value wins, never logged; step is cut at 128 bytes
 }
 
+// A sandbox run's Linux sandbox (0.5.8): each `exec` runs one command in fresh namespaces over
+// the run's workspace (`/workspace`), as an unprivileged user with no network; nothing carries
+// over from another run. Only the sandbox world imports it. Paths are relative to the
+// workspace; one that leaves it, or names a symlink or anything but a regular file, is refused.
+interface sandbox {
+  use types.{blob-id};
+  record exec-request {
+    argv: list<string>,
+    env: list<tuple<string, string>>,
+    cwd: option<string>,       // under the workspace
+    stdin: list<u8>,
+    timeout-ms: u32,           // the command and everything it started are killed at it
+  }
+  record exec-result {
+    exit-code: s32,            // 128 + n for a command killed by signal n
+    stdout: list<u8>,          // each kept up to 1 MiB, the rest drained
+    stderr: list<u8>,
+    truncated: bool,
+    timed-out: bool,
+    wall-us: u64,
+  }
+  exec: func(req: exec-request) -> result<exec-result, string>;
+  write: func(path: string, bytes: list<u8>) -> result<_, string>;
+  read: func(path: string, max: u32) -> result<list<u8>, string>;
+  collect: func(path: string) -> result<blob-id, string>; // the file, as one of the run's sealed outputs
+}
+
 interface xcall {
   send: func(app: string, method: string, args: list<u8>) -> result<_, string>; // outbox; delivered after commit
   // Synchronous: the target's call, logged in its own log before this run continues, under a
@@ -231,4 +258,11 @@ world compute {
 
   use types.{app-error};
   export run: func(method: string, args: list<u8>) -> result<list<u8>, app-error>;
+}
+
+// A sandbox method's component (0.5.8): the compute world plus the Linux sandbox, run only on
+// sandbox job nodes.
+world sandbox-run {
+  include compute;
+  import sandbox;
 }

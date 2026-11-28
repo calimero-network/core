@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use calimero_app_engine_wasmtime::{ending_of, ComputeRun, Ending, Reason};
 use calimero_app_host::{
-    ComputeCaps, FileError, FileInfo, FileRead, FileWrite, Files, NewFile, Outcome, Progress,
-    ReadError, Status, NO_SUCH_FILE,
+    ComputeCaps, FileError, FileInfo, FileRead, FileWrite, Files, MethodKind, NewFile, Outcome,
+    Progress, ReadError, Status, NO_SUCH_FILE,
 };
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tracing::warn;
@@ -349,7 +349,17 @@ fn execute(job: &JobNode, run: &Arc<Run>) -> eyre::Result<Phase> {
     let progress: Progress = Arc::new(move |percent, step| {
         locked(&for_progress.state).progress = Some((percent, step.to_owned()));
     });
-    let (outcome, measured) = job.engine.run_compute(
+    // A sandbox method runs on the sandbox engine, in a Linux sandbox of its own.
+    let sandbox_caps = match run.prepared.abi.methods.get(&a.method).map(|m| &m.kind) {
+        Some(MethodKind::Compute(caps)) => caps.sandbox.clone(),
+        _ => None,
+    };
+    let (engine, sandbox) = match (&sandbox_caps, &job.sandbox_engine, &job.config.sandbox) {
+        (None, _, _) => (&job.engine, None),
+        (Some(caps), Some(engine), Some(config)) => (engine, Some(job_sandbox(config, run, caps)?)),
+        (Some(_), _, _) => eyre::bail!("a sandbox method on a node without a sandbox"),
+    };
+    let (outcome, mut measured) = engine.run_compute(
         &run.prepared,
         ComputeRun {
             app: a.app.clone(),
@@ -366,15 +376,48 @@ fn execute(job: &JobNode, run: &Arc<Run>) -> eyre::Result<Phase> {
                 memory_mib: a.budget.memory_mib,
                 wall_secs: a.budget.wall_secs,
                 result: String::new(),
+                sandbox: None,
             },
             keep_logs: false,
+            sandbox: sandbox
+                .as_ref()
+                .map(|s| Arc::clone(s) as Arc<dyn calimero_app_host::SandboxHost>),
         },
         Arc::new(files),
         progress,
         Arc::clone(&run.cancel),
     )?;
+    let mut outcome = outcome;
+    if let Some(sandbox) = &sandbox {
+        // The run used what its commands did besides its own component.
+        let used = sandbox.usage();
+        measured.cpu += std::time::Duration::from_micros(used.cpu_us);
+        outcome.usage.peak_memory = outcome
+            .usage
+            .peak_memory
+            .saturating_add(used.peak_memory_bytes);
+    }
+    // Dropping the sandbox kills what is left of the run and removes its workspace.
+    drop(sandbox);
     let produced = std::mem::take(&mut *locked(&produced));
     ending(job, run, outcome, measured, produced)
+}
+
+/// The Linux sandbox of `run`, named after its scratch directory.
+fn job_sandbox(
+    config: &calimero_sandbox::Config,
+    run: &Run,
+    caps: &calimero_app_host::SandboxCaps,
+) -> eyre::Result<Arc<super::sandbox::JobSandbox>> {
+    let id = run
+        .dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| format!("run-{n}"))
+        .ok_or_else(|| eyre::eyre!("a run directory without a name"))?;
+    Ok(Arc::new(super::sandbox::JobSandbox::create(
+        config, &id, caps,
+    )?))
 }
 
 /// The signed ending of a run, or nothing to sign when the node could not serve it.

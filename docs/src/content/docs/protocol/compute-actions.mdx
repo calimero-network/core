@@ -379,6 +379,21 @@ An output leaves the cluster sealed to a key its requester holds: `POST /apps/{a
 The client checks every segment against the list and the plaintext's size and SHA-256 before it accepts the file (`meroctl cloud compute pipeline download` writes `<target>.part` and moves it into place only then).
 An account may export 30 times a minute per node (`429 TOO_MANY_EXPORTS`).
 
+## Sandbox runs
+
+A sandbox run is a compute run whose component also drives a Linux sandbox, so an app can run a shell, Python, a compiler or a test suite over its sealed files without the bytes leaving the attested job node.
+A method marked `#[app::sandbox(..)]` is a compute method (the same start, queue, attempt, report and final) with ABI kind `sandbox` and a `sandbox` object (`vcpus`, `memoryMib`, `workspaceMib`, `image`).
+Its component is built for the world `calimero:app/sandbox-run`, the compute world plus the `sandbox` interface (`exec`, `write`, `read`, `collect`), and is shipped as the release's `sandbox` artifact.
+A release ships compute methods or sandbox methods, not both: its one job component is recorded where a compute component is, with the release's `sandbox` flag (`Feature::SandboxRuns`), and install refuses an image the release's job nodes do not carry (`UNKNOWN_IMAGE`).
+
+Only a job node started with `--sandbox` prepares a sandbox component, and the operator puts such nodes in a pool marked `sandbox`.
+A sandbox run takes a sandbox pool only, and no other run does, so a cluster without a sandbox pool answers `RUN_NO_POOL`.
+On the job node each run gets a fresh sandbox (`calimero-sandbox`): a size-capped workspace, a cgroup capping memory, processes and CPU, and, per `exec`, new mount, PID, network, IPC, UTS and cgroup namespaces under an unprivileged init with a seccomp filter, a read-only image and no network.
+The node reads and writes the workspace with `openat2` resolve flags, so a planted symlink, `..` or FIFO cannot move it outside.
+`collect` seals a workspace file as one of the run's outputs, under the file limits of any output.
+The run's report counts the sandbox's CPU time and peak memory with the component's, and the sandbox, with everything left in it, is removed when the run ends.
+A sandbox the node cannot set up or serve loses the attempt, which another node retries.
+
 ## Usage and billing
 
 The job node measures CPU seconds, peak memory times wall time (GiB-seconds) and fuel used, and signs them in its report.

@@ -177,6 +177,7 @@ impl Setup {
             inputs: self.inputs.iter().map(|i| i.id.clone()).collect(),
             caps: self.caps.clone(),
             keep_logs: true,
+            sandbox: None,
         };
         // On a thread of its own, as a job node runs it: `meroctl` runs inside a tokio
         // runtime, and wasmtime-wasi blocks on the current runtime when the module writes to

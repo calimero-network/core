@@ -122,6 +122,11 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_JOB_SLOTS")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub job_slots: Option<usize>,
+    /// With `--job-node`: also run sandbox methods, each in a Linux sandbox of its own
+    /// (namespaces, cgroups, seccomp); needs root on Linux. Register the node in a sandbox pool.
+    #[arg(long, env = "MEROD_SANDBOX", num_args = 0..=1, default_missing_value = "true")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sandbox: Option<bool>,
     /// How many milliseconds an access check may reuse a recent system
     /// read-index round instead of running its own [default: 0]. Zero keeps a
     /// round per newly-arrived request, so a revocation takes effect at once. A
@@ -426,6 +431,7 @@ impl NodeArgs {
             job_node: self.job_node.or(base.job_node),
             cluster_identity: self.cluster_identity.or(base.cluster_identity),
             job_slots: self.job_slots.or(base.job_slots),
+            sandbox: self.sandbox.or(base.sandbox),
             sys_read_lease_ms: self.sys_read_lease_ms.or(base.sys_read_lease_ms),
             snapshot_scale_bytes: self.snapshot_scale_bytes.or(base.snapshot_scale_bytes),
             sign_ups_per_minute: self.sign_ups_per_minute.or(base.sign_ups_per_minute),
