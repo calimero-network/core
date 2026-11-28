@@ -44,6 +44,7 @@ pub const TOO_MANY_FAILURES: &str = "TOO_MANY_FAILURES";
 pub const NO_ROOM: &str = "NO_ROOM";
 pub const COST_CAP: &str = "COST_CAP";
 pub(super) const KNOWN: &str = "the pipeline run exists";
+pub const KEY_TAKEN: &str = "the idempotency key started another pipeline run";
 pub(super) const BAD_START: &str = "the pipeline run is not well formed";
 pub const INPUT_NOT_HELD: &str = "an input is not a file the app holds";
 pub(super) const NOT_RUNNING: &str = "the pipeline run is not running";
@@ -421,6 +422,9 @@ pub struct PipelineRun {
     /// Per-step limits a retry raised; each replaces the same field of the pipeline's own.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub limits: BTreeMap<String, Limits>,
+    /// The hash of the idempotency key that started it (`rows::CPKEY`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 impl PipelineRun {
@@ -484,6 +488,8 @@ pub struct PipelineStartEntry {
     pub retry_of: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub limits: BTreeMap<String, Limits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
     pub ts_ms: u64,
 }
 
@@ -594,6 +600,17 @@ impl AppMachine {
         let mut record = self.pipeline_head(run)?;
         self.fill_steps(&mut record, |_| true);
         Some(record)
+    }
+
+    /// The run a keyed start's key hash names while the app keeps the run.
+    #[must_use]
+    pub fn keyed_pipeline(&self, key: &str) -> Option<String> {
+        let raw = self
+            .state
+            .kv
+            .group()?
+            .get_hidden(rows::CPKEY, key.as_bytes())?;
+        serde_json::from_slice(&raw).ok()
     }
 
     /// The record without its steps' runs, outputs and results: counters and flags only.
@@ -738,6 +755,13 @@ impl AppMachine {
         if head.active_pipelines.contains(&entry.id) {
             return no_op(KNOWN);
         }
+        if entry
+            .key
+            .as_ref()
+            .is_some_and(|k| get_json::<String>(tx, rows::CPKEY, k).is_some())
+        {
+            return no_op(KEY_TAKEN);
+        }
         if head.active_pipelines.len() >= MAX_ACTIVE_PIPELINE_RUNS {
             return no_op(TOO_MANY_PIPELINE_RUNS);
         }
@@ -773,8 +797,12 @@ impl AppMachine {
             cost_so_far: 0,
             retry_of: entry.retry_of.clone(),
             limits: entry.limits.clone(),
+            key: entry.key.clone(),
         };
         put_json(tx, rows::CPIPE, &record.id, &record);
+        if let Some(key) = &record.key {
+            put_json(tx, rows::CPKEY, key, &record.id);
+        }
         let _new = self
             .state
             .component
@@ -1366,6 +1394,9 @@ impl AppMachine {
                 self.pin_files(tx, &outputs, -1, ts_ms);
                 let inputs: BTreeSet<&String> = dropped.inputs.values().flatten().collect();
                 self.pin_files(tx, inputs, -1, ts_ms);
+                if let Some(key) = &dropped.key {
+                    tx.delete_hidden(rows::CPKEY, key.as_bytes());
+                }
             }
             tx.delete_hidden(rows::CPIPE, old.as_bytes());
         }
@@ -1464,6 +1495,7 @@ fn same_start(known: &PipelineRun, entry: &PipelineStartEntry) -> bool {
         && known.cost == entry.cost
         && known.retry_of == entry.retry_of
         && known.limits == entry.limits
+        && known.key == entry.key
         && known
             .steps
             .keys()

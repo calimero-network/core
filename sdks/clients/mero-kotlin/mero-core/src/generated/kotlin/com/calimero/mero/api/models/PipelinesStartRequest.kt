@@ -34,6 +34,7 @@ import kotlinx.serialization.Contextual
  * @param inputs 
  * @param params 
  * @param maxCost 
+ * @param idempotencyKey 
  */
 @Serializable
 
@@ -46,7 +47,10 @@ data class PipelinesStartRequest (
     val params: kotlin.collections.Map<kotlin.String, kotlinx.serialization.json.JsonElement>? = null,
 
     @SerialName(value = "maxCost")
-    val maxCost: kotlin.String? = null
+    val maxCost: kotlin.String? = null,
+
+    @SerialName(value = "idempotencyKey")
+    val idempotencyKey: kotlin.String? = null
 
 ) {
 

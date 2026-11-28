@@ -655,12 +655,14 @@ _PIPELINES_RETRY = Operation(
     "pipelines_retry",
     body=PipelinesRetryBody,
     answer="json",
+    retry_requires="idempotencyKey",
 )
 _PIPELINES_START = Operation(
     _pipelines_start,
     "pipelines_start",
     body=PipelinesStartBody,
     answer="json",
+    retry_requires="idempotencyKey",
 )
 _PIPELINES_VALIDATE = Operation(
     _pipelines_validate,
@@ -1695,10 +1697,12 @@ class Apps(Group):
         """
         return self._run(_PIPELINES_LIST, (app,), {"limit": limit}, None)
 
-    def pipelines_retry(self, *, app, run, limits=UNSET, max_cost=UNSET):
+    def pipelines_retry(
+        self, *, app, run, limits=UNSET, max_cost=UNSET, idempotency_key=UNSET
+    ):
         """Retry a pipeline run (`POST /apps/{app}/pipeline-runs/{run}/retry`, `pipelines_retry`).
 
-        The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+        The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `idempotencyKey` as on a start.
 
         **Who:** signed in (a session or an API key).
 
@@ -1707,6 +1711,7 @@ class Apps(Group):
             run: path
             limits: body `limits`
             max_cost: body `maxCost`
+            idempotency_key: body `idempotencyKey`
 
         Returns: PipelineStarted
         """
@@ -1717,13 +1722,22 @@ class Apps(Group):
                 run,
             ),
             {},
-            {"limits": limits, "maxCost": max_cost},
+            {"limits": limits, "maxCost": max_cost, "idempotencyKey": idempotency_key},
         )
 
-    def pipelines_start(self, *, app, name, inputs=UNSET, params=UNSET, max_cost=UNSET):
+    def pipelines_start(
+        self,
+        *,
+        app,
+        name,
+        inputs=UNSET,
+        params=UNSET,
+        max_cost=UNSET,
+        idempotency_key=UNSET,
+    ):
         """Start a pipeline run (`POST /apps/{app}/pipelines/{name}/runs`, `pipelines_start`).
 
-        The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+        The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an `idempotencyKey` a repeat by the same caller answers the run it started while the app keeps it, and the same key with another body is `409 IDEMPOTENCY_KEY_REUSED`; a key is 1 to 256 bytes (`400 BAD_IDEMPOTENCY_KEY`).
 
         **Who:** signed in (a session or an API key).
 
@@ -1733,6 +1747,7 @@ class Apps(Group):
             inputs: body `inputs`
             params: body `params`
             max_cost: body `maxCost`
+            idempotency_key: body `idempotencyKey`
 
         Returns: PipelineStarted
         """
@@ -1743,7 +1758,12 @@ class Apps(Group):
                 name,
             ),
             {},
-            {"inputs": inputs, "params": params, "maxCost": max_cost},
+            {
+                "inputs": inputs,
+                "params": params,
+                "maxCost": max_cost,
+                "idempotencyKey": idempotency_key,
+            },
         )
 
     def pipelines_validate(self, *, source, package=UNSET, version=UNSET):

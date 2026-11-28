@@ -365,6 +365,14 @@ What happens to the run:
 - `maxCost` caps what the run may owe under the operator's price table: no step
   run starts that could take it past the cap, and the step that hits it fails
   with `COST_CAP`.
+- A start or retry with an `idempotencyKey` is the same run each time it is
+  sent by the same caller: a repeat answers the first one's `{ run }`, ended
+  or not, while the app keeps the run (its last 64 finished).
+  Once the run is dropped the key is free, and a start with it is a new run.
+  The same key with a different body is refused with `409 IDEMPOTENCY_KEY_REUSED`.
+  The clients send a fresh key on every start and retry, which covers their own
+  retries; a CI job that may start the same run again passes its own,
+  `--idempotency-key "$CI_PIPELINE_ID"` in meroctl.
 
 The step and run rules (fan-out waves, `allowFailures`, `failFast`, pools,
 cache lifetime, cost) are in [Pipeline runs](/protocol/compute-actions/#pipeline-runs);
@@ -381,6 +389,8 @@ receipts, events and exports are also covered in
 | `410 INPUT_EXPIRED` | an input (or, on a retry, an original input) is not a file the app holds |
 | `400 BAD_PARAMS` | a param of the wrong type, outside `min`/`max`/`enum`, or undeclared |
 | `409 NO_PRICE_TABLE`, `400 BAD_MAX_COST` | `maxCost` given and the operator set no prices, or it is not a whole number of micro-units |
+| `409 IDEMPOTENCY_KEY_REUSED` | an `idempotencyKey` that already started a run with another pipeline, inputs, params, limits or cost cap |
+| `400 BAD_IDEMPOTENCY_KEY` | an `idempotencyKey` that is empty or longer than 256 bytes |
 | `429 TOO_MANY_PIPELINE_RUNS` | 8 runs already going in this app |
 | `403 FORBIDDEN` | the caller is not the app's owner or a member of its organization (start, cancel, retry, receipt), even where an `anyone` grant admits others |
 | `409 STILL_RUNNING`, `400 LIMIT_EXCEEDS_CAP`, `400 BAD_LIMITS` | a retry of a running run, or with limits above the method's caps or for a step the pipeline lacks |

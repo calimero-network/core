@@ -4987,7 +4987,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipeline-runs/{run}/retry
      * Retry a pipeline run
-     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set. &#x60;idempotencyKey&#x60; as on a start.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @param pipelinesRetryRequest 
@@ -5021,7 +5021,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipeline-runs/{run}/retry
      * Retry a pipeline run
-     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. A new run of an ended run&#39;s pipeline at the same release, hash and compute component, with the same inputs and params, the &#x60;limits&#x60; applied and &#x60;retryOf&#x60; set. &#x60;idempotencyKey&#x60; as on a start.  **Who:** signed in (a session or an API key).
      * @param app 
      * @param run 
      * @param pipelinesRetryRequest 
@@ -5067,7 +5067,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. With an &#x60;idempotencyKey&#x60; a repeat by the same caller answers the run it started while the app keeps it, and the same key with another body is &#x60;409 IDEMPOTENCY_KEY_REUSED&#x60;; a key is 1 to 256 bytes (&#x60;400 BAD_IDEMPOTENCY_KEY&#x60;).  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 
@@ -5101,7 +5101,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/pipelines/{name}/runs
      * Start a pipeline run
-     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it.  **Who:** signed in (a session or an API key).
+     * The owner and the organization&#39;s members. Starts a run of a pipeline the app&#39;s release registers. &#x60;maxCost&#x60; (micro-units, a decimal string) caps the run, and &#x60;worstCase&#x60; answers it. With an &#x60;idempotencyKey&#x60; a repeat by the same caller answers the run it started while the app keeps it, and the same key with another body is &#x60;409 IDEMPOTENCY_KEY_REUSED&#x60;; a key is 1 to 256 bytes (&#x60;400 BAD_IDEMPOTENCY_KEY&#x60;).  **Who:** signed in (a session or an API key).
      * @param app 
      * @param name 
      * @param pipelinesStartRequest 

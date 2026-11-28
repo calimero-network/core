@@ -6082,7 +6082,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Retry a pipeline run",
-        "description": "The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.\n\n**Who:** signed in (a session or an API key).",
+        "description": "The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `idempotencyKey` as on a start.\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -6093,6 +6093,8 @@
         ],
         "x-calimero-who": "signed in (a session or an API key)",
         "x-calimero-sealed": true,
+        "x-calimero-retry-safe": true,
+        "x-calimero-retry-requires": "idempotencyKey",
         "parameters": [
           {
             "name": "app",
@@ -6143,6 +6145,9 @@
                   },
                   "maxCost": {
                     "type": "string"
+                  },
+                  "idempotencyKey": {
+                    "type": "string"
                   }
                 },
                 "additionalProperties": false
@@ -6162,7 +6167,7 @@
             }
           },
           "400": {
-            "description": "`BAD_LIMITS`; `BAD_MAX_COST`; `LIMIT_EXCEEDS_CAP`",
+            "description": "`BAD_IDEMPOTENCY_KEY`; `BAD_LIMITS`; `BAD_MAX_COST`; `LIMIT_EXCEEDS_CAP`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6171,6 +6176,7 @@
               }
             },
             "x-calimero-codes": [
+              "BAD_IDEMPOTENCY_KEY",
               "BAD_LIMITS",
               "BAD_MAX_COST",
               "LIMIT_EXCEEDS_CAP"
@@ -6216,7 +6222,7 @@
             ]
           },
           "409": {
-            "description": "`CLUSTER_NOT_UPGRADED`; `NO_PRICE_TABLE`; `STILL_RUNNING`",
+            "description": "`CLUSTER_NOT_UPGRADED`; `IDEMPOTENCY_KEY_REUSED`; `NO_PRICE_TABLE`; `STILL_RUNNING`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6226,6 +6232,7 @@
             },
             "x-calimero-codes": [
               "CLUSTER_NOT_UPGRADED",
+              "IDEMPOTENCY_KEY_REUSED",
               "NO_PRICE_TABLE",
               "STILL_RUNNING"
             ]
@@ -6445,7 +6452,7 @@
         ],
         "x-calimero-group": "apps",
         "summary": "Start a pipeline run",
-        "description": "The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.\n\n**Who:** signed in (a session or an API key).",
+        "description": "The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an `idempotencyKey` a repeat by the same caller answers the run it started while the app keeps it, and the same key with another body is `409 IDEMPOTENCY_KEY_REUSED`; a key is 1 to 256 bytes (`400 BAD_IDEMPOTENCY_KEY`).\n\n**Who:** signed in (a session or an API key).",
         "security": [
           {
             "session": []
@@ -6456,6 +6463,8 @@
         ],
         "x-calimero-who": "signed in (a session or an API key)",
         "x-calimero-sealed": true,
+        "x-calimero-retry-safe": true,
+        "x-calimero-retry-requires": "idempotencyKey",
         "parameters": [
           {
             "name": "app",
@@ -6496,6 +6505,9 @@
                   },
                   "maxCost": {
                     "type": "string"
+                  },
+                  "idempotencyKey": {
+                    "type": "string"
                   }
                 },
                 "additionalProperties": false
@@ -6515,7 +6527,7 @@
             }
           },
           "400": {
-            "description": "`BAD_INPUTS`; `BAD_MAX_COST`; `BAD_PARAMS`",
+            "description": "`BAD_IDEMPOTENCY_KEY`; `BAD_INPUTS`; `BAD_MAX_COST`; `BAD_PARAMS`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6524,6 +6536,7 @@
               }
             },
             "x-calimero-codes": [
+              "BAD_IDEMPOTENCY_KEY",
               "BAD_INPUTS",
               "BAD_MAX_COST",
               "BAD_PARAMS"
@@ -6570,7 +6583,7 @@
             ]
           },
           "409": {
-            "description": "`CLUSTER_NOT_UPGRADED`; `NO_PRICE_TABLE`",
+            "description": "`CLUSTER_NOT_UPGRADED`; `IDEMPOTENCY_KEY_REUSED`; `NO_PRICE_TABLE`",
             "content": {
               "application/json": {
                 "schema": {
@@ -6580,6 +6593,7 @@
             },
             "x-calimero-codes": [
               "CLUSTER_NOT_UPGRADED",
+              "IDEMPOTENCY_KEY_REUSED",
               "NO_PRICE_TABLE"
             ]
           },

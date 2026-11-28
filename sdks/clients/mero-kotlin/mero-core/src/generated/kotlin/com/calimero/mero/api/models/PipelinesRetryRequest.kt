@@ -34,6 +34,7 @@ import kotlinx.serialization.Contextual
  *
  * @param limits 
  * @param maxCost 
+ * @param idempotencyKey 
  */
 @Serializable
 
@@ -43,7 +44,10 @@ data class PipelinesRetryRequest (
     val limits: kotlin.collections.Map<kotlin.String, PipelinesRetryRequestLimitsValue>? = null,
 
     @SerialName(value = "maxCost")
-    val maxCost: kotlin.String? = null
+    val maxCost: kotlin.String? = null,
+
+    @SerialName(value = "idempotencyKey")
+    val idempotencyKey: kotlin.String? = null
 
 ) {
 

@@ -893,7 +893,7 @@ export interface paths {
         put?: never;
         /**
          * Retry a pipeline run
-         * @description The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.
+         * @description The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set. `idempotencyKey` as on a start.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -937,7 +937,7 @@ export interface paths {
         put?: never;
         /**
          * Start a pipeline run
-         * @description The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.
+         * @description The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it. With an `idempotencyKey` a repeat by the same caller answers the run it started while the app keeps it, and the same key with another body is `409 IDEMPOTENCY_KEY_REUSED`; a key is 1 to 256 bytes (`400 BAD_IDEMPOTENCY_KEY`).
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -10797,6 +10797,7 @@ export interface operations {
                         };
                     };
                     maxCost?: string;
+                    idempotencyKey?: string;
                 };
             };
         };
@@ -10810,7 +10811,7 @@ export interface operations {
                     "application/json": components["schemas"]["PipelineStarted"];
                 };
             };
-            /** @description `BAD_LIMITS`; `BAD_MAX_COST`; `LIMIT_EXCEEDS_CAP` */
+            /** @description `BAD_IDEMPOTENCY_KEY`; `BAD_LIMITS`; `BAD_MAX_COST`; `LIMIT_EXCEEDS_CAP` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -10846,7 +10847,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CLUSTER_NOT_UPGRADED`; `NO_PRICE_TABLE`; `STILL_RUNNING` */
+            /** @description `CLUSTER_NOT_UPGRADED`; `IDEMPOTENCY_KEY_REUSED`; `NO_PRICE_TABLE`; `STILL_RUNNING` */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10995,6 +10996,7 @@ export interface operations {
                         [key: string]: unknown;
                     };
                     maxCost?: string;
+                    idempotencyKey?: string;
                 };
             };
         };
@@ -11008,7 +11010,7 @@ export interface operations {
                     "application/json": components["schemas"]["PipelineStarted"];
                 };
             };
-            /** @description `BAD_INPUTS`; `BAD_MAX_COST`; `BAD_PARAMS` */
+            /** @description `BAD_IDEMPOTENCY_KEY`; `BAD_INPUTS`; `BAD_MAX_COST`; `BAD_PARAMS` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -11044,7 +11046,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CLUSTER_NOT_UPGRADED`; `NO_PRICE_TABLE` */
+            /** @description `CLUSTER_NOT_UPGRADED`; `IDEMPOTENCY_KEY_REUSED`; `NO_PRICE_TABLE` */
             409: {
                 headers: {
                     [name: string]: unknown;

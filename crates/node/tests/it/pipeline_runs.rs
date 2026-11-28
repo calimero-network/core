@@ -12,7 +12,9 @@ use calimero_client::pipeline_events::PipelineEvent;
 use calimero_client::{Client, Request};
 use calimero_identity::testing::SoftAuthenticator;
 use calimero_node::component::blobs::BLOB_IDLE_MS;
-use calimero_node::component::{FailedReason, FinalOutcome, RunRecord, MAX_ACTIVE_PIPELINE_RUNS};
+use calimero_node::component::{
+    FailedReason, FinalOutcome, RunRecord, FINISHED_PIPELINE_RUNS_KEPT, MAX_ACTIVE_PIPELINE_RUNS,
+};
 use calimero_node::node::ComputeLimits;
 use calimero_node::Node;
 use common::{mpk_with_pipelines, signed_up, typed, wire, Cluster, JobNode, PUBLISHER};
@@ -804,6 +806,7 @@ async fn a_pipeline_whose_definition_is_gone_fails() {
         cost: None,
         retry_of: None,
         limits: Default::default(),
+        key: None,
         ts_ms: 0,
     };
     let req = CallRequest::host(
@@ -1181,10 +1184,20 @@ async fn a_start_while_the_app_has_no_leader_is_unavailable_not_expired() {
         .await;
     assert_eq!(ghost.unwrap_err().code(), Some("NO_SUCH_PIPELINE"));
     rig.c.stop(only).await;
-    let started = alice
-        .start_pipeline_run(&rig.app, "broken", json!({ "docs": [file] }), json!({}))
-        .await;
+    // One request, as the node answers it: the client would retry this 503 with its key.
+    let req = Request::new(
+        Method::POST,
+        format!("apps/{}/pipelines/broken/runs", rig.app),
+    )
+    .json(json!({ "inputs": { "docs": [file] } }));
+    let asked = Instant::now();
+    let started = alice.transport().json(req).await;
     assert_eq!(started.unwrap_err().code(), Some("UNAVAILABLE"));
+    assert!(
+        asked.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        asked.elapsed()
+    );
 }
 
 fn cached(v: &Value, step: &str) -> bool {
@@ -1233,6 +1246,105 @@ async fn rerunning_with_one_changed_param_runs_only_the_steps_it_reaches() {
     }
     assert_eq!(rig.all_records().len(), 5, "no run record at all");
     assert_eq!(third["steps"]["c"]["result"], first["steps"]["c"]["result"]);
+}
+
+/// A start or retry sent again with its idempotency key, as a CI job does after a timeout, answers
+/// the run the first one started; the same key with another body is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_start_repeated_with_its_idempotency_key_is_the_same_run() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(b"some document").await;
+    let start = |body: Value| rig.alice.start_pipeline_run_with(&rig.app, "partial", body);
+    let reused = |e: calimero_client::Error| matches!(&e, calimero_client::Error::Api { status: 409, code, .. } if code == "IDEMPOTENCY_KEY_REUSED");
+    let body =
+        json!({ "inputs": { "docs": [file] }, "params": { "p": "one" }, "idempotencyKey": "ci-1" });
+    let first = start(body.clone()).await.unwrap();
+    assert_eq!(
+        start(body.clone()).await.unwrap(),
+        first,
+        "the same run, the same answer"
+    );
+    let run = first["run"].as_str().unwrap().to_owned();
+    let done = rig.ended(&run).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    assert_eq!(
+        start(body.clone()).await.unwrap(),
+        first,
+        "an ended run is still the same run"
+    );
+
+    let mut other = body.clone();
+    other["params"]["p"] = json!("two");
+    assert!(reused(start(other).await.unwrap_err()));
+
+    let mut keyless = body.clone();
+    let _key = keyless.as_object_mut().unwrap().remove("idempotencyKey");
+    let fresh = start(keyless).await.unwrap();
+    assert_ne!(fresh["run"], first["run"], "no key, a new run");
+    let _ended = rig.ended(fresh["run"].as_str().unwrap()).await;
+
+    let retry = json!({ "idempotencyKey": "ci-2" });
+    let once = rig
+        .alice
+        .retry_pipeline_run(&rig.app, &run, retry.clone())
+        .await
+        .unwrap();
+    let twice = rig
+        .alice
+        .retry_pipeline_run(&rig.app, &run, retry)
+        .await
+        .unwrap();
+    assert_eq!(once, twice, "a repeated retry is the same run");
+    assert_eq!(once["retryOf"], json!(run));
+    let as_start = json!({ "inputs": { "docs": [file] }, "idempotencyKey": "ci-2" });
+    assert!(
+        reused(start(as_start).await.unwrap_err()),
+        "a retry's key is not a start's"
+    );
+    let both = json!({ "inputs": { "docs": [file] }, "idempotencyKey": "ci-3" });
+    let (x, y) = tokio::join!(start(both.clone()), start(both));
+    assert_eq!(
+        x.unwrap(),
+        y.unwrap(),
+        "two starts racing with one key are one run"
+    );
+    for bad in [String::new(), "k".repeat(257)] {
+        let body = json!({ "inputs": { "docs": [file] }, "idempotencyKey": bad });
+        let err = start(body).await.unwrap_err();
+        assert!(
+            matches!(&err, calimero_client::Error::Api { status: 400, code, .. } if code == "BAD_IDEMPOTENCY_KEY"),
+            "{err:?}"
+        );
+    }
+}
+
+/// A key whose run the app has dropped starts a new run: the old run's step runs, which the app
+/// keeps longer than the run itself, never collide with the new run's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_key_whose_run_was_dropped_starts_a_new_run() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(b"some document").await;
+    let keyed = json!({ "inputs": { "docs": [file] }, "idempotencyKey": "ci-1" });
+    let start =
+        |name: &'static str, body: Value| rig.alice.start_pipeline_run_with(&rig.app, name, body);
+    let first = start("fresh", keyed.clone()).await.unwrap();
+    let first = first["run"].as_str().unwrap().to_owned();
+    assert_eq!(rig.ended(&first).await["state"], "succeeded");
+    for _ in 0..FINISHED_PIPELINE_RUNS_KEPT / MAX_ACTIVE_PIPELINE_RUNS {
+        let batch = (0..MAX_ACTIVE_PIPELINE_RUNS)
+            .map(|_| start("partial", json!({ "inputs": { "docs": [file] } })));
+        for filler in futures_util::future::join_all(batch).await {
+            let _ended = rig.ended(filler.unwrap()["run"].as_str().unwrap()).await;
+        }
+    }
+    let dropped = rig.alice.pipeline_run(&rig.app, &first).await;
+    assert!(dropped.is_err(), "the first run is dropped: {dropped:?}");
+
+    let again = start("fresh", keyed).await.unwrap();
+    let again = again["run"].as_str().unwrap().to_owned();
+    assert_ne!(again, first, "a new run under a new id");
+    let done = rig.ended(&again).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
 }
 
 /// A step with `cache: false` runs every time, never answered from the step cache.

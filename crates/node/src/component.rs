@@ -55,8 +55,8 @@ use crate::types::{AppId, Audience, Caller, EventRecord};
 pub use pipelines::{
     run_id, CostCap, FanOut, PipelineCancelEntry, PipelineRun, PipelineStartEntry, PipelineState,
     StepDecisionEntry, StepRun, StepState, StepStatus, StepVerdict, COST_CAP,
-    FINISHED_PIPELINE_RUNS_KEPT, INPUT_NOT_HELD, MAX_ACTIVE_PIPELINE_RUNS, MAX_STEP_RESULTS_BYTES,
-    MAX_STEP_RESULT_BYTES, MAX_STEP_RUNS, NO_ROOM, TOO_MANY_PIPELINE_RUNS,
+    FINISHED_PIPELINE_RUNS_KEPT, INPUT_NOT_HELD, KEY_TAKEN, MAX_ACTIVE_PIPELINE_RUNS,
+    MAX_STEP_RESULTS_BYTES, MAX_STEP_RESULT_BYTES, MAX_STEP_RUNS, NO_ROOM, TOO_MANY_PIPELINE_RUNS,
 };
 pub use runs::{
     Attempt, AttemptEntry, ComputeStart, FailedReason, Final, FinalEntry, FinalOutcome,
@@ -1103,7 +1103,7 @@ pub struct TickApplied {
     pub applied: Applied,
 }
 
-fn idem_key(caller: &Caller, key: &str) -> String {
+pub(crate) fn idem_key(caller: &Caller, key: &str) -> String {
     match caller {
         Caller::App { app } => format!("app:{app}|{key}"),
         Caller::System => format!("system|{key}"),

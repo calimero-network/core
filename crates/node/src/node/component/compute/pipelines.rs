@@ -681,6 +681,8 @@ fn resolve(
 /// `runs`, `outputs`, `result` or `results`.
 fn run_json(run: &PipelineRun, files: bool, items: bool) -> Value {
     let mut v = serde_json::to_value(run).unwrap_or(Value::Null);
+    // The key's hash is the node's lookup, not part of the run a reader sees.
+    let _key = v.as_object_mut().and_then(|o| o.remove("key"));
     if let Some(cap) = &run.cost {
         v["cost"]["maxCost"] = json!(cap.max_cost.to_string());
         v["cost"]["worstCase"] = json!(cap.worst_case.to_string());
@@ -789,7 +791,12 @@ impl Node {
                 })?,
         };
         let (result, applied) = g.read_local(|m, applied| {
-            let result = match req.args["run"].as_str() {
+            let keyed = req.args["key"].as_str().map(|key| {
+                m.keyed_pipeline(key)
+                    .and_then(|run| m.pipeline_head(&run))
+                    .map_or(Value::Null, |r| run_json(&r, files, false))
+            });
+            let result = keyed.unwrap_or_else(|| match req.args["run"].as_str() {
                 Some(run) if req.args["receipt"].as_bool() == Some(true) => {
                     m.pipeline_run(run).map_or(Value::Null, |r| {
                         receipt_source(m, r, req.args["evidence"].as_bool() == Some(true))
@@ -810,7 +817,7 @@ impl Node {
                         .map(|r| run_json(r, files, false))
                         .collect::<Vec<_>>(),
                 }),
-            };
+            });
             (result, applied)
         });
         Ok(ViewAnswer {
@@ -1206,6 +1213,7 @@ steps:
             cost_so_far: 0,
             retry_of: None,
             limits: BTreeMap::new(),
+            key: None,
         }
     }
 
@@ -2236,6 +2244,7 @@ steps:
     /// A run with every optional field set, for the answer's type to read.
     fn full_run(p: &Pipeline) -> PipelineRun {
         let mut run = run_of(p);
+        run.key = Some("k".into());
         run.modules = BTreeMap::from([("pdf@1".to_owned(), "module-v1".to_owned())]);
         run.input_files = BTreeMap::from([("f1".to_owned(), file_ref("f1"))]);
         run.cost = Some(CostCap {

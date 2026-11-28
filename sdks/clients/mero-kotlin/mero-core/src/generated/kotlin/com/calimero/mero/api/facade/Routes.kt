@@ -20,6 +20,8 @@ internal object Routes {
         listOf(
             Route("POST", Regex("^apps/[^/]+/intents$")),
             Route("POST", Regex("^apps/[^/]+/methods/[^/]+$")),
+            Route("POST", Regex("^apps/[^/]+/pipeline-runs/[^/]+/retry$")),
+            Route("POST", Regex("^apps/[^/]+/pipelines/[^/]+/runs$")),
             Route("POST", Regex("^apps/[^/]+/views$")),
         )
 
@@ -28,6 +30,8 @@ internal object Routes {
         listOf(
             Route("POST", Regex("^apps/[^/]+/intents$")),
             Route("POST", Regex("^apps/[^/]+/methods/[^/]+$")),
+            Route("POST", Regex("^apps/[^/]+/pipeline-runs/[^/]+/retry$")),
+            Route("POST", Regex("^apps/[^/]+/pipelines/[^/]+/runs$")),
         )
 
     /**

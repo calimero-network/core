@@ -360,6 +360,7 @@ export function createRoutes(api: RouteClient) {
        * Retry a pipeline run.
        *
        * `POST /apps/{app}/pipeline-runs/{run}/retry` (`pipelines_retry`). **Who:** signed in (a session or an API key).
+       * Retried on `503` or when the node cannot be reached, with its `idempotencyKey` (one is made when none is given).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       pipelinesRetry: (args: operations['pipelines_retry']['parameters']['path'] & operations['pipelines_retry']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['pipelines_retry']['responses'][200]['content']['application/json']> =>
@@ -368,6 +369,7 @@ export function createRoutes(api: RouteClient) {
        * Start a pipeline run.
        *
        * `POST /apps/{app}/pipelines/{name}/runs` (`pipelines_start`). **Who:** signed in (a session or an API key).
+       * Retried on `503` or when the node cannot be reached, with its `idempotencyKey` (one is made when none is given).
        * A `421 WRONG_NODE` moves the client to the next node of the cluster.
        */
       pipelinesStart: (args: operations['pipelines_start']['parameters']['path'] & operations['pipelines_start']['requestBody']['content']['application/json'], options?: MethodOptions): Promise<operations['pipelines_start']['responses'][200]['content']['application/json']> =>
@@ -1998,7 +2000,7 @@ export function createRoutes(api: RouteClient) {
  * The routes the document marks `x-calimero-retry-safe`: the transport sends them again on a `503`
  * or cannot be reached, and one that `requires` an `idempotencyKey` is given one before it is first sent.
  */
-export const RETRY_SAFE_ROUTES: ReadonlyArray<{ method: string; path: string; requires?: string }> = [{"method":"POST","path":"/apps/{app}/intents","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/methods/{method}","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/views"}];
+export const RETRY_SAFE_ROUTES: ReadonlyArray<{ method: string; path: string; requires?: string }> = [{"method":"POST","path":"/apps/{app}/intents","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/methods/{method}","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/pipeline-runs/{run}/retry","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/pipelines/{name}/runs","requires":"idempotencyKey"},{"method":"POST","path":"/apps/{app}/views"}];
 
 /** Every generated group. */
 export type Routes = ReturnType<typeof createRoutes>;

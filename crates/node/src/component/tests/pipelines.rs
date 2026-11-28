@@ -7,8 +7,8 @@ use super::runs::{job_key, leader, out, report, why, World, DIGEST, INPUT};
 use super::*;
 use crate::app::rows;
 use crate::component::pipelines::{
-    BAD_START, CACHE_GONE, CANCELLING, COST_CAP, DECIDED, INPUT_NOT_HELD, KNOWN, NOT_FAN_OUT,
-    NOT_NEXT, NOT_RUNNING, STEP_STOPPING, TOO_MANY_FAILURES,
+    BAD_START, CACHE_GONE, CANCELLING, COST_CAP, DECIDED, INPUT_NOT_HELD, KEY_TAKEN, KNOWN,
+    NOT_FAN_OUT, NOT_NEXT, NOT_RUNNING, STEP_STOPPING, TOO_MANY_FAILURES,
 };
 use crate::job_wire::{sign_report, FailReason, ReportStatus};
 
@@ -38,6 +38,7 @@ fn start_entry(id: &str, steps: &[&str]) -> PipelineStartEntry {
         cost: None,
         retry_of: None,
         limits: BTreeMap::new(),
+        key: None,
         ts_ms: 5,
     }
 }
@@ -433,6 +434,42 @@ fn a_dropped_pipeline_run_releases_the_holds_on_its_outputs() {
     assert!(w.r.machine.pipeline_run("first").is_none());
     assert_eq!(refs(&w, 1), 0);
     assert!(w.r.machine.pipeline_run("n0").is_some());
+}
+
+/// A keyed start's key names its run while the app keeps it, so another start with the key is
+/// refused; once the run is dropped the key is free and a new run under a new id takes it.
+#[test]
+fn a_start_key_names_its_run_until_the_run_is_dropped() {
+    let mut w = World::new();
+    let keyed = |id: &str| {
+        ComponentCmd::PipelineStart(Box::new(PipelineStartEntry {
+            key: Some("k".into()),
+            ..start_entry(id, &["a"])
+        }))
+    };
+    let _a = w.push(&keyed("first"));
+    assert_eq!(w.r.machine.keyed_pipeline("k").as_deref(), Some("first"));
+    assert_eq!(why(&w.push(&keyed("second"))), KEY_TAKEN);
+    let _s = decide(&mut w, "first", "a", StepVerdict::Skipped);
+    assert_eq!(
+        why(&w.push(&keyed("second"))),
+        KEY_TAKEN,
+        "an ended run keeps it"
+    );
+    for i in 0..FINISHED_PIPELINE_RUNS_KEPT {
+        let id = format!("n{i}");
+        let _b = begin(&mut w, &id, &["a"]);
+        let _d = decide(&mut w, &id, "a", StepVerdict::Skipped);
+    }
+    assert!(w.r.machine.pipeline_run("first").is_none());
+    assert_eq!(
+        w.r.machine.keyed_pipeline("k"),
+        None,
+        "dropped with its run"
+    );
+    let again = w.push(&keyed("second"));
+    assert_eq!(again.status, Status::Ok, "{again:?}");
+    assert_eq!(w.r.machine.keyed_pipeline("k").as_deref(), Some("second"));
 }
 
 #[test]

@@ -676,16 +676,21 @@ impl Apps<'_> {
     /// Retry a pipeline run.
     ///
     /// `POST /apps/{app}/pipeline-runs/{run}/retry` (`pipelines_retry`). Who: signed in (a session or an API key).
+    ///
+    /// Retried while the node answers `503` or cannot be reached, with its `idempotencyKey` (one is made when none is given).
     pub async fn pipelines_retry(
         self,
         app: &str,
         run: &str,
         limits: Option<BTreeMap<String, PipelinesRetryRequestLimitsValue>>,
         max_cost: Option<&str>,
+        idempotency_key: Option<&str>,
     ) -> Result<PipelineStarted> {
+        let idempotency_key = Some(idempotency_key.map_or_else(route::new_key, str::to_owned));
         let mut fields = Map::new();
         route::put_some(&mut fields, "limits", limits)?;
         route::put_some(&mut fields, "maxCost", max_cost)?;
+        route::put_some(&mut fields, "idempotencyKey", idempotency_key)?;
         let body = Value::Object(fields);
         let req = Request::new(
             Method::POST,
@@ -696,12 +701,14 @@ impl Apps<'_> {
             ),
         )
         .json(body);
-        route::json(self.client.transport(), req, None, None, false).await
+        route::json(self.client.transport(), req, None, None, true).await
     }
 
     /// Start a pipeline run.
     ///
     /// `POST /apps/{app}/pipelines/{name}/runs` (`pipelines_start`). Who: signed in (a session or an API key).
+    ///
+    /// Retried while the node answers `503` or cannot be reached, with its `idempotencyKey` (one is made when none is given).
     pub async fn pipelines_start(
         self,
         app: &str,
@@ -709,11 +716,14 @@ impl Apps<'_> {
         inputs: Option<BTreeMap<String, Vec<String>>>,
         params: Option<Map<String, Value>>,
         max_cost: Option<&str>,
+        idempotency_key: Option<&str>,
     ) -> Result<PipelineStarted> {
+        let idempotency_key = Some(idempotency_key.map_or_else(route::new_key, str::to_owned));
         let mut fields = Map::new();
         route::put_some(&mut fields, "inputs", inputs)?;
         route::put_some(&mut fields, "params", params)?;
         route::put_some(&mut fields, "maxCost", max_cost)?;
+        route::put_some(&mut fields, "idempotencyKey", idempotency_key)?;
         let body = Value::Object(fields);
         let req = Request::new(
             Method::POST,
@@ -724,7 +734,7 @@ impl Apps<'_> {
             ),
         )
         .json(body);
-        route::json(self.client.transport(), req, None, None, false).await
+        route::json(self.client.transport(), req, None, None, true).await
     }
 
     /// Validate a pipeline.
