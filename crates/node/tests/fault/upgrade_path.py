@@ -37,6 +37,18 @@ package registry (`w.registry`), the fixtures (`w.fixtures`), values other cases
 left (`w.shared`) and `w.check(cond, what)`. A failing `seed` stops the run (the
 rest would test nothing); a failing `mixed`, `verify` or `extend` is reported
 and the next case runs, so one run lists every breakage.
+
+**Concurrency.** Within a phase the cases run at once, up to `--jobs` (default 8,
+`UPGRADE_JOBS`; `--jobs 1` runs them one by one with live output). The phases stay in
+order: the roll is one event. A case must be independent of the others, so:
+
+- an account name (`w.account(name)`, `person(w, name)`) belongs to one case; two cases
+  that claim one name fail the run, naming both (cases in one `group` share names and
+  run one after another in file order);
+- a case that changes what every other case sees (a quota, a pool, a stopped node) is
+  `exclusive`: it runs alone after the rest of its phase.
+
+Each group's log is printed whole when it ends, so output never interleaves.
 """
 
 from __future__ import annotations
@@ -48,10 +60,12 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 import traceback
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -74,6 +88,12 @@ OLD_JOB, NEW_JOB = 9, 10
 FROM_RELEASE = "2.3.1000"
 TO_RELEASE = "2.3.1001"
 UPLOAD_TRIES = 5
+BUILD_WAIT_S = 1800  # the most the roll waits for this tree's build
+PHASES: dict[str, float] = {}  # seconds each phase took, in run order
+JOBS = 8  # case groups that run at once within a phase (UPGRADE_JOBS, --jobs; 1 runs them one by one)
+SEED_JOBS = 3  # ... while this tree builds beside the seed: the build is the longest step, so the seed leaves it CPU
+_ctx = threading.local()  # the case group this thread runs, and where its log goes
+_LONGEST: dict[str, float] = {}  # seconds a group's cases took in its slowest phase so far
 
 
 class Failed(AssertionError):
@@ -95,6 +115,11 @@ class Case:
     """One kind of data: written on the old cluster, read back on the new one."""
 
     name = ""
+    # Cases with one `group` run one after another in file order and may share account names and
+    # `w.shared` values; a case with no group is its own.
+    group = ""
+    # Runs alone, after the other cases of each phase: it changes cluster-wide state the rest see.
+    exclusive = False
     governance = ("open", "granted")
 
     def seed(self, w: World):
@@ -264,10 +289,12 @@ def _retry_unavailable(request):
 class World:
     """What a case sees: the fleet, its accounts, the registry, fixtures, shared values."""
 
-    def __init__(self, fleet: Fleet, registry: PackageRegistry, fixtures: dict, phase_log):
+    def __init__(self, fleet: Fleet, registry: PackageRegistry, fixtures: dict, phase_log, jobs: int = 1,
+                 build=None):
         self.fleet = fleet
         self.registry = registry
         self.fixtures = fixtures
+        self.jobs = jobs
         self.shared: dict = {}
         self.phase = "seed"
         # Set by the granted run's governance case: who approves a release in the
@@ -275,15 +302,48 @@ class World:
         self.approve_release = None
         self.on_sign_up = None
         self._accounts: dict[str, Account] = {}
+        self._claims: dict[str, str] = {}
+        self._lock = threading.Lock()
+        self._build = build  # waits for this tree's build; None when it is built already
+        self._build_lock = threading.Lock()
         self._log = phase_log
+
+    def this_tree(self):
+        """Block until this tree's build has ended: the seed phase runs while it builds, so a case
+        that seeds from one of its artifacts (`fixtures["pipelines"]`) calls this first."""
+        with self._build_lock:
+            if self._build:
+                self._build()
+                self._build = None
+
+    def claim(self, name):
+        """Record that the running case's group uses account `name`; another group's claim fails."""
+        group = getattr(_ctx, "group", None)
+        if group is None:
+            return
+        with self._lock:
+            owner = self._claims.setdefault(name, group)
+        if owner != group:
+            raise Failed(f"[{self.phase}] account name {name!r} is used by both {owner} and {group}: "
+                         "cases run at once, so each needs names of its own")
 
     def account(self, name) -> Account:
         """The account `name`, signed up (on the cluster as it is now) on first use."""
-        if name not in self._accounts:
-            self._accounts[name] = Account(self.fleet, name, len(self._accounts)).sign_up()
+        self.claim(name)
+        with self._lock:
+            account = self._accounts.get(name)
+            if account is not None:
+                return account
+            account = self._accounts[name] = Account(self.fleet, name, len(self._accounts))
+        try:
+            account.sign_up()
             if self.on_sign_up:
-                self.on_sign_up(self._accounts[name])
-        return self._accounts[name]
+                self.on_sign_up(account)
+            return account
+        except BaseException:
+            with self._lock:
+                self._accounts.pop(name, None)
+            raise
 
     def check(self, cond, what):
         if not cond:
@@ -313,26 +373,107 @@ class World:
 
 
 def say(s=""):
-    print(s, flush=True)
+    log = getattr(_ctx, "log", None)
+    if log is None:
+        print(s, flush=True)
+    else:
+        log.append(s)
 
 
-def run_step(w, cases, step, results, fatal=False, label=None):
+def case_groups(cases):
+    """The cases by group, each group's in order; a case with no group is its own."""
+    groups: dict[str, list] = {}
+    for c in cases:
+        groups.setdefault(c.group or c.name, []).append(c)
+    return groups
+
+
+def _run_group(w, group, members, step, fatal, buffered, aborted):
+    """The cases of `group`, one after another: their results, the message that stops the run
+    (a `fatal` step's failure) and their log, which is kept for the caller when `buffered`."""
+    _ctx.group, _ctx.log = group, [] if buffered else None
+    results, stop, started = [], None, time.time()
+    try:
+        for c in members:
+            if aborted.is_set():
+                break
+            t0 = time.time()
+            try:
+                getattr(c, step)(w)
+                status, error = "pass", None
+            except Exception as e:  # noqa: BLE001
+                status, error = "fail", f"{type(e).__name__}: {e}"
+                if not isinstance(e, Failed):
+                    say(traceback.format_exc().rstrip())
+            took = round(time.time() - t0, 1)
+            results.append({"case": c.name, "step": w.phase, "status": status, "seconds": took, "error": error})
+            say(f"   {status.upper()} {c.name}.{step} ({w.phase}) in {took}s" + (f": {error}" if error else ""))
+            if error and fatal:
+                stop = f"{c.name}.{step} failed, so the run stops: {error}"
+                break
+        return results, stop, _ctx.log
+    finally:
+        _LONGEST[group] = max(_LONGEST.get(group, 0), time.time() - started)
+        _ctx.group = _ctx.log = None
+
+
+def run_step(w, cases, step, results, fatal=False, label=None, jobs=None):
+    """`step` of every case, groups at once (`jobs`, else `w.jobs`, at a time), then the exclusive ones alone."""
+    jobs = jobs or w.jobs
     w.phase = label or step
     say(f"== {w.phase}")
-    for c in cases:
-        t0 = time.time()
-        try:
-            getattr(c, step)(w)
-            status, error = "pass", None
-        except Exception as e:  # noqa: BLE001
-            status, error = "fail", f"{type(e).__name__}: {e}"
-            if not isinstance(e, Failed):
-                traceback.print_exc()
-        took = round(time.time() - t0, 1)
-        results.append({"case": c.name, "step": w.phase, "status": status, "seconds": took, "error": error})
-        say(f"   {status.upper()} {c.name}.{step} ({w.phase}) in {took}s" + (f": {error}" if error else ""))
-        if error and fatal:
-            raise Failed(f"{c.name}.{step} failed, so the run stops: {error}")
+    started = time.time()
+    groups = case_groups(cases)
+    shared = {g: m for g, m in groups.items() if jobs > 1 and not any(c.exclusive for c in m)}
+    alone = [(g, m) for g, m in groups.items() if g not in shared]
+    done: dict[str, list] = {}
+    stops: list[str] = []
+    aborted = threading.Event()
+
+    def finish(group, outcome):
+        group_results, stop, log = outcome
+        for line in log or ():
+            say(line)
+        done[group] = group_results
+        if stop:
+            stops.append(stop)
+            if fatal:
+                aborted.set()
+
+    try:
+        if shared:
+            first = sorted(shared, key=lambda g: -_LONGEST.get(g, 0))
+            with ThreadPoolExecutor(max_workers=jobs) as pool:
+                pending = {pool.submit(_run_group, w, g, shared[g], step, fatal, True, aborted): g for g in first}
+                for f in as_completed(pending):
+                    finish(pending[f], f.result())
+        for group, members in alone:
+            finish(group, _run_group(w, group, members, step, fatal, False, aborted))
+            if aborted.is_set():
+                break
+    finally:
+        results.extend(r for c in cases for r in done.get(c.group or c.name, []) if r["case"] == c.name)
+        PHASES[w.phase] = round(time.time() - started, 1)
+    if fatal and stops:
+        raise Failed(stops[0])
+
+
+def wait_for_build(status_file, timeout=BUILD_WAIT_S):
+    """Block until the build of this tree's binaries (started alongside the seed) has ended."""
+    deadline = time.time() + timeout
+    while not os.path.exists(status_file):
+        if time.time() > deadline:
+            raise Failed(f"this tree's build did not end within {timeout}s")
+        time.sleep(1)
+    code = Path(status_file).read_text().strip()
+    if code != "0":
+        raise Failed(f"this tree's build failed (exit {code}); its output is printed at the end of the run")
+
+
+def check_built(paths):
+    for p in paths:
+        if not Path(p).exists():
+            raise Failed(f"missing {p}")
 
 
 def restart_from_disk(w, node):
@@ -358,6 +499,11 @@ def main(argv=None):
     ap.add_argument("--pipelines-mpk", required=True,
                     help="the compute fixture built from this tree with its pipeline, as a compute-only package "
                          "(pipeline cases seed it after the roll)")
+    ap.add_argument("--build-status", help="a file that holds the exit status of this tree's build once it ends: "
+                    "the roll waits for it, so the build can run while the old cluster seeds; without it the "
+                    "binaries must exist already")
+    ap.add_argument("--jobs", type=int, default=int(os.environ.get("UPGRADE_JOBS", JOBS)),
+                    help="case groups that run at once within a phase; 1 runs them one by one, with live output")
     ap.add_argument("--cases", default=str(HERE / "upgrade_cases"))
     ap.add_argument("--only", help="comma-separated case names")
     ap.add_argument("--governance", choices=("open", "granted"), default="open",
@@ -378,7 +524,9 @@ def main(argv=None):
     }
     old_merod, old_meroctl = str(frm / "merod"), str(frm / "meroctl")
     new_merod, new_meroctl = str(Path(args.to_merod).resolve()), str(Path(args.to_meroctl).resolve())
-    for p in (old_merod, old_meroctl, new_merod, new_meroctl, *[v for k, v in fixtures.items() if k != "from_version"]):
+    from_side = [old_merod, old_meroctl, fixtures["kv_from"], fixtures["compute_from"]]
+    this_tree = [new_merod, new_meroctl, fixtures["kv_next"], fixtures["pipelines"]]
+    for p in from_side + ([] if args.build_status else this_tree):
         if not Path(p).exists():
             raise SystemExit(f"missing {p}")
 
@@ -396,18 +544,28 @@ def main(argv=None):
     fleet = Fleet(wd, base_port=BASE_PORT + offset, cluster="upgrade-path", binary=old_merod,
                   meroctl=old_meroctl, release=FROM_RELEASE, registry=registry,
                   **({"release_approvals": "owner", "deployers": "owner"} if args.governance == "granted" else {}))
-    w = World(fleet, registry, fixtures, say)
+    def built():
+        if args.build_status:
+            wait_for_build(args.build_status)
+        check_built(this_tree)
+
+    w = World(fleet, registry, fixtures, say, jobs=max(1, args.jobs), build=built)
     results: list[dict] = []
     timings: dict = {}
     t0 = time.time()
     try:
         fleet.start()
         fleet.start_job(OLD_JOB, old_merod, FROM_RELEASE)
-        run_step(w, cases, "seed", results, fatal=True)
+        run_step(w, cases, "seed", results, fatal=True, jobs=min(w.jobs, SEED_JOBS) if args.build_status else None)
 
         def mixed():
             run_step(w, cases, "mixed", results)
 
+        w.phase = "build"
+        say("== waiting for the build of this tree")
+        t = time.time()
+        w.this_tree()
+        PHASES["build wait"] = round(time.time() - t, 1)
         w.phase = "rollout"
         timings = rollout.roll_forward(fleet, new_merod, TO_RELEASE, NEW_IDS, log=say, on_mixed=mixed,
                                        approve=w.approve_release)
@@ -436,13 +594,14 @@ def main(argv=None):
     total = round(time.time() - t0, 1)
     failed = [r for r in results if r["status"] != "pass"]
     say(f"DONE {len(results) - len(failed)}/{len(results)} steps passed in {total}s "
-        f"({', '.join(f'{k} {v:.0f}s' for k, v in timings.items())})"
+        f"(phases: {', '.join(f'{k} {v:.0f}s' for k, v in PHASES.items())}; "
+        f"rollout: {', '.join(f'{k} {v:.0f}s' for k, v in timings.items())})"
         + (f"; failed: {[(r['case'], r['step']) for r in failed]}" if failed else ""))
     if args.json:
         Path(args.json).parent.mkdir(parents=True, exist_ok=True)
         Path(args.json).write_text(json.dumps({
             "from": fixtures["from_version"], "to": new_merod, "governance": args.governance, "seconds": total, "rollout": timings,
-            "results": results, "workdir": str(wd)}, indent=2) + "\n")
+            "phases": PHASES, "results": results, "workdir": str(wd)}, indent=2) + "\n")
     if not failed and not args.keep:
         shutil.rmtree(wd, ignore_errors=True)
     return 1 if failed else 0

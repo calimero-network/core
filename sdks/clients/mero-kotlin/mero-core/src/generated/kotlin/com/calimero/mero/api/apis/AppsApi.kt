@@ -45,6 +45,9 @@ import com.calimero.mero.api.models.AppList
 import com.calimero.mero.api.models.AppMethodRequest
 import com.calimero.mero.api.models.AppMoveRequest
 import com.calimero.mero.api.models.AppMoved
+import com.calimero.mero.api.models.AppOriginAddRequest
+import com.calimero.mero.api.models.AppOriginList
+import com.calimero.mero.api.models.AppOriginRemoveRequest
 import com.calimero.mero.api.models.AppSecretSetRequest
 import com.calimero.mero.api.models.AppSecrets
 import com.calimero.mero.api.models.AppSetEgressRequest
@@ -76,7 +79,9 @@ import com.calimero.mero.api.models.LinkRow
 import com.calimero.mero.api.models.Logged
 import com.calimero.mero.api.models.MetadataBody
 import com.calimero.mero.api.models.MethodResult
+import com.calimero.mero.api.models.OriginRemoved
 import com.calimero.mero.api.models.OutboundLog
+import com.calimero.mero.api.models.PackageOrigin
 import com.calimero.mero.api.models.PartTaken
 import com.calimero.mero.api.models.PipelineCancelled
 import com.calimero.mero.api.models.PipelineRunList
@@ -1668,6 +1673,233 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     }
 
     /**
+     * POST /apps/{app}/origins
+     * Register a web origin for an instance
+     * By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over &#x60;{ origin, rpId }&#x60;. A passkey ceremony there opens a session bound to the instance&#39;s package that reaches this instance alone; what the account may do in it is the instance&#39;s grants&#39;. Answers the origin as registered (the one already there, when the same origin is registered again).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appOriginAddRequest 
+     * @return PackageOrigin
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appOriginAdd(app: kotlin.String, appOriginAddRequest: AppOriginAddRequest) : PackageOrigin = withContext(Dispatchers.IO) {
+        val localVarResponse = appOriginAddWithHttpInfo(app = app, appOriginAddRequest = appOriginAddRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as PackageOrigin
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * POST /apps/{app}/origins
+     * Register a web origin for an instance
+     * By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over &#x60;{ origin, rpId }&#x60;. A passkey ceremony there opens a session bound to the instance&#39;s package that reaches this instance alone; what the account may do in it is the instance&#39;s grants&#39;. Answers the origin as registered (the one already there, when the same origin is registered again).  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appOriginAddRequest 
+     * @return ApiResponse<PackageOrigin?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appOriginAddWithHttpInfo(app: kotlin.String, appOriginAddRequest: AppOriginAddRequest) : ApiResponse<PackageOrigin?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appOriginAddRequestConfig(app = app, appOriginAddRequest = appOriginAddRequest)
+
+        return@withContext request<AppOriginAddRequest, PackageOrigin>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appOriginAdd
+     *
+     * @param app 
+     * @param appOriginAddRequest 
+     * @return RequestConfig
+     */
+    fun appOriginAddRequestConfig(app: kotlin.String, appOriginAddRequest: AppOriginAddRequest) : RequestConfig<AppOriginAddRequest> {
+        val localVariableBody = appOriginAddRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.POST,
+            path = "/apps/{app}/origins".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * DELETE /apps/{app}/origins
+     * Remove an instance&#39;s web origin
+     * Whoever manages the instance, with a passkey step-up. The sessions opened there end.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appOriginRemoveRequest 
+     * @return OriginRemoved
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appOriginRemove(app: kotlin.String, appOriginRemoveRequest: AppOriginRemoveRequest) : OriginRemoved = withContext(Dispatchers.IO) {
+        val localVarResponse = appOriginRemoveWithHttpInfo(app = app, appOriginRemoveRequest = appOriginRemoveRequest)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as OriginRemoved
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * DELETE /apps/{app}/origins
+     * Remove an instance&#39;s web origin
+     * Whoever manages the instance, with a passkey step-up. The sessions opened there end.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * @param app 
+     * @param appOriginRemoveRequest 
+     * @return ApiResponse<OriginRemoved?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appOriginRemoveWithHttpInfo(app: kotlin.String, appOriginRemoveRequest: AppOriginRemoveRequest) : ApiResponse<OriginRemoved?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appOriginRemoveRequestConfig(app = app, appOriginRemoveRequest = appOriginRemoveRequest)
+
+        return@withContext request<AppOriginRemoveRequest, OriginRemoved>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appOriginRemove
+     *
+     * @param app 
+     * @param appOriginRemoveRequest 
+     * @return RequestConfig
+     */
+    fun appOriginRemoveRequestConfig(app: kotlin.String, appOriginRemoveRequest: AppOriginRemoveRequest) : RequestConfig<AppOriginRemoveRequest> {
+        val localVariableBody = appOriginRemoveRequest
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Content-Type"] = "application/json"
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.DELETE,
+            path = "/apps/{app}/origins".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
+     * GET /apps/{app}/origins
+     * An instance&#39;s web origins
+     * The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
+     * @param app 
+     * @return AppOriginList
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     * @throws UnsupportedOperationException If the API returns an informational or redirection response
+     * @throws ClientException If the API returns a client error response
+     * @throws ServerException If the API returns a server error response
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class, UnsupportedOperationException::class, ClientException::class, ServerException::class)
+    suspend fun appOrigins(app: kotlin.String) : AppOriginList = withContext(Dispatchers.IO) {
+        val localVarResponse = appOriginsWithHttpInfo(app = app)
+
+        return@withContext when (localVarResponse.responseType) {
+            ResponseType.Success -> (localVarResponse as Success<*>).data as AppOriginList
+            ResponseType.Informational -> throw UnsupportedOperationException("Client does not support Informational responses.")
+            ResponseType.Redirection -> throw UnsupportedOperationException("Client does not support Redirection responses.")
+            ResponseType.ClientError -> {
+                val localVarError = localVarResponse as ClientError<*>
+                throw ClientException("Client error : ${localVarError.statusCode} ${localVarError.message.orEmpty()}", localVarError.statusCode, localVarResponse)
+            }
+            ResponseType.ServerError -> {
+                val localVarError = localVarResponse as ServerError<*>
+                throw ServerException("Server error : ${localVarError.statusCode} ${localVarError.message.orEmpty()} ${localVarError.body}", localVarError.statusCode, localVarResponse)
+            }
+        }
+    }
+
+    /**
+     * GET /apps/{app}/origins
+     * An instance&#39;s web origins
+     * The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend).
+     * @param app 
+     * @return ApiResponse<AppOriginList?>
+     * @throws IllegalStateException If the request is not correctly configured
+     * @throws IOException Rethrows the OkHttp execute method exception
+     */
+    @Suppress("UNCHECKED_CAST")
+    @Throws(IllegalStateException::class, IOException::class)
+    suspend fun appOriginsWithHttpInfo(app: kotlin.String) : ApiResponse<AppOriginList?> = withContext(Dispatchers.IO) {
+        val localVariableConfig = appOriginsRequestConfig(app = app)
+
+        return@withContext request<Unit, AppOriginList>(
+            localVariableConfig
+        )
+    }
+
+    /**
+     * To obtain the request config of the operation appOrigins
+     *
+     * @param app 
+     * @return RequestConfig
+     */
+    fun appOriginsRequestConfig(app: kotlin.String) : RequestConfig<Unit> {
+        val localVariableBody = null
+        val localVariableQuery: MultiValueMap = mutableMapOf()
+        val localVariableHeaders: MutableMap<String, String> = mutableMapOf()
+        localVariableHeaders["Accept"] = "application/json"
+
+        return RequestConfig(
+            method = RequestMethod.GET,
+            path = "/apps/{app}/origins".replace("{"+"app"+"}", encodeURIComponent(app.toString())),
+            query = localVariableQuery,
+            headers = localVariableHeaders,
+            requiresAuthentication = true,
+            body = localVariableBody
+        )
+    }
+
+    /**
      * GET /apps/{app}/outbound-log
      * An app&#39;s outbound requests
      * The owner or an organization admin: the outbound HTTPS requests the instance&#39;s runs made, sent or refused, newest first, at most 100 (&#x60;MAX_AUDIT_ENTRIES&#x60;) and none older than 7 days (&#x60;AUDIT_RETENTION_MS&#x60;). Each replica keeps those its own runs made, in memory, until it restarts; &#x60;partial&#x60; says a replica did not answer. An entry holds no secret value, body, query string or header.  **Who:** signed in (a session or an API key).
@@ -2666,7 +2898,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/undo
      * Undo an app&#39;s last upgrade
-     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34. A pinned instance (its record&#39;s &#x60;lineage&#x60;) goes back only to a release of its own package and publisher, an older one included: &#x60;409 OUTSIDE_LINEAGE&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUndoRequest 
      * @return UndoDone
@@ -2699,7 +2931,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/undo
      * Undo an app&#39;s last upgrade
-     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * An owner or admin of the app&#39;s organization, within a week of the upgrade (judged on the logged times), with a step-up over &#x60;&lt;app&gt; / __undo_upgrade / { apps: { &lt;app&gt;: { to, bundle, from, restorePoint } } }&#x60;. The app, and the members its unit&#39;s upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point&#39;s state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (&#x60;apps[].lostWrites&#x60;, as &#x60;GET&#x60; showed it). Answers once each group takes calls again, or after a minute with &#x60;restored: false&#x60; (calls answer &#x60;409 APP_RESTORING&#x60; meanwhile; sending the undo again seeds it again). &#x60;409 NO_RESTORE_POINT&#x60;, &#x60;UNDO_WINDOW_PASSED&#x60;, &#x60;UNDO_STALE&#x60; (the app moved on), &#x60;UNDO_RELEASE_GONE&#x60; (the release it would return to is no longer installed), &#x60;UNDO_NOT_AS_NAMED&#x60; (a member its unit&#39;s run moved: undo its instance), &#x60;RESTORE_POINT_UNAVAILABLE&#x60; (its node does not answer), each before the step-up; &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.34. A pinned instance (its record&#39;s &#x60;lineage&#x60;) goes back only to a release of its own package and publisher, an older one included: &#x60;409 OUTSIDE_LINEAGE&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUndoRequest 
      * @return ApiResponse<UndoDone?>
@@ -2896,7 +3128,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment&#39;s owner may use it), when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;unit&#x60;: whether the instance has apps of its own (&#x60;links&#x60;), which move with it: review it with &#x60;upgradeUnit&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.summary&#x60;: the update in one plain line for a banner (the new destinations it adds, else \&quot;Nothing changes where your data goes\&quot; when green, else its first reason), the same words the consent page and the node&#39;s updates page use; the design&#39;s &#x60;GET /apps/{app}/updates&#x60; is this route. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s). &#x60;deployment&#x60;: the deployment the instance comes from, which chooses its updates, else &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring &#x60;lineage: pinned&#x60; pins an instance that was not (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment&#39;s owner may use it), when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;unit&#x60;: whether the instance has apps of its own (&#x60;links&#x60;), which move with it: review it with &#x60;upgradeUnit&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.summary&#x60;: the update in one plain line for a banner (the new destinations it adds, else \&quot;Nothing changes where your data goes\&quot; when green, else its first reason), the same words the consent page and the node&#39;s updates page use; the design&#39;s &#x60;GET /apps/{app}/updates&#x60; is this route. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s). &#x60;deployment&#x60;: the deployment the instance comes from, which chooses its updates, else &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return UpdateView
      * @throws IllegalStateException If the request is not correctly configured
@@ -2928,7 +3160,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * GET /apps/{app}/update
      * Whether an update is available for an app
-     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment&#39;s owner may use it), when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;unit&#x60;: whether the instance has apps of its own (&#x60;links&#x60;), which move with it: review it with &#x60;upgradeUnit&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.summary&#x60;: the update in one plain line for a banner (the new destinations it adds, else \&quot;Nothing changes where your data goes\&quot; when green, else its first reason), the same words the consent page and the node&#39;s updates page use; the design&#39;s &#x60;GET /apps/{app}/updates&#x60; is this route. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s). &#x60;deployment&#x60;: the deployment the instance comes from, which chooses its updates, else &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
+     * For whoever may read the app (&#x60;GET /apps/{app}&#x60;&#39;s rule; a session bound to its package&#39;s frontend included), so its frontend can offer the update and open the consent page. &#x60;available&#x60; carries the update classifier&#39;s verdict (&#x60;calimero_bundle::update::classify&#x60;; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as &#x60;upgrade-unit&#x60; would move them, else the app alone: &#x60;class&#x60; &#x60;red&#x60; when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring &#x60;lineage: pinned&#x60; pins an instance that was not (&#x60;reasons&#x60; lists each), else &#x60;green&#x60;; &#x60;egress&#x60;: the unit&#39;s destinations &#x60;before&#x60; and &#x60;after&#x60; (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those &#x60;added&#x60; and &#x60;removed&#x60;; &#x60;newMethods&#x60; and &#x60;removedMethods&#x60; (a member&#39;s as &#x60;&lt;path&gt;.&lt;method&gt;&#x60;). &#x60;available&#x60;: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment&#39;s owner may use it), when it is not the one running (&#x60;source: deployment&#x60;); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (&#x60;source: release&#x60;, as a report&#39;s &#x60;latestReachable&#x60;); else &#x60;null&#x60;. &#x60;unit&#x60;: whether the instance has apps of its own (&#x60;links&#x60;), which move with it: review it with &#x60;upgradeUnit&#x60;. &#x60;mayApprove&#x60;: whether the caller may approve the upgrade. &#x60;approvers&#x60;: &#x60;owner-and-admins&#x60; (the owner and admins of the app&#39;s organization), &#x60;operator&#x60; where the cluster gives it app upgrades, or &#x60;managers&#x60; on a cluster still below 1.0.0-rc.32 (the rule before: the owner or &#x60;MANAGE_APPLICATION&#x60; holders, or the publisher&#39;s). &#x60;policy&#x60;: the update policy the app follows and its &#x60;source&#x60;. &#x60;available.summary&#x60;: the update in one plain line for a banner (the new destinations it adds, else \&quot;Nothing changes where your data goes\&quot; when green, else its first reason), the same words the consent page and the node&#39;s updates page use; the design&#39;s &#x60;GET /apps/{app}/updates&#x60; is this route. &#x60;available.approvalsNeeded&#x60;: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; &#x60;available.approvedBy&#x60;: who approved it first, while that approval waits. &#x60;pendingApprovals&#x60;: the first approvals waiting for their second that cover this app (its own, or its unit&#39;s). &#x60;deployment&#x60;: the deployment the instance comes from, which chooses its updates, else &#x60;null&#x60;.  **Who:** whoever the app&#39;s grants admit (&#x60;anyone&#x60;: any signed-in account).
      * @param app 
      * @return ApiResponse<UpdateView?>
      * @throws IllegalStateException If the request is not correctly configured
@@ -2969,7 +3201,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/upgrade
      * Upgrade an app instance
-     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up. Where the app&#39;s policy asks for a second approver, an update the log cannot classify (a part&#39;s release no longer installed) is &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.35, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up. Where the app&#39;s policy asks for a second approver, an update the log cannot classify (a part&#39;s release no longer installed) is &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.35, before the step-up. An instance of a release declaring &#x60;lineage: pinned&#x60; (its record&#39;s &#x60;lineage&#x60;) moves only to a release of that package, signed by the same publisher: another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_LINEAGE&#x60;, an older release &#x60;409 LINEAGE_OLDER_RELEASE&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeRequest 
      * @return UpgradeApplied
@@ -3002,7 +3234,7 @@ open class AppsApi(basePath: kotlin.String = defaultBasePath, client: Call.Facto
     /**
      * POST /apps/{app}/upgrade
      * Upgrade an app instance
-     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up. Where the app&#39;s policy asks for a second approver, an update the log cannot classify (a part&#39;s release no longer installed) is &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.35, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
+     * To a release (&#x60;version&#x60;, of the app&#39;s own package unless &#x60;package&#x60; names another) or a &#x60;bundle&#x60;, code only: the state stays and is read by the new code. An owner or admin of the app&#39;s organization, whatever the package&#39;s manifest declares (&#x60;403 FORBIDDEN&#x60; for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over &#x60;{ bundle, migrate, manifest }&#x60;; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers &#x60;422 UPGRADE_FAILED&#x60; with the app log&#39;s error in &#x60;details&#x60; (&#x60;MigrationsNotSupported&#x60; when &#x60;migrate&#x60; is named: there are no migrations in this version). &#x60;error&#x60; is the app log&#39;s error value (&#x60;null&#x60; when it ran), free-form: the app&#39;s own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_DEPLOYMENT&#x60;, before the step-up. Where the app&#39;s policy asks for a second approver, an update the log cannot classify (a part&#39;s release no longer installed) is &#x60;409 FEATURE_NOT_ACTIVE&#x60; below cluster version 1.0.0-rc.35, before the step-up. An instance of a release declaring &#x60;lineage: pinned&#x60; (its record&#39;s &#x60;lineage&#x60;) moves only to a release of that package, signed by the same publisher: another package or a &#x60;bundle&#x60; is &#x60;409 OUTSIDE_LINEAGE&#x60;, an older release &#x60;409 LINEAGE_OLDER_RELEASE&#x60;, before the step-up.  **Who:** an account holder (a passkey session not bound to an app&#39;s frontend). **Step-up:** answers &#x60;412 CONFIRM_REQUIRED&#x60; first; send the same request again with &#x60;confirm&#x60;, a passkey assertion over &#x60;details.challenge&#x60;.
      * @param app 
      * @param appUpgradeRequest 
      * @return ApiResponse<UpgradeApplied?>

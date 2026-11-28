@@ -392,6 +392,8 @@ impl Op {
             add(412, "CONFIRM_REQUIRED");
             add(400, "UNKNOWN_CHALLENGE");
             add(400, "EXPIRED_CHALLENGE");
+            add(403, "SIGN_COUNT_REPLAYED");
+            add(403, "ASSERTION_REFUSED");
         }
         if self.operator {
             add(428, "OPERATOR_SIGNATURE_REQUIRED");
@@ -554,7 +556,7 @@ const COMMON_CODES: &[(u16, &str, &str)] = &[
     (
         429,
         "RATE_LIMITED",
-        "a node's limit on open streams or ceremonies",
+        "a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`)",
     ),
     (503, "UNAVAILABLE", "the cluster cannot answer now"),
 ];
@@ -1312,6 +1314,12 @@ fn components() -> Vec<Component> {
         )
         .of::<super::origins::OriginList>(),
         component(
+            "AppOriginList",
+            "`GET /apps/{app}/origins`: the origins registered for an instance.",
+            "{ app: string, origins: #PackageOrigin[] }",
+        )
+        .of::<super::apps::AppOriginList>(),
+        component(
             "OriginRemoved",
             "What removing an origin answers.",
             "{ package: string, origin: string, removed: bool }",
@@ -1935,10 +1943,16 @@ fn components() -> Vec<Component> {
         ),
         component(
             "AttestationDoc",
-            "A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`; `jobKey` only from a job node, never from this API.",
-            "{ quote: string, transportKey: string, appHash: string, nonce: string, release: #Release, cluster: string, node: uint, mock: bool, receiptKey?: string, governance?: #Governance, kms?: #KmsKeys, jobKey?: string, clusterIdentity?: string }",
+            "A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`, `interval` with `form=interval` (the quote is then the node's interval quote); `jobKey` only from a job node, never from this API.",
+            "{ quote: string, transportKey: string, appHash: string, nonce: string, release: #Release, cluster: string, node: uint, mock: bool, receiptKey?: string, governance?: #Governance, kms?: #KmsKeys, jobKey?: string, clusterIdentity?: string, interval?: #IntervalProof }",
         )
         .of::<calimero_client::attest::AttestationDoc>(),
+        component(
+            "IntervalProof",
+            "With `form=interval`: the node's interval key (Ed25519, hex) that its quote binds, the quote's own nonce (hex) and when it was made (Unix seconds), and that key's signature (hex) over the request's nonce, app hash and transport key.",
+            "{ key: string, quoteNonce: string, issuedAt: uint, signature: string }",
+        )
+        .of::<calimero_client::attest::IntervalProof>(),
         component(
             "KmsKeys",
             "What a node verified of the mero-kms replicas it took its keys from: the storage key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record.",
@@ -2019,8 +2033,8 @@ fn components() -> Vec<Component> {
         .of::<crate::egress::UnitMember>(),
         component(
             "UpdateReason",
-            "Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.",
-            r#"{ code: "signerChanged", member: string | null, from: string, to: string } | { code: "egressAdded", destinations: string[] } | { code: "stateVersionChanged", member: string | null, from: uint | null, to: uint | null } | { code: "memberAdded", member: string, package: string, egress: string[] } | { code: "memberRemoved", member: string, package: string, egress: string[] } | { code: "delegatedMethodsAdded", member: string | null, package: string, methods: string[] } | { code: "secretBindingChanged", member: string | null, name: string, before: string | null, after: string } | { code: "unclassified", member: string | null, package: string, version: string }"#,
+            "Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red. `pinsLineage`: the part, not pinned yet, moves into a release of `package` declaring `lineage: pinned`, so from then on it moves only to that package's newer releases by the same publisher.",
+            r#"{ code: "signerChanged", member: string | null, from: string, to: string } | { code: "egressAdded", destinations: string[] } | { code: "stateVersionChanged", member: string | null, from: uint | null, to: uint | null } | { code: "memberAdded", member: string, package: string, egress: string[] } | { code: "memberRemoved", member: string, package: string, egress: string[] } | { code: "delegatedMethodsAdded", member: string | null, package: string, methods: string[] } | { code: "secretBindingChanged", member: string | null, name: string, before: string | null, after: string } | { code: "pinsLineage", member: string | null, package: string } | { code: "unclassified", member: string | null, package: string, version: string }"#,
         )
         .of::<calimero_bundle::update::Reason>(),
         component(
@@ -2079,8 +2093,8 @@ fn components() -> Vec<Component> {
         .of::<calimero_client::attest::AccountStatement>(),
         component(
             "PackageOrigin",
-            "A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there.",
-            "{ package: string, origin: string, rpId: string, addedBy: string, addedAt: string, served: bool }",
+            "A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), whether the cluster serves the package's frontend there, and the instance its sessions reach alone (`app`, an instance's origin).",
+            "{ package: string, origin: string, rpId: string, addedBy: string, addedAt: string, served: bool, app?: string }",
         )
         .of::<crate::origins::OriginView>(),
         component(
@@ -2133,8 +2147,8 @@ fn components() -> Vec<Component> {
         .of::<crate::types::UpgradeRun>(),
         component(
             "App",
-            "An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.",
-            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, ownerSeenAt?: uint, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string }, restorePoint?: #RestorePoint, egressOff?: bool }"#,
+            "An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on; `lineage`: the package and signer a release declaring `lineage: pinned` pinned it to, and `floor`, the newest version it has been judged at, absent while unpinned: it moves only to releases of that package, never one older than `floor`.",
+            r#"{ appId: string, name: string, group: uint, bundle: string, owner: string, org: string | null, grants: #Grant[], confirmMethods: string[], executor?: "component" | "wasmer", replicas: uint[], createdAt: uint, initArgs: any, computeBundle?: string, components?: "computeOnly", metadata: any, lastUpgrade?: #Upgrade, ownerSeenAt?: uint, deployment?: string, release?: #PackageRef, restore?: { seed?: uint, source?: { name: string, sha256: string, index: uint } }, links?: { [string]: string }, attached?: { [string]: string }, restorePoint?: #RestorePoint, egressOff?: bool, lineage?: { package: string, signerId: string, floor: string } }"#,
         )
         .of::<crate::types::AppRecord>(),
         component(
@@ -2355,10 +2369,10 @@ fn operations() -> Vec<Op> {
             .about("In the clear. The node's id, the system group's leader (`null`: none known), its `merod` release, the newest cluster version it supports (`clusterVersion`) and the cluster's rollback epoch (`null` on a node without a rollback counter).")
             .ok("#Health"),
         get("/attestation", "attestation", Anyone, "The node's attestation")
-            .about("In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.")
-            .query::<super::AttestQuery>(r#"{ nonce: string, app?: string, appHash?: string, purpose?: "receipts" | "kms" | "orchestrator" }"#)
+            .about("In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.")
+            .query::<super::AttestQuery>(r#"{ nonce: string, app?: string, appHash?: string, purpose?: "receipts" | "kms" | "orchestrator", form?: "interval" }"#)
             .ok("#AttestationDoc")
-            .errors(&[(400, "BAD_NONCE"), (400, "BAD_HASH"), (404, "NOT_FOUND"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_NONCE"), (400, "BAD_HASH"), (400, "BAD_FORM"), (404, "NOT_FOUND"), (503, "BUSY")]),
         get("/releases", "releases_public", Anyone, "The cluster's releases")
             .about("The cluster's governance and the deadlines set on mero-tee releases, oldest release first: after `after` (RFC 3339; `afterSecs` Unix seconds) a scope that has not approved that release (or a newer one) starts no new work.")
             .ok("#ClusterReleases"),
@@ -2370,7 +2384,7 @@ fn operations() -> Vec<Op> {
             .ok("#SignUpPublic"),
         // ---------------------------------------------------------------- accounts
         post("/auth/passkey/register/begin", "register_begin", Anyone, "Start a sign-up")
-            .about("Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
+            .about("Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429 RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
             .json::<super::RegisterBegin>("{ name?: string, origin?: string, invite?: string }")
             .ok("#PasskeyChallenge")
             .errors(&[(403, "SIGN_UP_REFUSED"), (429, "RATE_LIMITED")]),
@@ -2379,7 +2393,7 @@ fn operations() -> Vec<Op> {
             .json::<super::RegisterFinish>("{ challengeId: string, registration: #Registration, invite?: string, confirm?: #Confirm, holderKey?: string }")
             .ok("#Session")
             .step_up_uv_preferred()
-            .errors(&[(400, "BAD_HOLDER_KEY"), (400, "BAD_REGISTRATION"), (400, "WRONG_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (403, "SIGN_UP_REFUSED"), (409, "FEATURE_NOT_ACTIVE"), (421, "WRONG_NODE")]),
+            .errors(&[(400, "BAD_HOLDER_KEY"), (400, "BAD_REGISTRATION"), (400, "WRONG_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (403, "SIGN_UP_REFUSED"), (409, "FEATURE_NOT_ACTIVE"), (421, "WRONG_NODE"), (429, "RATE_LIMITED")]),
         post("/auth/passkey/login/begin", "login_begin", Anyone, "Start a sign-in")
             .about("A WebAuthn challenge for any passkey of the cluster. `origin` is an app frontend's registered origin, whose rp-id the ceremony then uses. `holderKey` (base64url of an uncompressed P-256 public point, a browser's non-extractable key) binds the session to that key: the challenge states it, its refresh token is used only with the key's `holderProof` and lives 7 days rather than 30. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
             .opt_json::<super::LoginBegin>("{ origin?: string, holderKey?: string }")
@@ -2388,7 +2402,7 @@ fn operations() -> Vec<Op> {
         post("/auth/passkey/login/finish", "login_finish", Anyone, "Finish a sign-in")
             .json::<super::AssertionBody>("{ challengeId: string, assertion: #Assertion }")
             .ok("#Session")
-            .errors(&[(400, "WRONG_CHALLENGE"), (400, "UNKNOWN_CHALLENGE"), (400, "EXPIRED_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (421, "WRONG_NODE")]),
+            .errors(&[(400, "WRONG_CHALLENGE"), (400, "UNKNOWN_CHALLENGE"), (400, "EXPIRED_CHALLENGE"), (401, "PASSKEY_UNKNOWN_HERE"), (403, "SIGN_COUNT_REPLAYED"), (421, "WRONG_NODE")]),
         post("/auth/passkeys/add/begin", "passkey_add_begin", AccountHolder, "Start adding a passkey")
             .about("Creation options for another passkey (a device) on the caller's account. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.")
             .ok("#PasskeyChallenge"),
@@ -2467,7 +2481,7 @@ fn operations() -> Vec<Op> {
             .query::<super::ActivityQuery>("{ after?: uint }")
             .ok("#ActivityList"),
         get("/auth/me", "me", SignedIn, "The caller's account")
-            .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).")
+            .about("The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.")
             .ok("#AccountView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/auth/account-proof", "account_proof::prove", Session, "Prove the account to another party")
@@ -2508,13 +2522,13 @@ fn operations() -> Vec<Op> {
             .about("A `calimero:app` component, 16 MiB at most; only on a node started with `--allow-unsigned-bundles` or `--dev`. A WASM core module (SDK 0.12) is refused `400 UNSUPPORTED_BUNDLE`.")
             .raw("application/wasm", "the component")
             .ok("#BundleStored")
-            .errors(&[(400, "BAD_BUNDLE"), (400, "UNSUPPORTED_BUNDLE"), (403, "FORBIDDEN"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "QUOTA_EXCEEDED"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_BUNDLE"), (400, "UNSUPPORTED_BUNDLE"), (403, "FORBIDDEN"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "QUOTA_EXCEEDED"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         post("/packages", "package_upload", Installer, "Upload a signed release")
             .about("A signed `.mpk`, checked as an install from the registry is (signature, artifact digests, `minRuntimeVersion`, the package's pinned signer, every service compiles). Only with `--dev`; otherwise `403 UPLOADS_DISABLED`. An upload is private to the organization `org` names (the caller a member, else `404`), else the caller's only one: `400 ORG_REQUIRED` in several; in none, it is private to the accounts that install it.")
             .query::<super::UploadQuery>("{ org?: string }")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("#PackageInstalled")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "ORG_REQUIRED"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "ORG_REQUIRED"), (403, "UPLOADS_DISABLED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         get("/packages", "package_list", SignedIn, "Installed packages")
             .about("Only the releases the caller may see.")
             .ok("#PackageList"),
@@ -2522,7 +2536,7 @@ fn operations() -> Vec<Op> {
             .about("For the organization `org` names (the caller a member, else `404`), else the caller's only one (`400 ORG_REQUIRED` in several). A release the registry serves without its credential is public: everyone here uses it. Else it is fetched with the credential and the caller's account, and is private: only the members of the organizations it was installed for use it, and an install for another adds that one; installed for none (the caller is in none), only the accounts that install it use it. `404` when the registry serves it to neither; `403 ACCOUNT_NOT_LINKED` when the registry refuses the caller's account as linked to no Calimero Cloud developer (link it in Calimero Cloud, under node accounts).")
             .json::<super::AccountInstallBody>("{ package: string, version: string, org?: string }")
             .ok("#PackageInstalled")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (400, "ORG_REQUIRED"), (403, "ACCOUNT_NOT_LINKED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (400, "NO_REGISTRY"), (400, "ORG_REQUIRED"), (403, "ACCOUNT_NOT_LINKED"), (403, "DEPLOY_NOT_GRANTED"), (404, "NOT_FOUND"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         get("/packages/{package}", "package_get", SignedIn, "One package")
             .about("The versions the caller may see; `404` when none.")
             .ok("#Package")
@@ -2563,12 +2577,12 @@ fn operations() -> Vec<Op> {
         delete("/apps/{app}", "app_delete", Session, "Delete an app")
             .about("The owner or an organization admin. An instance whose release created apps with it (`uses` with `mode: create`, its `links`) is deleted with every one of them, theirs included, listed in `members`; a member is not deleted alone while its instance stands (`409 UNIT_MEMBER`), and an instance with members waits for every node to run 1.0.0-rc.32 (`409 FEATURE_NOT_ACTIVE`).")
             .ok("#AppDeleted")
-            .errors(&[(409, "UNIT_MEMBER"), (409, "FEATURE_NOT_ACTIVE")]),
+            .errors(&[(404, "NOT_FOUND"), (409, "UNIT_MEMBER"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/metadata", "app_metadata", SignedIn, "Set an app's metadata")
             .about("The owner or an organization admin; 16 KiB at most. `metadata` is the caller's own JSON, free-form, kept as given.")
             .json::<super::MetadataBody>("#MetadataBody")
             .ok("{}")
-            .errors(&[(413, "TOO_LARGE")]),
+            .errors(&[(404, "NOT_FOUND"), (413, "TOO_LARGE")]),
         get("/apps/{app}/storage", "app_storage", AppAccess, "What an app stores")
             .about("Keys, bytes and blobs held, and `lastWriteAt` (Unix seconds of its last committed write, `null` before one).")
             .ok("#AppStorage"),
@@ -2640,13 +2654,13 @@ fn operations() -> Vec<Op> {
             .events("each committed event the caller is in the audience of")
             .errors(&[(429, "RATE_LIMITED"), (503, "UNAVAILABLE")]),
         post("/apps/{app}/upgrade", "app_upgrade", AccountHolder, "Upgrade an app instance")
-            .about("To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.")
+            .about("To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409 LINEAGE_OLDER_RELEASE`, before the step-up.")
             .json::<super::UpgradeBody>("{ bundle?: string, package?: string, version?: string, service?: string, confirm?: #Confirm, migrate?: string }")
             .ok("#UpgradeApplied")
             .step_up()
-            .errors(&[(400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "OUTSIDE_DEPLOYMENT"), (409, "OUTSIDE_UNIT_RANGE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (409, "FEATURE_NOT_ACTIVE"), (422, "UPGRADE_FAILED")]),
+            .errors(&[(404, "NOT_FOUND"), (400, "VERSION_REQUIRED"), (400, "BAD_BUNDLE"), (400, "AMBIGUOUS_COMPUTE"), (403, "FORBIDDEN"), (409, "CONFLICT"), (409, "OUTSIDE_DEPLOYMENT"), (409, "OUTSIDE_LINEAGE"), (409, "LINEAGE_OLDER_RELEASE"), (409, "OUTSIDE_UNIT_RANGE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (409, "FEATURE_NOT_ACTIVE"), (422, "UPGRADE_FAILED")]),
         get("/apps/{app}/update", "app_update", AppAccess, "Whether an update is available for an app")
-            .about("For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else \"Nothing changes where your data goes\" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.")
+            .about("For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring `lineage: pinned` pins an instance that was not (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else \"Nothing changes where your data goes\" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.")
             .ok("#UpdateView")
             .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/egress", "app_egress", AppAccess, "Where an app's unit may send data")
@@ -2674,11 +2688,11 @@ fn operations() -> Vec<Op> {
             .ok("#UndoView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/undo", "app_undo", AccountHolder, "Undo an app's last upgrade")
-            .about("An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.")
+            .about("An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.")
             .json::<super::undo::UndoBody>("{ confirm?: #Confirm }")
             .ok("#UndoDone")
             .step_up()
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "NO_RESTORE_POINT"), (409, "UNDO_WINDOW_PASSED"), (409, "UNDO_STALE"), (409, "UNDO_RELEASE_GONE"), (409, "UNDO_NOT_AS_NAMED"), (409, "RESTORE_POINT_UNAVAILABLE"), (409, "FEATURE_NOT_ACTIVE"), (409, "UPGRADE_PENDING")]),
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "NO_RESTORE_POINT"), (409, "UNDO_WINDOW_PASSED"), (409, "UNDO_STALE"), (409, "UNDO_RELEASE_GONE"), (409, "UNDO_NOT_AS_NAMED"), (409, "RESTORE_POINT_UNAVAILABLE"), (409, "FEATURE_NOT_ACTIVE"), (409, "UPGRADE_PENDING"), (409, "OUTSIDE_LINEAGE")]),
         post("/apps/{app}/upgrade-unit", "app_upgrade_unit", AccountHolder, "Upgrade an app and the apps it created, in one consent")
             .about("An instance created with apps of its own (`links`): it moves to `version` of its package, and each member the target release's `uses` gives a release other than the one it runs moves to that release (its lock's, else the newest installed one inside the range), all under one step-up over `{ app, package, version, targets }`. Answers the run (`GET /orgs/{org}/upgrades/{run}` follows it); each app is upgraded on its own as an organization's run does. `400 NOT_A_UNIT` for an app with no members; `409 CONFLICT` when the target release creates a member the instance lacks. A version the caller may not use answers as one that is not installed, as `POST /apps` installs one (`404 NOT_FOUND`, `400 NO_REGISTRY`), and for an instance from a deployment anything but its offer that still serves `409 OUTSIDE_DEPLOYMENT`, before anything of it is read.")
             .json::<super::upgrades::UnitUpgradeBody>("{ version: string, confirm?: #Confirm }")
@@ -2704,7 +2718,8 @@ fn operations() -> Vec<Op> {
         post("/apps/{app}/access", "app_access", Session, "Set who may reach an app")
             .about("`grants` replace the instance's grant list (#Grant; empty: the owner alone; cluster version 1.0.0-rc.33, else `409 FEATURE_NOT_ACTIVE`). Its owner, or whoever manages the organization's apps (on each team it admits, before and after). A package-bound session: only its own package's app, from one of its package's teams to another.")
             .json::<super::AccessBody>("{ grants: #Grant[] }")
-            .ok("{}"),
+            .ok("{}")
+            .errors(&[(404, "NOT_FOUND")]),
         post("/apps/{app}/invites", "app_invite_create", AccountHolder, "Invite someone to an instance")
             .about("A token whose redeemer is named on this instance only (an `account` grant: a guest, or a named member when they are a member of its organization; never added to the organization), `uses` times (1 to 1000, default 1) within `ttlSecs` (at most 90 days, default 7), on any instance. `scope` (opaque JSON, at most 256 bytes) goes on the grant it makes, for the app to read: the platform admits, the app scopes (one channel of a chat, say). Whoever may change the instance's access, whatever its guest switches say: they are judged when someone redeems it. At most 64 pending per instance. `412` first.")
             .json::<super::AppInviteBody>("{ ttlSecs?: uint, uses?: uint, scope?: any, confirm?: #Confirm }")
@@ -2741,10 +2756,12 @@ fn operations() -> Vec<Op> {
             .about("The owner (for an organization's app, while a member and in the app's team), or an organization admin; only to a member of the app's organization (`400 REJECTED` before the passkey is asked for; below cluster version 1.0.0-rc.32 an app in a personal organization went to the new owner's personal one). Answers `null`.")
             .json::<super::TransferBody>("{ to: string, confirm?: #Confirm }")
             .ok("null")
-            .step_up(),
+            .step_up()
+            .errors(&[(404, "NOT_FOUND")]),
         get("/apps/{app}/delegations", "app_delegations", SignedIn, "What you let an app do as you")
             .about("The apps you let this app call as you, each with the methods (`SetDelegation`). A session bound to an app's frontend reads its own app's only.")
-            .ok("#Delegations"),
+            .ok("#Delegations")
+            .errors(&[(404, "NOT_FOUND")]),
         put("/apps/{app}/delegations/{target}", "app_delegate", AccountHolder, "Let an app call another as you")
             .about("The methods of `target` that the release `app` runs lists for `target`'s package in its signed `uses` (`methods`), with your passkey over exactly those. You must reach both apps, which are in one organization. From then on, when `app` calls one of those methods while serving you, `target` runs it with you as the caller and reads `env::via()` = `app`; without the grant it runs as `app`, and `target` never learns who `app` was serving. A method that needs your passkey confirmation is still refused there. `409 NOTHING_TO_DELEGATE` when the release lists none. A session opened on an app's frontend is refused (`403`): the app asks on the consent page instead (`POST /consent/requests { kind: \"delegate\" }`).")
             .json::<super::apps::DelegateBody>("{ confirm?: #Confirm }")
@@ -2760,7 +2777,7 @@ fn operations() -> Vec<Op> {
             .json::<super::MoveBody>("{ toOrg: string, bringMembers?: bool, confirm?: #Confirm }")
             .ok("#AppMoved")
             .step_up()
-            .errors(&[(409, "FEATURE_NOT_ACTIVE")]),
+            .errors(&[(404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         get("/apps/{app}/links", "app_links", AppAccess, "List an app's links to the apps its release uses")
             .about("One row per reference (`uses`) of the release the app runs, with the app linked under it: a member made with the instance (`mode: create`) or an app its owner attached (`mode: attach`), `null` when none. `version` is the release that app runs and `inRange` whether it is inside the reference's range (`null` with nothing linked). A link the release no longer names is listed with `package`, `range` and `mode` `null`.")
             .ok("#AppLinkList"),
@@ -2769,13 +2786,29 @@ fn operations() -> Vec<Op> {
             .json::<super::apps::LinkBody>("{ app: string, confirm?: #Confirm }")
             .ok("#LinkRow")
             .step_up()
-            .errors(&[(400, "NOT_ATTACHABLE"), (403, "FORBIDDEN"), (409, "NOT_AN_ATTACH_REFERENCE"), (409, "WRONG_PACKAGE"), (409, "FEATURE_NOT_ACTIVE")]),
+            .errors(&[(404, "NOT_FOUND"), (400, "NOT_ATTACHABLE"), (403, "FORBIDDEN"), (409, "NOT_AN_ATTACH_REFERENCE"), (409, "WRONG_PACKAGE"), (409, "FEATURE_NOT_ACTIVE")]),
+        get("/apps/{app}/origins", "app_origins", AccountHolder, "An instance's web origins")
+            .about("The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.")
+            .ok("#AppOriginList")
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND")]),
+        post("/apps/{app}/origins", "app_origin_add", AccountHolder, "Register a web origin for an instance")
+            .about("By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).")
+            .json::<super::apps::AddAppOriginBody>("{ origin: string, rpId?: string, confirm?: #Confirm }")
+            .ok("#PackageOrigin")
+            .step_up()
+            .errors(&[(400, "BAD_ORIGIN"), (400, "BAD_RP_ID"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "ORIGIN_TAKEN"), (409, "FEATURE_NOT_ACTIVE"), (429, "QUOTA_EXCEEDED")]),
+        delete("/apps/{app}/origins", "app_origin_remove", AccountHolder, "Remove an instance's web origin")
+            .about("Whoever manages the instance, with a passkey step-up. The sessions opened there end.")
+            .json::<super::origins::RemoveOriginBody>("{ origin: string, confirm?: #Confirm }")
+            .ok("#OriginRemoved")
+            .step_up()
+            .errors(&[(403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "FEATURE_NOT_ACTIVE")]),
         delete("/apps/{app}/links/{name}", "app_unlink", AccountHolder, "Detach an app attached to an app")
             .about("Whoever manages the app. A member made with the instance is never detached.")
             .json::<super::apps::UnlinkBody>("{ confirm?: #Confirm }")
             .ok("{}")
             .step_up()
-            .errors(&[(403, "FORBIDDEN"), (404, "NOT_ATTACHED"), (409, "FEATURE_NOT_ACTIVE")]),
+            .errors(&[(404, "NOT_FOUND"), (403, "FORBIDDEN"), (404, "NOT_ATTACHED"), (409, "FEATURE_NOT_ACTIVE")]),
         post("/apps/{app}/blobs", "blob_upload", AppAccess, "Upload a blob")
             .about("A plain blob, stored with the request's `Content-Type`, which a component app's download answers with: any media type (printable ASCII, 127 bytes at most; another is `400 BAD_REQUEST`), `application/octet-stream` when the request names none. Send the blob's own type, not `*/*`, which would be stored as its type. Any `sealed` parameter, `true` or `false`, is refused `400 USE_FILES_API`: sealed files go through `/files`.")
             .query::<super::BlobUploadQuery>("{ sealed?: bool }")
@@ -2866,7 +2899,7 @@ fn operations() -> Vec<Op> {
             .about("The owner and the organization's members. Starts a run of a pipeline the app's release registers. `maxCost` (micro-units, a decimal string) caps the run, and `worstCase` answers it.")
             .json::<super::pipelines::StartBody>("{ inputs?: { [string]: string[] }, params?: { [string]: any }, maxCost?: string }")
             .ok("#PipelineStarted")
-            .errors(&[(400, "BAD_INPUTS"), (400, "BAD_MAX_COST"), (400, "BAD_PARAMS"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_PIPELINE"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (410, "OUTPUT_EXPIRED"), (422, "PIPELINES_NEED_ONE_SERVICE"), (429, "TOO_MANY_PIPELINE_RUNS"), (503, "UNAVAILABLE")]),
+            .errors(&[(400, "BAD_INPUTS"), (400, "BAD_MAX_COST"), (400, "BAD_PARAMS"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (404, "NO_SUCH_PIPELINE"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (410, "INPUT_EXPIRED"), (422, "PIPELINES_NEED_ONE_SERVICE"), (429, "TOO_MANY_PIPELINE_RUNS"), (503, "UNAVAILABLE")]),
         get("/apps/{app}/pipeline-runs", "pipelines::list", AppAccess, "An app's pipeline runs")
             .about("The recent runs, newest first, as `{ runs }`; `limit` 1 to 100. Sizes, hashes and results only for callers who may list the app's files.")
             .query::<super::pipelines::ListQuery>("{ limit?: string }")
@@ -2893,7 +2926,7 @@ fn operations() -> Vec<Op> {
             .about("The owner and the organization's members. A new run of an ended run's pipeline at the same release, hash and compute component, with the same inputs and params, the `limits` applied and `retryOf` set.")
             .json::<super::pipelines::RetryBody>("{ limits?: { [string]: { fuel?: uint, memoryMib?: uint, wallSecs?: uint } }, maxCost?: string }")
             .ok("#PipelineStarted")
-            .errors(&[(400, "BAD_LIMITS"), (400, "BAD_MAX_COST"), (400, "LIMIT_EXCEEDS_CAP"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (409, "STILL_RUNNING"), (410, "OUTPUT_EXPIRED"), (429, "TOO_MANY_PIPELINE_RUNS"), (503, "UNAVAILABLE")]),
+            .errors(&[(400, "BAD_LIMITS"), (400, "BAD_MAX_COST"), (400, "LIMIT_EXCEEDS_CAP"), (403, "FORBIDDEN"), (404, "NOT_FOUND"), (409, "CLUSTER_NOT_UPGRADED"), (409, "NO_PRICE_TABLE"), (409, "STILL_RUNNING"), (410, "INPUT_EXPIRED"), (429, "TOO_MANY_PIPELINE_RUNS"), (503, "UNAVAILABLE")]),
         get("/apps/{app}/xcalls", "app_xcalls", SignedIn, "An app's cross-app calls")
             .about("The owner or an organization admin: how many calls wait in its outbox for delivery (`pending`, a count), and its dead letters, oldest first (`atMs`: the entry time it was dead-lettered at, Unix milliseconds).")
             .ok("#XcallsReport")
@@ -2917,7 +2950,8 @@ fn operations() -> Vec<Op> {
         post("/orgs/{org}/metadata", "org_metadata", SignedIn, "Set an organization's metadata")
             .about("`metadata` is the caller's own JSON, free-form, kept as given.")
             .json::<super::MetadataBody>("#MetadataBody")
-            .ok("{}"),
+            .ok("{}")
+            .errors(&[(404, "NOT_FOUND")]),
         get("/orgs/{org}/usage", "org_usage", SignedIn, "An organization's usage")
             .about("An admin: how many apps the organization develops, what their runs used today (decimal strings) and the cluster's quotas; a member gets `403`.")
             .ok("#OrgUsage")
@@ -2942,7 +2976,8 @@ fn operations() -> Vec<Op> {
         post("/orgs/{org}/members/{account}/metadata", "member_metadata", SignedIn, "Set a member's metadata")
             .about("`metadata` is the caller's own JSON, free-form, kept as given.")
             .json::<super::MetadataBody>("#MetadataBody")
-            .ok("{}"),
+            .ok("{}")
+            .errors(&[(404, "NOT_FOUND")]),
         get("/orgs/{org}/members", "org_members", AccountHolder, "Members' lockout risk")
             .about("`detail=security` (the only listing: without it, or with another value, `400 BAD_REQUEST`), the owner or an admin: each member's passkeys (`1`, `2` or `\"3+\"`), recovery code, last active UTC day and sessions. `403` below admin, `404` outside the organization.")
             .query::<super::MembersQuery>(r#"{ detail?: "security" }"#)
@@ -2973,14 +3008,16 @@ fn operations() -> Vec<Op> {
         post("/orgs/{org}/teams", "team_create", Session, "Create a team")
             .about("An admin, a lead of `parent`, a member with `CREATE_TEAM` at the top, or a member who holds `CREATE_CHILD_TEAM` under `parent` (a restricted team only). A package-bound session: only its own package's teams (its app team and the teams below it): `parent` one of them.")
             .json::<super::TeamBody>("#TeamBody")
-            .ok("#TeamCreated"),
+            .ok("#TeamCreated")
+            .errors(&[(404, "NOT_FOUND")]),
         get("/orgs/{org}/teams/{team}", "team_get", SignedIn, "One team")
             .ok("#TeamView")
             .errors(&[(404, "NOT_FOUND")]),
         post("/orgs/{org}/teams/{team}", "team_update", Session, "Update a team")
             .about("Rename, open or restrict, move under another parent, or set its metadata (the caller's own JSON, free-form, kept as given). `parent` absent leaves the team where it is; `parent: null` (an explicit null) moves it to the top; a team id moves it under that team. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team, moved only within.")
             .json::<super::TeamUpdateBody>("#TeamUpdateBody")
-            .ok("{}"),
+            .ok("{}")
+            .errors(&[(404, "NOT_FOUND")]),
         delete("/orgs/{org}/teams/{team}", "team_delete", Session, "Delete a team")
             .about("With the teams below it. The instances only those teams admit (each of whose team grants goes, with no grant to the organization) are deleted with it (`apps`), unless `keepApps: true`: then they stay (`keptApps`), each without those teams' grants and with its other grants (named members, guests, `anyone`, public links), or, with none left, an empty grant list (only its owner reaches it); `keepApps` needs cluster version 1.0.0-rc.33 (`409 FEATURE_NOT_ACTIVE`). An instance another team or the organization admits only loses the deleted teams' grants either way. With such instances, the passkey is over `{ team, apps }` (plus `keepApps: true` when set), and the `412`'s details list `apps` and `keepApps`, so the approver sees what happens to them. A package-bound session: only its own package's teams (its app team and the teams below it): a team below its app team whose apps are all its package's.")
             .opt_json::<super::TeamDeleteBody>("#TeamDeleteBody")
@@ -3195,17 +3232,17 @@ fn operations() -> Vec<Op> {
             .operator()
             .errors(&[(400, "DUPLICATE_REPLICA"), (400, "JOB_NODE"), (400, "TOO_FEW"), (400, "UNKNOWN_NODE"), (409, "MOVE_IN_PROGRESS"), (409, "RUNTIME_TOO_OLD"), (421, "NOT_LEADER")]),
         post("/ops/apps/{app}/restore", "restore::ops_restore", Ops, "Restore an app from its sealed backup")
-            .about("Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's.")
+            .about("Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the signature is asked for.")
             .json::<super::restore::RestoreBody>("{ backup?: string, recovery?: { file: string, key: string }, operatorProof?: #OperatorProof }")
             .ok("#AppRestored")
             .operator()
-            .errors(&[(400, "BAD_BACKUP"), (400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (400, "UNATTESTED_RECOVERY_FILE"), (403, "FORBIDDEN"), (404, "BACKUP_NOT_FOUND"), (409, "BACKUP_FROM_NEWER_RELEASE"), (409, "BUNDLE_GONE"), (409, "MOVE_IN_PROGRESS"), (409, "NO_BACKUP_DIR"), (409, "RECOVERY_SEGMENTS_MISSING"), (409, "UNKNOWN_BACKUP_FORMAT"), (409, "UPGRADE_PENDING")]),
+            .errors(&[(400, "BAD_BACKUP"), (400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (400, "UNATTESTED_RECOVERY_FILE"), (403, "FORBIDDEN"), (404, "BACKUP_NOT_FOUND"), (409, "BACKUP_FROM_NEWER_RELEASE"), (409, "BUNDLE_GONE"), (409, "MOVE_IN_PROGRESS"), (409, "NO_BACKUP_DIR"), (409, "RECOVERY_SEGMENTS_MISSING"), (409, "UNKNOWN_BACKUP_FORMAT"), (409, "UPGRADE_PENDING"), (409, "OUTSIDE_LINEAGE"), (409, "LINEAGE_OLDER_RELEASE")]),
         post("/recover/holder", "restore::recover_holder", Anyone, "Bring an organization's or account's apps back from its recovery files")
-            .about("Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.")
+            .about("Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.")
             .json::<super::restore::RecoverHolderBody>("{ holder: string, slice: { file: string, key: string }, apps?: { file: string, key: string }[], code?: { file: string, key: string }[], operatorProof?: #OperatorProof }")
             .ok("#HolderRecovered")
             .operator()
-            .errors(&[(400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (400, "TOO_MANY_FILES"), (400, "UNATTESTED_RECOVERY_FILE"), (409, "FEATURE_NOT_ACTIVE"), (409, "NO_BACKUP_DIR"), (409, "RECOVERY_SEGMENTS_MISSING")]),
+            .errors(&[(400, "BAD_RECOVERY_FILE"), (400, "BAD_RECOVERY_KEY"), (400, "BAD_REQUEST"), (400, "NOT_A_REPLICA_NODE"), (400, "TOO_MANY_FILES"), (400, "UNATTESTED_RECOVERY_FILE"), (409, "FEATURE_NOT_ACTIVE"), (409, "NO_BACKUP_DIR"), (409, "RECOVERY_SEGMENTS_MISSING"), (409, "OUTSIDE_LINEAGE")]),
         get("/ops/recovery-files", "restore::ops_recovery_files", Ops, "The recovery files a node reads")
             .about("In `--recover-from`, else `--recovery-dir`, of `holder` (`operator`, the default; `org:<id>`; `account:<id>`): each file's name, its header as signed (JSON text) and the node's Ed25519 signature over `calimero.recovery-backup.v1\\0` and those bytes (hex), for the holder's device to check before it opens a key with its own.")
             .query::<super::restore::RecoveryFilesQuery>("{ holder?: string }")
@@ -3297,11 +3334,11 @@ fn operations() -> Vec<Op> {
             .ok("#OutboundApproved")
             .operator(),
         post("/ops/apps/{app}/upgrade", "ops_upgrade", Ops, "Upgrade an app as the operator")
-            .about("To a release the operator installed, where the operator holds app upgrades. `error` is the app log's error value (`null` when it ran), free-form: the app's own.")
+            .about("To a release the operator installed, where the operator holds app upgrades. A pinned instance (its record's `lineage`) is held to its package, publisher and forward order as for anyone (`409 OUTSIDE_LINEAGE`, `409 LINEAGE_OLDER_RELEASE`). `error` is the app log's error value (`null` when it ran), free-form: the app's own.")
             .json::<super::OpsUpgradeBody>("{ bundle?: string, package?: string, version?: string, service?: string, migrate?: string, operatorProof?: #OperatorProof }")
             .ok("#UpgradeApplied")
             .operator()
-            .errors(&[(400, "AMBIGUOUS_COMPUTE"), (400, "BAD_REQUEST"), (409, "NOT_INSTALLED"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
+            .errors(&[(400, "AMBIGUOUS_COMPUTE"), (400, "BAD_REQUEST"), (409, "NOT_INSTALLED"), (409, "OUTSIDE_LINEAGE"), (409, "LINEAGE_OLDER_RELEASE"), (409, "RELEASE_DEADLINE"), (409, "RUNTIME_TOO_OLD"), (422, "UPGRADE_FAILED")]),
         post("/ops/orgs/{org}/upgrade", "ops_org_upgrade", Ops, "An operator's upgrade run")
             .json::<super::OrgUpgradeBody>("#OrgUpgradeBody")
             .ok("#UpgradeRun")
@@ -3310,12 +3347,12 @@ fn operations() -> Vec<Op> {
         post("/ops/packages", "ops_package_upload", Ops, "Install an uploaded release as the operator")
             .raw("application/octet-stream", "the `.mpk`")
             .ok("#PackageInstalled")
-            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_PACKAGE"), (400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         get("/ops/packages", "ops_package_list", Ops, "The releases the operator installed").ok("#PackageList"),
         post("/ops/packages/install", "ops_package_install", Ops, "Install a release from the registry as the operator")
             .json::<super::InstallBody>("{ package: string, version: string }")
             .ok("#PackageInstalled")
-            .errors(&[(400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (503, "BUSY")]),
+            .errors(&[(400, "BAD_BUNDLE"), (400, "COMPUTE_ABI_MISMATCH"), (400, "UNSUPPORTED_BUNDLE"), (413, "TOO_LARGE"), (422, "COMPILE_TIMEOUT"), (429, "TOO_MANY_COMPILES"), (503, "BUSY")]),
         delete("/ops/packages/{package}", "ops_package_uninstall", Ops, "Uninstall what the operator installed").ok("#Uninstalled"),
         delete("/ops/packages/{package}/{version}", "ops_package_version_uninstall", Ops, "Uninstall one operator-installed version").ok("#Uninstalled"),
         get("/ops/quotas", "ops_quotas_get", Ops, "The quotas")

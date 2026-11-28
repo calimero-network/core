@@ -29,7 +29,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there.
+ * A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), whether the cluster serves the package's frontend there, and the instance its sessions reach alone (`app`, an instance's origin).
  *
  * @param `package` 
  * @param origin 
@@ -37,6 +37,7 @@ import kotlinx.serialization.Contextual
  * @param addedBy 
  * @param addedAt 
  * @param served 
+ * @param app 
  */
 @Serializable
 
@@ -58,7 +59,10 @@ data class PackageOrigin (
     val addedAt: kotlin.String,
 
     @SerialName(value = "served")
-    val served: kotlin.Boolean
+    val served: kotlin.Boolean,
+
+    @SerialName(value = "app")
+    val app: kotlin.String? = null
 
 ) {
 

@@ -191,10 +191,10 @@ class PackageOrigins(DeepCase):
         return f"package-origins/{s['package']}"
 
     def _decisions(self, w, s):
-        otto = person(w, "otto")
-        return decisions({"stranger lists": lambda: otto.get(self._path(s)),
-                             "stranger registers": lambda: otto.raw("post", self._path(s),
-                                                                    {"origin": "https://otto.example.test"})})
+        otis = person(w, "otis")
+        return decisions({"stranger lists": lambda: otis.get(self._path(s)),
+                             "stranger registers": lambda: otis.raw("post", self._path(s),
+                                                                    {"origin": "https://otis.example.test"})})
 
     def _served(self, w, s):
         listed = [o["origin"] for o in ops(w, "GET", "ops/served-origins")["origins"]
@@ -502,18 +502,18 @@ class RestorePoints(DeepCase):
                 "the new release the undone app is upgraded again, written to and undone back to that note")
 
     def populate(self, w):
-        rex = person(w, "rex")
-        p, v1, v2, org = _notes(w, rex, "Restore Org")
+        rolf = person(w, "rolf")
+        p, v1, v2, org = _notes(w, rolf, "Restore Org")
         s = {"org": org, "package": p, "v1": v1, "v2": v2, "records": {}, "notes": {}}
         for k in ("kept", "undone"):
-            s[k] = _notes_app(rex, k, p, v1, org, "before")
-            rex.raw("post", f"apps/{s[k]}/upgrade", {"version": v2})
-            _set_v2(rex, s[k], "after")
-        point = rex.get(f"apps/{s['kept']}").get("restorePoint") or {}
+            s[k] = _notes_app(rolf, k, p, v1, org, "before")
+            rolf.raw("post", f"apps/{s[k]}/upgrade", {"version": v2})
+            _set_v2(rolf, s[k], "after")
+        point = rolf.get(f"apps/{s['kept']}").get("restorePoint") or {}
         eq((point.get("fromRelease") or {}).get("version"), v1, "the kept app's restore point")
         check(isinstance((point.get("file") or {}).get("node"), int), f"the restore point's file: {point}")
         s["point_node"] = point["file"]["node"]
-        plan = rex.get(f"apps/{s['kept']}/undo")
+        plan = rolf.get(f"apps/{s['kept']}/undo")
         eq(plan.get("available"), True, f"the kept app's undo: {plan}")
         part = plan["apps"][0]
         eq((part["from"]["version"], part["to"]["version"], (part.get("lostWrites") or {}).get("any")),
@@ -522,37 +522,37 @@ class RestorePoints(DeepCase):
         # 2.0.0 keeps a note as its title and text on two lines.
         s["notes"] = {s["kept"]: "n\nafter", s["undone"]: "before"}
         for a in (s["kept"], s["undone"]):
-            s["records"][a] = snap(rex, f"apps/{a}")
+            s["records"][a] = snap(rolf, f"apps/{a}")
         return s
 
     def _undo(self, w, s, app):
-        rex = person(w, "rex")
+        rolf = person(w, "rolf")
         # On 1.0.0-rc.34 the restore point's node may be asked to seed before it applied the
         # undo (the race #5221 fixes): `409 CONFLICT` when that node took the request, `503
         # UNAVAILABLE` when another did and its seed call was refused. Until the restore finishes
         # an undo may be sent again, which seeds it again, so send it again as a person would.
         deadline = time.time() + 30
-        while (got := decision(lambda: rex.raw("post", f"apps/{app}/undo", {}))) in ("CONFLICT", "UNAVAILABLE"):
+        while (got := decision(lambda: rolf.raw("post", f"apps/{app}/undo", {}))) in ("CONFLICT", "UNAVAILABLE"):
             if time.time() >= deadline:
                 break
             time.sleep(1)
         eq(got, "ok", f"undoing {app}")
-        rec = until("the undo restores the app", lambda: _undone(rex, app, s["v1"]), 90)
+        rec = until("the undo restores the app", lambda: _undone(rolf, app, s["v1"]), 90)
         check(rec.get("restorePoint") is None and (rec.get("lastUpgrade") or {}).get("undo") is True,
               f"the undone app's record: {rec}")
         # The record moves in the system group; the app group applies the undo's restore on
         # its own, so a read right after may still see it before (`null`): wait for it.
-        until("the undone app's note", lambda: eq(rex.result(app, "get", {"id": "n"}), "before",
+        until("the undone app's note", lambda: eq(rolf.result(app, "get", {"id": "n"}), "before",
                                                    "the undone app's note"), 30)
 
     def check(self, w, s):
-        rex = person(w, "rex")
+        rolf = person(w, "rolf")
         for a, rec in s["records"].items():
-            same_read(rex, f"apps/{a}", rec, f"app {a}")
-            eq(rex.result(a, "get", {"id": "n"}), s["notes"][a], f"app {a}'s note")
-        eq((rex.get(f"apps/{s['undone']}/undo").get("reason") or {}).get("code"), "NO_RESTORE_POINT",
+            same_read(rolf, f"apps/{a}", rec, f"app {a}")
+            eq(rolf.result(a, "get", {"id": "n"}), s["notes"][a], f"app {a}'s note")
+        eq((rolf.get(f"apps/{s['undone']}/undo").get("reason") or {}).get("code"), "NO_RESTORE_POINT",
            "the undone app's undo")
-        plan = rex.get(f"apps/{s['kept']}/undo")
+        plan = rolf.get(f"apps/{s['kept']}/undo")
         if s["point_node"] in w.fleet.members:
             eq(plan.get("available"), True, f"the kept app's undo while node {s['point_node']} is in: {plan}")
             eq([(x["from"]["version"], x["to"]["version"]) for x in plan["apps"]], [(s["v2"], s["v1"])],
@@ -560,18 +560,18 @@ class RestorePoints(DeepCase):
         else:
             eq((plan.get("available"), (plan.get("reason") or {}).get("code")),
                (False, "RESTORE_POINT_UNAVAILABLE"), f"the kept app's undo once node {s['point_node']} left")
-            eq(decision(lambda: rex.raw("post", f"apps/{s['kept']}/undo", {})), "RESTORE_POINT_UNAVAILABLE",
+            eq(decision(lambda: rolf.raw("post", f"apps/{s['kept']}/undo", {})), "RESTORE_POINT_UNAVAILABLE",
                "undoing the kept app once its restore point's node left")
 
     def exercise(self, w, s):
-        rex = person(w, "rex")
+        rolf = person(w, "rolf")
         a = s["undone"]
-        rex.raw("post", f"apps/{a}/upgrade", {"version": s["v2"]})
-        _set_v2(rex, a, "after, on the new release")
-        point = rex.get(f"apps/{a}").get("restorePoint") or {}
+        rolf.raw("post", f"apps/{a}/upgrade", {"version": s["v2"]})
+        _set_v2(rolf, a, "after, on the new release")
+        point = rolf.get(f"apps/{a}").get("restorePoint") or {}
         check((point.get("file") or {}).get("node") in w.members(), f"a restore point on a new node: {point}")
         self._undo(w, s, a)
-        s["records"][a] = snap(rex, f"apps/{a}")
+        s["records"][a] = snap(rolf, f"apps/{a}")
 
 
 def _unclassified(update, version, reason):
@@ -700,3 +700,7 @@ not_covered("Packages", "A release's frontend digests (`GET /packages/{package}/
             "the suite's packages carry no frontend, so the route answers 404 for every release they install; it reads the "
             "installed `.mpk` and stores nothing, and the cluster test "
             "`a_releases_frontend_digests_match_the_files_it_serves` checks each digest against the bytes served")
+
+not_covered("Packages", "One compile running or waiting per account at install and raw bundle upload (`429 TOO_MANY_COMPILES`)",
+            "a node-local admission limit that stores nothing and logs nothing, so a roll carries no data of it to read "
+            "back; `tests/it/slow_compile.rs`'s `one_account_filling_the_compile_queue_leaves_room_for_another` covers it")

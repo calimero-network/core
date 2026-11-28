@@ -35,7 +35,7 @@ async fn bundle_put(
         return Err(ApiError::unsupported_bundle());
     }
     let _prepared = node
-        .compile(crate::compile::Engine::App, &hash, body.to_vec())
+        .compile(crate::compile::Engine::App, &account, &hash, body.to_vec())
         .await?;
     node.replicate_bundle(&hash, &body).await?;
     let _ok = node

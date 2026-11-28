@@ -943,6 +943,7 @@ dependencies = [
  "imbl",
  "libc",
  "proptest",
+ "psl",
  "rand_chacha 0.10.0",
  "rcgen",
  "reqwest 0.12.28",
@@ -3786,6 +3787,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "shlex",
  "tar",
  "tempfile",
  "tokio",
@@ -4878,6 +4880,21 @@ checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
 dependencies = [
  "prost",
 ]
+
+[[package]]
+name = "psl"
+version = "2.1.251"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e71c0cbc3e678885f48ceb36b859e3bf371b9db80e04ce29a0eea13697ef1c30"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
 
 [[package]]
 name = "ptr_meta"

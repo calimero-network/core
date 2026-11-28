@@ -20,20 +20,15 @@ calimero-sdk = { git = "https://github.com/calimero-network/core", tag = "<core 
 calimero-connector-nearai = { git = "https://github.com/calimero-network/core", tag = "<core tag>" }
 ```
 
-Declare the endpoint and bind the key in the app's `Cargo.toml`, which `meroctl app pack` signs into the manifest:
+List it in the app's `Cargo.toml`, and `meroctl app pack` signs the connector's endpoint and key binding into the manifest ([Connectors](https://calimero-network.github.io/core/build/packaging-signing/#connectors)):
 
 ```toml
 [package.metadata.calimero]
-outbound = ["https://cloud-api.near.ai/v1/chat/completions"]
-
-[package.metadata.calimero.secrets.NEAR_AI_API_KEY]
-host = "cloud-api.near.ai"
-paths = ["/v1/chat/completions"]
-header = "authorization"
-format = "Bearer {}"
-description = "NEAR AI Cloud API key"
-required = true
+connectors = ["calimero-connector-nearai"]
 ```
+
+The connector declares them in its own `Cargo.toml`: the endpoint `https://cloud-api.near.ai/v1/chat/completions`, and `NEAR_AI_API_KEY` sent as `authorization: Bearer <key>` on it.
+`pack` prints both as it adds them.
 
 ## Call it from an action
 

@@ -123,6 +123,7 @@ pub async fn start_on(
             read_wait: std::time::Duration::from_secs(2),
             sys_read_lease: std::time::Duration::ZERO,
             refresh_rotate_after: crate::api::REFRESH_ROTATE_AFTER,
+            sign_ups_per_minute: crate::api::SIGN_UPS_PER_MINUTE,
             tee_release: None,
             tee_profile: None,
             peer_measurements: calimero_client::Measurements::None,

@@ -16,7 +16,7 @@ its peers; mero-js's `src/runtime/attestation.ts` implements the same check.
 
 ## The attestation document
 
-`GET /attestation?nonce=<32 bytes hex>[&app=<app>|&appHash=<hex>][&purpose=receipts|kms|jobs]`
+`GET /attestation?nonce=<32 bytes hex>[&app=<app>|&appHash=<hex>][&purpose=receipts|kms|jobs|orchestrator][&form=interval]`
 answers, unsealed:
 
 | Field | Meaning |
@@ -31,6 +31,7 @@ answers, unsealed:
 | `kms` | With `purpose=kms` only, and only when the node has a record: what it verified of the mero-kms replica each key came from (below) |
 | `jobKey` | With `purpose=jobs` only, on a job node: its Ed25519 job signing key |
 | `clusterIdentity` | With `purpose=jobs` (the identity a job node takes work from) or `purpose=orchestrator` (the identity a replica holds): the cluster identity public key, hex |
+| `interval` | With `form=interval` and no `purpose`, from a node that has a current interval quote: `{ key, quoteNonce, issuedAt, signature }` ([Interval quotes](#interval-quotes)) |
 
 The quote's 64 bytes of report data bind the request to the key:
 
@@ -72,6 +73,69 @@ A client sends the request again after the delay. The cluster's own nodes
 attesting each other queue apart from anyone else and pass the anonymous
 queue, so requests nobody vouches for cannot keep a restarted node from
 rejoining (`MAX_QUEUED_PEER_QUOTES`, `PEER_QUOTE_WAIT`).
+
+So a node can make about one quote a second for everyone, and a few dozen
+requests at once would keep new clients from connecting. The clients in this
+repository therefore ask for the interval form below, which makes no quote per
+request. The cluster's nodes do not: each peer channel rests on a quote made
+for its own nonce, in the peer lane.
+
+## Interval quotes
+
+`GET /attestation?form=interval` answers from a quote the node made earlier,
+not one over the caller's nonce. Once a minute (`INTERVAL_QUOTE_EVERY`) the
+node makes a fresh Ed25519 key, the **interval key**, which never leaves its
+memory, and one quote that binds it:
+
+```text
+interval:   report_data = quote_nonce ‖ SHA-256("calimero.tee-attest.interval-key.v1" ‖ transport_key ‖ interval_key ‖ u64_be(issued_at))
+signature = Ed25519(interval_key, "calimero.tee-attest.interval-sig.v1\0" ‖ nonce ‖ app_hash ‖ transport_key)
+```
+
+`quote_nonce` is 32 random bytes the node chose, and `issued_at` the Unix
+second it made the quote, by its clock. Each request is answered with that
+quote and `interval: { key, quoteNonce, issuedAt, signature }`, where
+`signature` is the interval key's over the caller's `nonce` and the app hash
+and transport key the per-request form would bind. Signing takes microseconds,
+so no request waits for a quote and none is refused `503 BUSY`.
+
+A verifier (`attest::verify`, mero-js, mero-kotlin and mero-swift alike)
+checks, in this order:
+
+1. `issuedAt` is at most `INTERVAL_QUOTE_MAX_AGE_SECS` (300) before its own
+   clock and at most `INTERVAL_QUOTE_MAX_SKEW_SECS` (60) after it.
+2. `signature` is the interval key's over its own nonce, the app hash it asked
+   for (or the node's, with `app`) and the transport key.
+3. The quote passes every check above ([What the verifier checks](#what-the-verifier-checks)),
+   with `quoteNonce` as its nonce and the interval binding as its second half.
+
+The nonce still makes the answer fresh: only a process that holds the interval
+key can sign it, and the quote proves that the key was made inside a measured
+TD, bound to the same transport key. Since the key lives only for the
+interval, a quote older than the maximum age vouches for no key anyone can
+still sign with. The node serves an interval quote while it is at most
+`INTERVAL_QUOTE_SERVED_FOR` (120 s) old, leaving three minutes for the clocks
+to differ; it makes its interval quotes in `Lane::Peer`, so anonymous requests
+never delay them, and tries again within seconds when one fails.
+
+The form is asked for, never assumed, so nothing changes for a client that does
+not ask: `form` absent is the per-request quote, byte for byte. A node that
+has no current interval quote (it just started, or its last quote failed), or
+that is asked with a `purpose`, answers the per-request quote as before, and so
+does a node of a release before the form: it ignores the parameter. A verifier
+takes either answer, deciding by whether `interval` is present. `form` takes
+only `interval`; any other value is `400 BAD_FORM`.
+
+Nodes attesting each other never use the form. A node's peer policy
+(`Policy::require_fresh_quote`) makes `HttpAttestor` and `PeerAttestor` ask
+without `form`, on every peer path: opening a channel, identifying a caller,
+checking a registered node, delivering the cluster key, and again after a
+restart. `verify` under that policy refuses a document that carries
+`interval`, so a peer that answers with an interval proof anyway is not
+attested. The per-request queue's peer lane keeps their quotes ahead of
+anonymous requests. A node still answers `form=interval` from its peers, so
+a node of the release that brought the form, which asks its peers for it,
+still attests the others through a rolling upgrade.
 
 ## What the verifier checks
 
@@ -423,6 +487,19 @@ The recovery disk's own attestation also takes `Lane::Peer`.
 judged as an anonymous `GET /apps/{app}` (fresh system state; an app anyone may not reach answers
 `404` as an unknown id).
 Mock quotes take the same path.
+
+### Interval quotes
+
+Code: `attest::IntervalQuotes`, `attest::refresh_interval_quotes`.
+
+`refresh_interval_quotes`, started with the node, makes a new interval key and its quote
+(`interval_report_data`) through `Node::quoter` in `Lane::Peer` every `INTERVAL_QUOTE_EVERY`, and
+after `INTERVAL_QUOTE_RETRY` when one fails. `/attestation` with `form=interval` and no `purpose`
+signs `interval_message` with the current key (`IntervalQuotes::answer`) while its quote is at most
+`INTERVAL_QUOTE_SERVED_FOR` old and binds the node's transport key, and falls back to the
+per-request quote otherwise. The verifier is `calimero_client::attest::verify`'s `verify_interval`;
+`Config::peer_policy` sets `require_fresh_quote`, so a node asks its peers without `form` and refuses
+their interval proofs (`attest::tests::a_peer_is_attested_with_a_quote_over_its_own_nonce`).
 
 ### Peers' quotes
 

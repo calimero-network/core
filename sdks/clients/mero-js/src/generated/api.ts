@@ -716,6 +716,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/apps/{app}/origins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * An instance's web origins
+         * @description The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+         *
+         *     **Who:** an account holder (a passkey session not bound to an app's frontend).
+         */
+        get: operations["app_origins"];
+        put?: never;
+        /**
+         * Register a web origin for an instance
+         * @description By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+         *
+         *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         */
+        post: operations["app_origin_add"];
+        /**
+         * Remove an instance's web origin
+         * @description Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+         *
+         *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+         */
+        delete: operations["app_origin_remove"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/apps/{app}/outbound-log": {
         parameters: {
             query?: never;
@@ -1189,7 +1223,7 @@ export interface paths {
         put?: never;
         /**
          * Undo an app's last upgrade
-         * @description An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+         * @description An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -1209,7 +1243,7 @@ export interface paths {
         };
         /**
          * Whether an update is available for an app
-         * @description For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
+         * @description For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring `lineage: pinned` pins an instance that was not (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
          *
          *     **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
          */
@@ -1233,7 +1267,7 @@ export interface paths {
         put?: never;
         /**
          * Upgrade an app instance
-         * @description To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+         * @description To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409 LINEAGE_OLDER_RELEASE`, before the step-up.
          *
          *     **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
          */
@@ -1391,7 +1425,7 @@ export interface paths {
         };
         /**
          * The node's attestation
-         * @description In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+         * @description In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
          *
          *     **Who:** anyone.
          */
@@ -1643,7 +1677,7 @@ export interface paths {
         };
         /**
          * The caller's account
-         * @description The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
+         * @description The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.
          *
          *     **Who:** signed in (a session or an API key).
          */
@@ -1709,7 +1743,7 @@ export interface paths {
         put?: never;
         /**
          * Start a sign-up
-         * @description Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+         * @description Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429 RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
          *
          *     **Who:** anyone.
          */
@@ -2443,7 +2477,7 @@ export interface paths {
         put?: never;
         /**
          * Restore an app from its sealed backup
-         * @description Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's.
+         * @description Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the signature is asked for.
          *
          *     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
          */
@@ -2465,7 +2499,7 @@ export interface paths {
         put?: never;
         /**
          * Upgrade an app as the operator
-         * @description To a release the operator installed, where the operator holds app upgrades. `error` is the app log's error value (`null` when it ran), free-form: the app's own.
+         * @description To a release the operator installed, where the operator holds app upgrades. A pinned instance (its record's `lineage`) is held to its package, publisher and forward order as for anyone (`409 OUTSIDE_LINEAGE`, `409 LINEAGE_OLDER_RELEASE`). `error` is the app log's error value (`null` when it ran), free-form: the app's own.
          *
          *     **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
          */
@@ -4311,7 +4345,7 @@ export interface paths {
         put?: never;
         /**
          * Bring an organization's or account's apps back from its recovery files
-         * @description Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+         * @description Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
          *
          *     **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
          */
@@ -5546,6 +5580,11 @@ export interface components {
             package: string;
             origins: components["schemas"]["PackageOrigin"][];
         };
+        /** @description `GET /apps/{app}/origins`: the origins registered for an instance. */
+        AppOriginList: {
+            app: string;
+            origins: components["schemas"]["PackageOrigin"][];
+        };
         /** @description What removing an origin answers. */
         OriginRemoved: {
             package: string;
@@ -6381,7 +6420,7 @@ export interface components {
             version: string;
             profile: string;
         };
-        /** @description A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`; `jobKey` only from a job node, never from this API. */
+        /** @description A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`, `interval` with `form=interval` (the quote is then the node's interval quote); `jobKey` only from a job node, never from this API. */
         AttestationDoc: {
             quote: string;
             transportKey: string;
@@ -6397,6 +6436,15 @@ export interface components {
             kms?: components["schemas"]["KmsKeys"];
             jobKey?: string;
             clusterIdentity?: string;
+            interval?: components["schemas"]["IntervalProof"];
+        };
+        /** @description With `form=interval`: the node's interval key (Ed25519, hex) that its quote binds, the quote's own nonce (hex) and when it was made (Unix seconds), and that key's signature (hex) over the request's nonce, app hash and transport key. */
+        IntervalProof: {
+            key: string;
+            quoteNonce: string;
+            /** Format: int64 */
+            issuedAt: number;
+            signature: string;
         };
         /** @description What a node verified of the mero-kms replicas it took its keys from: the storage key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record. */
         KmsKeys: {
@@ -6572,7 +6620,7 @@ export interface components {
             signer: string;
             destinations: string[];
         };
-        /** @description Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red. */
+        /** @description Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red. `pinsLineage`: the part, not pinned yet, moves into a release of `package` declaring `lineage: pinned`, so from then on it moves only to that package's newer releases by the same publisher. */
         UpdateReason: {
             /** @enum {string} */
             code: "signerChanged";
@@ -6616,6 +6664,11 @@ export interface components {
             name: string;
             before: string | null;
             after: string;
+        } | {
+            /** @enum {string} */
+            code: "pinsLineage";
+            member: string | null;
+            package: string;
         } | {
             /** @enum {string} */
             code: "unclassified";
@@ -6817,7 +6870,7 @@ export interface components {
             /** Format: int64 */
             expiresAt: number;
         };
-        /** @description A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there. */
+        /** @description A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), whether the cluster serves the package's frontend there, and the instance its sessions reach alone (`app`, an instance's origin). */
         PackageOrigin: {
             package: string;
             origin: string;
@@ -6825,6 +6878,7 @@ export interface components {
             addedBy: string;
             addedAt: string;
             served: boolean;
+            app?: string;
         };
         /** @description The sign-up policy and what it implies: whether organization invites and cluster sign-up invites admit a new account, and whether one is required. */
         SignUpState: {
@@ -6882,7 +6936,7 @@ export interface components {
                 };
             };
         };
-        /** @description An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on. */
+        /** @description An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on; `lineage`: the package and signer a release declaring `lineage: pinned` pinned it to, and `floor`, the newest version it has been judged at, absent while unpinned: it moves only to releases of that package, never one older than `floor`. */
         App: {
             appId: string;
             name: string;
@@ -6928,6 +6982,11 @@ export interface components {
             };
             restorePoint?: components["schemas"]["RestorePoint"];
             egressOff?: boolean;
+            lineage?: {
+                package: string;
+                signerId: string;
+                floor: string;
+            };
         };
         /** @description An app as `GET /apps` lists it: `package` and `version` name the release it runs where the caller may read it (`null` otherwise, and for a raw upload); `?package=` keeps the instances whose row names that package, `deployment` the deployment it was created from (`null` for none; absent from an older node, as 1.0.0-rc.1). */
         AppEntry: {
@@ -7642,6 +7701,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `FEATURE_NOT_ACTIVE`; `UNIT_MEMBER`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
             409: {
                 headers: {
@@ -7739,6 +7807,15 @@ export interface operations {
             };
             /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -8181,6 +8258,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
                 headers: {
@@ -8237,7 +8323,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8437,7 +8523,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -8515,7 +8601,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `RATE_LIMITED`: a node's limit on open streams or ceremonies */
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -9168,7 +9254,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9359,7 +9445,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9459,7 +9545,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9583,8 +9669,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9666,7 +9761,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9675,7 +9770,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `NOT_ATTACHED` */
+            /** @description `NOT_ATTACHED`; `NOT_FOUND`: no such object, or one the caller may not see */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -9739,6 +9834,15 @@ export interface operations {
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -9818,7 +9922,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -9947,8 +10051,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10043,6 +10156,258 @@ export interface operations {
             };
             /** @description `BAD_ABI` */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    app_origins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AppOriginList"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    app_origin_add: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    origin: string;
+                    rpId?: string;
+                    confirm?: components["schemas"]["Confirm"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PackageOrigin"];
+                };
+            };
+            /** @description `BAD_ORIGIN`; `BAD_RP_ID`; `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`; `ORIGIN_TAKEN`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `QUOTA_EXCEEDED` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    app_origin_remove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                app: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    origin: string;
+                    confirm?: components["schemas"]["Confirm"];
+                };
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OriginRemoved"];
+                };
+            };
+            /** @description `EXPIRED_CHALLENGE`; `UNKNOWN_CHALLENGE` */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `FEATURE_NOT_ACTIVE`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFIRM_REQUIRED`: a passkey assertion is needed; `details` carries the challenge. `details` of `CONFIRM_REQUIRED`: a `ConfirmRequired`. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
+            421: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -10490,7 +10855,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `OUTPUT_EXPIRED` */
+            /** @description `INPUT_EXPIRED` */
             410: {
                 headers: {
                     [name: string]: unknown;
@@ -10688,7 +11053,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `OUTPUT_EXPIRED` */
+            /** @description `INPUT_EXPIRED` */
             410: {
                 headers: {
                     [name: string]: unknown;
@@ -10988,7 +11353,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11088,7 +11453,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11391,7 +11756,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11482,7 +11847,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11614,8 +11979,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -11736,7 +12110,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11754,7 +12128,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FEATURE_NOT_ACTIVE`; `NO_RESTORE_POINT`; `RESTORE_POINT_UNAVAILABLE`; `UNDO_NOT_AS_NAMED`; `UNDO_RELEASE_GONE`; `UNDO_STALE`; `UNDO_WINDOW_PASSED`; `UPGRADE_PENDING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`, `UPGRADE_PENDING`: a `UpgradePending`. */
+            /** @description `FEATURE_NOT_ACTIVE`; `NO_RESTORE_POINT`; `OUTSIDE_LINEAGE`; `RESTORE_POINT_UNAVAILABLE`; `UNDO_NOT_AS_NAMED`; `UNDO_RELEASE_GONE`; `UNDO_STALE`; `UNDO_WINDOW_PASSED`; `UPGRADE_PENDING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`, `UPGRADE_PENDING`: a `UpgradePending`. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -11881,7 +12255,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -11890,7 +12264,16 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CONFLICT`: the state does not allow it now; `FEATURE_NOT_ACTIVE`; `OUTSIDE_DEPLOYMENT`; `OUTSIDE_UNIT_RANGE`; `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`, `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`. */
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `CONFLICT`: the state does not allow it now; `FEATURE_NOT_ACTIVE`; `LINEAGE_OLDER_RELEASE`; `OUTSIDE_DEPLOYMENT`; `OUTSIDE_LINEAGE`; `OUTSIDE_UNIT_RANGE`; `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`, `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -11974,7 +12357,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12112,7 +12495,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12204,7 +12587,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12435,6 +12818,7 @@ export interface operations {
                 app?: string;
                 appHash?: string;
                 purpose?: "receipts" | "kms" | "orchestrator";
+                form?: "interval";
             };
             header?: never;
             path?: never;
@@ -12451,7 +12835,7 @@ export interface operations {
                     "application/json": components["schemas"]["AttestationDoc"];
                 };
             };
-            /** @description `BAD_HASH`; `BAD_NONCE` */
+            /** @description `BAD_FORM`; `BAD_HASH`; `BAD_NONCE` */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -12880,7 +13264,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -12988,7 +13372,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13154,7 +13538,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13377,7 +13761,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `RATE_LIMITED`: a node's limit on open streams or ceremonies */
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -13431,6 +13815,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `SIGN_COUNT_REPLAYED` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
                 headers: {
@@ -13477,7 +13870,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `RATE_LIMITED`: a node's limit on open streams or ceremonies */
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -13534,7 +13927,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `SIGN_UP_REFUSED` */
+            /** @description `ASSERTION_REFUSED`; `SIGN_COUNT_REPLAYED`; `SIGN_UP_REFUSED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13563,6 +13956,15 @@ export interface operations {
             };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -13663,7 +14065,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13790,7 +14192,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13860,7 +14262,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13930,7 +14332,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -13992,7 +14394,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `RATE_LIMITED`: a node's limit on open streams or ceremonies */
+            /** @description `RATE_LIMITED`: a node's limit on open streams, ceremonies or sign-ups (that one with `Retry-After`) */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -14044,7 +14446,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -14109,6 +14511,15 @@ export interface operations {
             };
             /** @description `UNAUTHENTICATED`: no, unknown, expired or revoked credential */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `ASSERTION_REFUSED`; `SIGN_COUNT_REPLAYED` */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -14478,7 +14889,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `QUOTA_EXCEEDED` */
+            /** @description `QUOTA_EXCEEDED`; `TOO_MANY_COMPILES` */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -14948,7 +15359,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15020,7 +15431,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15127,7 +15538,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15257,7 +15668,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15328,7 +15739,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15410,7 +15821,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15589,7 +16000,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15689,7 +16100,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15781,7 +16192,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15871,7 +16282,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -15963,7 +16374,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `DEPLOY_NOT_GRANTED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -16288,7 +16699,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `BACKUP_FROM_NEWER_RELEASE`; `BUNDLE_GONE`; `MOVE_IN_PROGRESS`; `NO_BACKUP_DIR`; `RECOVERY_SEGMENTS_MISSING`; `UNKNOWN_BACKUP_FORMAT`; `UPGRADE_PENDING`. `details` of `UPGRADE_PENDING`: a `UpgradePending`. */
+            /** @description `BACKUP_FROM_NEWER_RELEASE`; `BUNDLE_GONE`; `LINEAGE_OLDER_RELEASE`; `MOVE_IN_PROGRESS`; `NO_BACKUP_DIR`; `OUTSIDE_LINEAGE`; `RECOVERY_SEGMENTS_MISSING`; `UNKNOWN_BACKUP_FORMAT`; `UPGRADE_PENDING`. `details` of `UPGRADE_PENDING`: a `UpgradePending`. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -16366,7 +16777,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `NOT_INSTALLED`; `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`. */
+            /** @description `LINEAGE_OLDER_RELEASE`; `NOT_INSTALLED`; `OUTSIDE_LINEAGE`; `RELEASE_DEADLINE`; `RUNTIME_TOO_OLD`. `details` of `RELEASE_DEADLINE`: a `ReleaseDeadline`, `RUNTIME_TOO_OLD`: a `RuntimeTooOld`. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -17426,6 +17837,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `TOO_MANY_COMPILES` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `BUSY` */
             503: {
                 headers: {
@@ -17500,6 +17920,15 @@ export interface operations {
             };
             /** @description `COMPILE_TIMEOUT`. `details` of `COMPILE_TIMEOUT`: a `ServiceRefused`. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `TOO_MANY_COMPILES` */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -18786,7 +19215,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -18857,7 +19286,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -18995,7 +19424,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19185,7 +19614,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19265,7 +19694,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19339,7 +19768,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `CONSENT_PAGE_REQUIRED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19477,7 +19906,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `CANNOT_GRANT_UNHELD`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19559,7 +19988,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19708,7 +20137,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19781,7 +20210,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19844,6 +20273,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
                 headers: {
@@ -19898,7 +20336,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -19979,7 +20417,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20050,6 +20488,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
                 headers: {
@@ -20103,7 +20550,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20197,7 +20644,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20269,7 +20716,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20349,7 +20796,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20429,7 +20876,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20510,7 +20957,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20591,7 +21038,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20746,7 +21193,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20817,7 +21264,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -20899,6 +21346,15 @@ export interface operations {
             };
             /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -21010,6 +21466,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `NOT_FOUND`: no such object, or one the caller may not see */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `WRONG_NODE`: this node runs a release the account's owners have not approved, so it neither issues nor takes the account's sessions; send it to another node of the cluster (no `details`; nothing was spent) */
             421: {
                 headers: {
@@ -21065,7 +21530,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21155,7 +21620,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21229,7 +21694,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21360,7 +21825,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21489,7 +21954,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21633,7 +22098,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `BAD_OPERATOR_SIGNATURE`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21825,7 +22290,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -21908,7 +22373,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -22072,6 +22537,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description `TOO_MANY_COMPILES` */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description `BUSY` */
             503: {
                 headers: {
@@ -22165,6 +22639,15 @@ export interface operations {
             };
             /** @description `COMPILE_TIMEOUT`. `details` of `COMPILE_TIMEOUT`: a `ServiceRefused`. */
             422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description `TOO_MANY_COMPILES` */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -22633,7 +23116,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FEATURE_NOT_ACTIVE`; `NO_BACKUP_DIR`; `RECOVERY_SEGMENTS_MISSING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
+            /** @description `FEATURE_NOT_ACTIVE`; `NO_BACKUP_DIR`; `OUTSIDE_LINEAGE`; `RECOVERY_SEGMENTS_MISSING`. `details` of `FEATURE_NOT_ACTIVE`: a `FeatureNotActive`. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -22737,7 +23220,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -22859,7 +23342,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -22931,7 +23414,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only) */
+            /** @description `ASSERTION_REFUSED`; `FORBIDDEN`: the credential may not do this (scope, role, governance, read-only); `SIGN_COUNT_REPLAYED` */
             403: {
                 headers: {
                     [name: string]: unknown;

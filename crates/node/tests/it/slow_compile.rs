@@ -137,3 +137,53 @@ fn watched(ticks: &Mutex<Vec<Instant>>, start: Instant, end: Instant) -> (usize,
         .unwrap_or(end - start);
     (seen.len(), longest)
 }
+
+/// How long each compile holds its thread in
+/// [`one_account_filling_the_compile_queue_leaves_room_for_another`].
+const FAIR_COMPILE: Duration = Duration::from_millis(500);
+
+/// One account that sends more compiles at once than the queue holds takes
+/// one place in it, not all of them: another account's compile still waits its
+/// turn and compiles, where before it was refused `503 BUSY`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_account_filling_the_compile_queue_leaves_room_for_another() {
+    use calimero_node::compile::{Engine, MAX_CONCURRENT_COMPILES, MAX_QUEUED_COMPILES};
+
+    let wasm = common::component("fixture-kv");
+    let c = Cluster::start(1).await;
+    let node = Arc::clone(&c.nodes[0].as_ref().unwrap().node);
+    calimero_node::testing::slow_compiles(&node.config.public_url, FAIR_COMPILE);
+
+    let flood: Vec<_> = (0..=MAX_CONCURRENT_COMPILES + MAX_QUEUED_COMPILES)
+        .map(|i| {
+            let (node, wasm) = (Arc::clone(&node), wasm.clone());
+            tokio::spawn(async move {
+                node.compile(Engine::App, "busy-account", &format!("busy-{i}"), wasm)
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .collect();
+    // Every one of the flood has asked before the other account does.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let other = node
+        .compile(Engine::App, "other-account", "other", wasm.clone())
+        .await
+        .map(|_| ());
+    let mut refused = Vec::new();
+    for f in flood {
+        if let Err(e) = f.await.unwrap() {
+            refused.push((e.status, e.code));
+        }
+    }
+    eprintln!("the busy account's refusals: {refused:?}");
+    assert!(
+        other.is_ok(),
+        "another account's compile was refused while one account filled the queue: {:?}",
+        other.err().map(|e| (e.status, e.code))
+    );
+    assert!(
+        !refused.is_empty(),
+        "every compile of the account that filled the queue was taken"
+    );
+}

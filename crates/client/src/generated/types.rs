@@ -2665,6 +2665,16 @@ pub struct OriginList {
     pub extra: Map<String, Value>,
 }
 
+/// `GET /apps/{app}/origins`: the origins registered for an instance.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppOriginList {
+    pub app: String,
+    pub origins: Vec<PackageOrigin>,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
 /// What removing an origin answers.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OriginRemoved {
@@ -4631,6 +4641,8 @@ pub use crate::attest::Release;
 
 pub use crate::attest::AttestationDoc;
 
+pub use crate::attest::IntervalProof;
+
 /// What a node verified of the mero-kms replicas it took its keys from: the storage key `merod` fetched, and the data disk's key the boot script fetched; each absent without a record.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct KmsKeys {
@@ -5019,7 +5031,7 @@ pub struct UnitMember {
     pub extra: Map<String, Value>,
 }
 
-/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red.
+/// Why an update is red (`calimero_bundle::update::Reason`): `member` names a member by its path, `null` for the instance itself. `secretBindingChanged`: the release declares secret `name` it did not (`before` null) or binds it elsewhere (another host or place, or a path its earlier binding did not cover; fewer paths is not a change), each binding in one line. `unclassified`: the release a part runs or moves to (`package`, `version`) is no longer installed, so the update could not be classified and is taken as red. `pinsLineage`: the part, not pinned yet, moves into a release of `package` declaring `lineage: pinned`, so from then on it moves only to that package's newer releases by the same publisher.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "code")]
 pub enum UpdateReason {
@@ -5061,6 +5073,11 @@ pub enum UpdateReason {
         member: Option<String>,
         name: String,
         before: Option<String>,
+    },
+    #[serde(rename = "pinsLineage")]
+    PinsLineage {
+        package: String,
+        member: Option<String>,
     },
     #[serde(rename = "unclassified")]
     Unclassified {
@@ -5655,7 +5672,7 @@ pub struct AccountStatement {
     pub extra: Map<String, Value>,
 }
 
-/// A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), and whether the cluster serves the package's frontend there.
+/// A custom frontend origin of a package: the rp-id its passkeys use, who registered it and when (RFC 3339), whether the cluster serves the package's frontend there, and the instance its sessions reach alone (`app`, an instance's origin).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PackageOrigin {
     pub package: String,
@@ -5667,6 +5684,8 @@ pub struct PackageOrigin {
     #[serde(rename = "addedAt")]
     pub added_at: String,
     pub served: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -5872,7 +5891,18 @@ pub struct AppRestore {
     pub extra: Map<String, Value>,
 }
 
-/// An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppLineage {
+    pub package: String,
+    #[serde(rename = "signerId")]
+    pub signer_id: String,
+    pub floor: String,
+    /// The fields this client does not name, as the node sent them.
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// An app instance as the directory records it. `executor` is absent for an SDK 0.12 app (wasmer), which this node lists but does not run; `release` is the package release it runs, absent for a record from before or a raw upload; `restore` is a restore from a backup under way; `restorePoint` the restore point of its last upgrade, which an owner or admin may undo for a week (`POST /apps/{app}/undo`); `egressOff`: the instance's own egress switch is off (`POST /apps/{app}/egress`), absent while on; `lineage`: the package and signer a release declaring `lineage: pinned` pinned it to, and `floor`, the newest version it has been judged at, absent while unpinned: it moves only to releases of that package, never one older than `floor`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct App {
     #[serde(rename = "appId")]
@@ -5922,6 +5952,8 @@ pub struct App {
     #[serde(rename = "egressOff")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress_off: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage: Option<AppLineage>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -8468,6 +8500,40 @@ impl<'de> Deserialize<'de> for AttestationPurpose {
             "receipts" => Self::Receipts,
             "kms" => Self::Kms,
             "orchestrator" => Self::Orchestrator,
+            other => Self::Other(other.to_owned()),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AttestationForm {
+    /// `interval`.
+    Interval,
+    /// A value this client does not know yet.
+    Other(String),
+}
+
+impl AttestationForm {
+    /// The value on the wire.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Interval => "interval",
+            Self::Other(s) => s,
+        }
+    }
+}
+
+impl Serialize for AttestationForm {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AttestationForm {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(d)?.as_str() {
+            "interval" => Self::Interval,
             other => Self::Other(other.to_owned()),
         })
     }

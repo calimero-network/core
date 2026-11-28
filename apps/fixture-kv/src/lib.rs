@@ -90,6 +90,12 @@ fn who() -> String {
     }
 }
 
+/// `hop`'s arguments, as an xcall sends them.
+#[derive(serde::Serialize)]
+struct HopArgs {
+    fanout: u32,
+}
+
 /// `setFromApp`'s arguments, as an xcall sends them.
 #[derive(serde::Serialize)]
 struct SetArgs<'a> {
@@ -430,6 +436,39 @@ impl Kv {
         Ok(())
     }
 
+    /// Counts one more under `hops`, then sends this app `hop { fanout }` `fanout` times:
+    /// a chain of xcalls that, once a client starts it, no client keeps going.
+    #[app::allow(app = "*")]
+    pub fn hop(&mut self, fanout: u32) -> app::Result<()> {
+        let hops = self
+            .entries
+            .get("hops")?
+            .and_then(|e| e.value.parse::<u32>().ok())
+            .unwrap_or(0)
+            + 1;
+        let _event = self.upsert("hops", &hops.to_string())?;
+        let me = env::app_id();
+        for _ in 0..fanout {
+            env::xcall(&me, "hop", &HopArgs { fanout })?;
+        }
+        Ok(())
+    }
+
+    /// Counts one more under `bounces`, then sends `bounce` to app `app`. To an app that does
+    /// not exist it is dead-lettered, and `onXcallFailed` sends it again: a loop through
+    /// failures that, once a client starts it, no client keeps going.
+    pub fn bounce(&mut self, app: String) -> app::Result<()> {
+        let bounces = self
+            .entries
+            .get("bounces")?
+            .and_then(|e| e.value.parse::<u32>().ok())
+            .unwrap_or(0)
+            + 1;
+        let _event = self.upsert("bounces", &bounces.to_string())?;
+        env::xcall(&app, "bounce", &NoArgs {})?;
+        Ok(())
+    }
+
     /// Sends `recordWho { key }` to app `app`: the target stores whom this run served.
     pub fn relay_who(&mut self, app: String, key: String) -> app::Result<()> {
         env::xcall(&app, "recordWho", &KeyArg { key: &key })?;
@@ -538,6 +577,9 @@ impl Kv {
     ) -> app::Result<()> {
         self.xcall_failures
             .insert(&method, &format!("{app}|{reason}"))?;
+        if method == "bounce" {
+            return self.bounce(app);
+        }
         Ok(())
     }
 
@@ -555,13 +597,13 @@ impl Kv {
         env::start_action("enrich", &KeyArg { key: &key })
     }
 
-    /// An action: reads `key` through a view, sends it to the echo host with the
+    /// An action: reads `key` through `enrichSource`, sends it to the echo host with the
     /// action's key, and writes what came back through `applyEnrichment`. A secret the
     /// release binds to the echo host (`ECHO_KEY`, in tests) is attached by the node, never
     /// named here.
     #[app::action]
     pub fn enrich(ctx: &mut ActionCtx, key: String) -> app::Result<()> {
-        let value: Option<String> = ctx.view("get", &KeyArg { key: &key })?;
+        let value: Option<String> = ctx.view("enrichSource", &KeyArg { key: &key })?;
         let request = Request::get(format!(
             "https://echo.outbound.test/v1/enrich?v={}",
             value.unwrap_or_default()
@@ -583,6 +625,23 @@ impl Kv {
     #[app::action]
     pub fn explode(_ctx: &mut ActionCtx) -> app::Result<()> {
         app::bail!(Error::BeatFailed)
+    }
+
+    /// An action that reads app `app`'s `enrichSource` for `key` through a synchronous xcall.
+    #[app::action]
+    pub async fn enrich_from(_ctx: &mut ActionCtx, app: String, key: String) -> app::Result<()> {
+        let _value: Option<String> =
+            env::xcall_view(&app, "enrichSource", &KeyArg { key: &key }).await?;
+        Ok(())
+    }
+
+    /// The value `enrich` sends for `key`. Only the app's own actions read it
+    /// (`allow(action)`); `allow(app = "*")` leaves that the only check another app fails.
+    #[app::view]
+    #[app::allow(action)]
+    #[app::allow(app = "*")]
+    pub fn enrich_source(&self, key: String) -> app::Result<Option<String>> {
+        self.get(key)
     }
 
     /// Only the app's own actions write here (`allow(action)`).

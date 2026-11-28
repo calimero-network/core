@@ -10,7 +10,8 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use calimero_pipeline::{
-    estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline, PriceTable,
+    estimate, worst_case_cost, Caps, Env, InputKind, Limits, Param, ParamType, Pipeline,
+    PriceTable, MAX_RUN_FILES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -26,13 +27,12 @@ use crate::node::{Node, PIPELINE_VIEW};
 use crate::packages::pipelines::SELF_MODULE;
 use crate::types::{AppRecord, Caller, Executor};
 
-const MAX_INPUT_FILES: usize = 1024; // file ids across all inputs of one run, which the log entry carries
 const MAX_PARAM_STRING_BYTES: usize = 4096; // a string param's value
 
 /// The refusal for a pipeline the app's release does not register.
 pub const NO_SUCH_PIPELINE: &str = "NO_SUCH_PIPELINE";
 const BAD_INPUTS: &str = "BAD_INPUTS";
-const OUTPUT_EXPIRED: &str = "OUTPUT_EXPIRED";
+const INPUT_EXPIRED: &str = "INPUT_EXPIRED";
 const BAD_PARAMS: &str = "BAD_PARAMS";
 const ONE_SERVICE: &str = "PIPELINES_NEED_ONE_SERVICE";
 const NO_PRICE_TABLE: &str = "NO_PRICE_TABLE";
@@ -46,7 +46,7 @@ const STILL_RUNNING: &str = "STILL_RUNNING";
 fn expired() -> ApiError {
     ApiError::new(
         410,
-        OUTPUT_EXPIRED,
+        INPUT_EXPIRED,
         "an input is not a file this app holds; it may have expired",
     )
 }
@@ -145,8 +145,8 @@ pub fn check_inputs(
         }
         let _prev = bound.insert(name.clone(), files);
     }
-    if bound.values().map(Vec::len).sum::<usize>() > MAX_INPUT_FILES {
-        return Err(bad(format!("a run takes at most {MAX_INPUT_FILES} files")));
+    if bound.values().map(Vec::len).sum::<usize>() > MAX_RUN_FILES {
+        return Err(bad(format!("a run takes at most {MAX_RUN_FILES} files")));
     }
     Ok(bound)
 }
@@ -312,8 +312,8 @@ fn input_counts(
     let counts: BTreeMap<String, u32> = match (&body.inputs, &body.counts) {
         (Some(_), Some(_)) => return Err(bad("give inputs or counts, not both".into())),
         (Some(given), None) => {
-            if given.values().map(Vec::len).sum::<usize>() > MAX_INPUT_FILES {
-                return Err(bad(format!("a run takes at most {MAX_INPUT_FILES} files")));
+            if given.values().map(Vec::len).sum::<usize>() > MAX_RUN_FILES {
+                return Err(bad(format!("a run takes at most {MAX_RUN_FILES} files")));
             }
             given
                 .iter()
@@ -623,6 +623,7 @@ pub(super) async fn retry(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     let original = answer.result;
@@ -687,6 +688,7 @@ pub(super) async fn get(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     match answer.result {
@@ -728,6 +730,7 @@ pub(super) async fn list(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?;
     Ok(Json(answer.result))

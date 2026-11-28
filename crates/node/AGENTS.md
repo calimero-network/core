@@ -152,8 +152,9 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
    rule is a flag the API sets, or a mark in the log, never a silent change of `apply`.
 4. **Raise a format, keep its reader.** `ENTRY_FORMAT`, `STORE_FORMAT` and `SNAPSHOT_FORMAT` move
    with a reader for the old shape and a test that reads it, or a declared hard cutover.
-5. **Judge authority twice.** The API refuses before it asks for a passkey or a signature; `apply`
-   judges the same rule again on every node.
+5. **Judge authority twice.** The API refuses before it asks for a passkey or a signature, and
+   `Node::sys_write` refuses what `system::prejudge` finds `apply` would refuse before it proposes
+   it; `apply` judges the same rule again on every node.
 6. **Identity from proofs.** A caller is who its credential or signature says, never a field.
 7. **Bound every input.** Each input from outside has a named limit constant, checked before the
    costly work.

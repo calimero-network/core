@@ -77,6 +77,8 @@ WORKFLOWS = {
             "crates/*",
             "apps/*",
             "sdks/plugins/*",
+            "*.md",  # meroctl's doc-commands test parses every one
+            "*.mdx",
             # Every script ci-checks.yml runs (ci-scope-test.py keeps this complete),
             # and what those scripts read.
             "scripts/check-like-ci.py",
@@ -88,6 +90,8 @@ WORKFLOWS = {
             "scripts/check-rust-cache-groups.py",
             "scripts/check-scenario-discovery.py",
             "scripts/tests/check-like-ci.test.sh",
+            "scripts/tests/generate-openapi-retry.test.sh",
+            "sdks/clients/mero-swift/scripts/generate-openapi.sh",
             "scripts/tests/ci-scope-test.py",
             "scripts/tests/ci-paths-test.py",
             "scripts/tests/path-dep-closure-test.py",
@@ -189,8 +193,13 @@ def code_read_docs():
     return docs
 
 
+def is_doc_checked(path):
+    """Markdown meroctl's doc-commands test parses (every tracked file but a changelog)."""
+    return path.endswith(DOC_SUFFIXES) and not path.endswith("CHANGELOG.md")
+
+
 def is_inert(path, read_docs):
-    return path.endswith(DOC_SUFFIXES) and path not in read_docs
+    return path.endswith(DOC_SUFFIXES) and path not in read_docs and not is_doc_checked(path)
 
 
 def package_dirs():
@@ -267,6 +276,9 @@ def test_filter(paths):
     packages = package_dirs()
     names = set()
     for path in code:
+        if is_doc_checked(path):
+            names.add("meroctl")
+            continue
         directory = owner(path, packages)
         if directory in guest_crates:
             return "", f"{path} is in a crate the test guests compile from"

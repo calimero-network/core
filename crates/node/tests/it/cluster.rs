@@ -899,7 +899,7 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
         .upgrade(&alices, typed(json!({ "bundle": next })), Some(&mut bob_pk))
         .await
         .unwrap();
-    // Never an app of alice's own organization.
+    // Never an app of alice's own organization, which bob does not reach: as if missing.
     let personal = alice
         .apps()
         .create(typed(
@@ -917,7 +917,7 @@ async fn a_member_needs_the_capability_to_create_apps_or_invite() {
             )
             .await
             .unwrap_err(),
-        "403",
+        "404 NOT_FOUND: no such app",
     );
 }
 
@@ -980,6 +980,7 @@ fn mpk_full(
         upgrades,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets: None,
         uses: None,
@@ -3317,6 +3318,72 @@ async fn a_releases_frontend_digests_match_the_files_it_serves() {
     }
 }
 
+/// A page served under staging's apps domain names staging's attestation
+/// mirror in its `connect-src`: mero-js on that page fetches the release and
+/// Intel's collateral there, and with production's mirror in the policy the
+/// browser refused both, so no staging page got past checking its node.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_on_staging_may_reach_stagings_attestation_mirror() {
+    const STAGING: &str = "apps.relay.staging.cloud.calimero.network";
+    let registry = FakeRegistry::default();
+    let url = registry.serve().await;
+    let c = Cluster::start_with(1, |cfg| {
+        cfg.apps_domain = Some(STAGING.into());
+        cfg.registry = Some(url.clone());
+    })
+    .await;
+    let (alice, _apk) = signed_up(&c, 0, "alice").await;
+    let _org = alice.orgs().create("Alice org", None, None).await.unwrap();
+    let publisher = ed25519_dalek::SigningKey::from_bytes(&[6; 32]);
+    let html: &[u8] = b"<!doctype html><html><body></body></html>";
+    registry.publish(
+        "com.test.site",
+        "0.1.0",
+        mpk_full(
+            "com.test.site",
+            "0.1.0",
+            &kv_wasm(),
+            &publisher,
+            &[],
+            &[("frontend/index.html", html)],
+            None,
+        ),
+    );
+    let _ = alice
+        .packages()
+        .install("com.test.site", "0.1.0", None)
+        .await
+        .unwrap();
+
+    let label = calimero_node::app_host::label("com.test.site");
+    let port = url::Url::parse(&c.urls[0]).unwrap().port().unwrap();
+    let host = format!("{label}.{STAGING}");
+    let web = reqwest::Client::builder()
+        .resolve(&host, ([127, 0, 0, 1], port).into())
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    let page = web
+        .get(format!("http://{host}:{port}/0.1.0/"))
+        .header("accept", "text/html")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(page.status(), 200);
+    let csp = page.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        csp.contains("https://staging.cloud.calimero.network"),
+        "staging's mirror is reachable: {csp}"
+    );
+    assert!(
+        !csp.contains("https://cloud.calimero.network"),
+        "production's mirror is not staging's: {csp}"
+    );
+}
+
 /// App frontends: each package's frontend on its own origin (and on its
 /// cluster's host for it, `cluster_label`), served from the
 /// release's verified `.mpk` under a strict CSP, with client routes and deep
@@ -5241,6 +5308,7 @@ async fn app_usage_is_counted_on_the_node_that_ran_the_wasm() {
             strong: false,
             min_index: at,
             via: None,
+            action: None,
         })
         .await
         .unwrap();
@@ -6121,7 +6189,11 @@ async fn an_install_names_no_stalled_publisher_of_a_package_its_installer_may_no
 /// The binding of `key` to `org`: the key's signature over
 /// `calimero-publisher-binding/v1\n{cluster}\n{org}\n{signer}\n{generation}`,
 /// with the cluster's name and the key's generation as the node names them.
-async fn publisher_binding(cl: &Client, key: &ed25519_dalek::SigningKey, org: &str) -> Value {
+pub(crate) async fn publisher_binding(
+    cl: &Client,
+    key: &ed25519_dalek::SigningKey,
+    org: &str,
+) -> Value {
     use ed25519_dalek::Signer as _;
     let signer = calimero_bundle::derive_signer_id_did_key(key.verifying_key().as_bytes());
     let next = cl
@@ -6261,7 +6333,8 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
     assert_eq!(run["apps"], json!([own]), "{run}");
     let running = cora.apps().get(&inst).await.map(wire).unwrap();
     assert_eq!(running["release"]["version"], json!("1.0.0"), "{running}");
-    // The publisher may not upgrade the customer's instance by itself either.
+    // The publisher may not upgrade the customer's instance by itself either: it does not
+    // reach it, so it is answered as one that does not exist.
     let e = pam
         .apps()
         .upgrade(
@@ -6271,8 +6344,7 @@ async fn a_publisher_package_is_upgraded_by_its_customers_owner_and_admins() {
         )
         .await
         .unwrap_err();
-    assert!(e.to_string().starts_with("403"), "{e}");
-    assert!(e.to_string().contains("owner or admin"), "{e}");
+    assert_eq!(e.to_string(), "404 NOT_FOUND: no such app", "{e}");
     // The customer's owner does.
     let _ok = cora
         .apps()
@@ -7406,8 +7478,9 @@ async fn a_flood_of_attestations_does_not_stall_the_node() {
 /// Anonymous `/attestation` requests that keep a node's quote queue full, each
 /// quote taking a second as a TDX quote does, must not keep the cluster's
 /// own nodes from attesting it: a node that restarts during the flood opens
-/// its channel to the flooded node (attesting it on the way) and reaches an
-/// internal route, while the anonymous requests past the queue are `503 BUSY`.
+/// its channel to the flooded node (attesting it on the way) and reaches a route
+/// every node answers (the system index is the leader's alone), while the
+/// anonymous requests past the queue are `503 BUSY`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
     const FLOODERS: usize = 40;
@@ -7449,11 +7522,11 @@ async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
     let started = std::time::Instant::now();
     let reached = tokio::time::timeout(
         Duration::from_secs(20),
-        c.nodes[1]
-            .as_ref()
-            .unwrap()
-            .node
-            .peer_post(&flooded, "internal/system/index", &json!({})),
+        c.nodes[1].as_ref().unwrap().node.peer_post(
+            &flooded,
+            "internal/usage/today",
+            &json!({ "day": 0 }),
+        ),
     )
     .await;
     let took = started.elapsed();
@@ -7469,9 +7542,156 @@ async fn a_flood_of_attestations_does_not_keep_peers_from_attesting() {
         busy > 0,
         "the anonymous queue was never full ({ok} answered)"
     );
-    reached
-        .expect("the restarted node reached the flooded one in time")
-        .expect("the restarted node attested the flooded one during the flood");
+    match reached.expect("the restarted node reached the flooded one in time") {
+        Ok(_) => {}
+        // The restart can move system leadership, and the route answers from
+        // the system group's leader. That answer came over the attested
+        // channel, past the peer gate, so the channel opened all the same.
+        Err(e)
+            if e.downcast_ref::<calimero_node::error::ApiError>()
+                .is_some_and(|a| a.status == 503 && a.message.contains("not the leader")) => {}
+        Err(e) => panic!("the restarted node attested the flooded one during the flood: {e:#}"),
+    }
+}
+
+/// Anonymous `/attestation` requests that keep a node's quote queue full,
+/// each quote taking a second as a TDX quote does, must not keep a new client
+/// from connecting: each new `Client` attests the node (its interval quote,
+/// with its own nonce signed by the key that quote binds) and signs in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn new_clients_attest_and_sign_in_while_the_quote_queue_is_full() {
+    const LOADERS: usize = 40;
+    const CLIENTS: usize = 5;
+    let c = Cluster::start(3).await;
+    let (_alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let loaded = c.nodes[0].as_ref().unwrap().node.config.public_url.clone();
+    calimero_node::testing::slow_quotes(&loaded, Duration::from_secs(1));
+    let url = c.urls[0].clone();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let loaders: Vec<_> = (0..LOADERS)
+        .map(|_| {
+            let (url, stop) = (url.clone(), std::sync::Arc::clone(&stop));
+            tokio::spawn(async move {
+                let http = reqwest::Client::new();
+                let mut busy = 0_u32;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let nonce = hex::encode(calimero_identity::random::<32>());
+                    let Ok(r) = http
+                        .get(format!("{url}attestation?nonce={nonce}"))
+                        .send()
+                        .await
+                    else {
+                        continue;
+                    };
+                    if r.status().as_u16() == 503 {
+                        busy += 1;
+                    }
+                }
+                busy
+            })
+        })
+        .collect();
+    // The queue is full before the first client connects.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let mut failed = Vec::new();
+    for _ in 0..CLIENTS {
+        let client = c.client(0);
+        let answer = tokio::time::timeout(Duration::from_secs(10), client.sign_in(&mut pk)).await;
+        match answer {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => failed.push(format!("{e:#}")),
+            Err(_) => failed.push("no answer in 10 s".to_owned()),
+        }
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let mut busy = 0;
+    for l in loaders {
+        busy += l.await.unwrap();
+    }
+    assert!(busy > 0, "the anonymous quote queue was never full");
+    assert!(
+        failed.is_empty(),
+        "{} of {CLIENTS} new clients could not attest and sign in: {failed:?}",
+        failed.len()
+    );
+}
+
+/// `/attestation` answers both forms, and each verifies under the shared
+/// check: without `form` (a client of an earlier release) a quote over the
+/// caller's nonce and no `interval`, byte for byte as before; with
+/// `form=interval` the interval quote and its signature over the nonce. A
+/// `purpose` keeps the per-request quote, and an unknown form is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn attestation_answers_the_per_request_and_the_interval_form() {
+    let c = Cluster::start(1).await;
+    let http = reqwest::Client::new();
+    let policy = Policy {
+        allow_mock: true,
+        ..Policy::default()
+    };
+    let get = |query: String| {
+        let (http, url) = (http.clone(), c.urls[0].clone());
+        async move {
+            http.get(format!("{url}attestation?{query}"))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let nonce = calimero_identity::random::<32>();
+
+    let old: calimero_client::attest::AttestationDoc = get(format!("nonce={}", hex::encode(nonce)))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(old.interval.is_none(), "{old:?}");
+    calimero_client::attest::verify(&old, &nonce, &policy)
+        .await
+        .expect("the per-request form verifies");
+
+    // The node makes its first interval quote as it starts.
+    let mut interval = None;
+    for _ in 0..50 {
+        let doc: calimero_client::attest::AttestationDoc =
+            get(format!("nonce={}&form=interval", hex::encode(nonce)))
+                .await
+                .json()
+                .await
+                .unwrap();
+        if doc.interval.is_some() {
+            interval = Some(doc);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let interval = interval.expect("an interval answer");
+    calimero_client::attest::verify(&interval, &nonce, &policy)
+        .await
+        .expect("the interval form verifies");
+    assert!(
+        calimero_client::attest::verify(&interval, &[0; 32], &policy)
+            .await
+            .is_err(),
+        "an interval answer verified for another nonce"
+    );
+
+    let receipts: Value = get(format!(
+        "nonce={}&form=interval&purpose=receipts",
+        hex::encode(nonce)
+    ))
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert!(receipts.get("interval").is_none(), "{receipts}");
+    assert!(receipts["receiptKey"].is_string(), "{receipts}");
+
+    let bad = get(format!("nonce={}&form=daily", hex::encode(nonce))).await;
+    assert_eq!(bad.status().as_u16(), 400);
+    let body: Value = bad.json().await.unwrap();
+    assert_eq!(body["error"], "BAD_FORM", "{body}");
 }
 
 /// A system write the group cannot commit answers `503 UNAVAILABLE` in

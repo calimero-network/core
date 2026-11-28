@@ -161,6 +161,27 @@ async fn placed(
             stack.push((path, member, depth + 1));
         }
     }
+    // As it runs, a part is pinned as its record says, whatever its release declares.
+    if target.is_none() {
+        let pins: BTreeMap<String, bool> = node.sys(|s| {
+            out.apps
+                .iter()
+                .map(|(path, id)| {
+                    (
+                        path.clone(),
+                        s.apps.get(id).is_some_and(|a| a.lineage.is_some()),
+                    )
+                })
+                .collect()
+        });
+        for (path, pinned) in pins {
+            match out.unit.members.get_mut(&path) {
+                Some(member) => member.pinned = pinned,
+                None if path.is_empty() => out.unit.app.pinned = pinned,
+                None => {}
+            }
+        }
+    }
     // A member the target release would create that the instance lacks: shown as joining
     // (`unit_plan` refuses such an upgrade; a unit gains members only when created).
     for (name, (package, version)) in &moves {

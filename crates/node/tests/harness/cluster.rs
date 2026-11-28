@@ -135,6 +135,8 @@ pub fn node_config(id: u64, peers: &BTreeMap<u64, String>, dir: &std::path::Path
         // rotation and reuse expect; `tests/it/refresh.rs` runs the production
         // `api::REFRESH_ROTATE_AFTER`.
         refresh_rotate_after: Duration::ZERO,
+        // Tests sign up many accounts on one node; a test of the pace sets its own.
+        sign_ups_per_minute: 100_000,
         tee_release: None,
         tee_profile: None,
         peer_measurements: calimero_client::Measurements::None,

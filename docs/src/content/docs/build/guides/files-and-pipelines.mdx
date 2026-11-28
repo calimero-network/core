@@ -47,8 +47,8 @@ The member uploads first, then calls a method with the file's id, which a
 `BlobRef` parameter takes as a 64-hex string:
 
 ```bash
-meroctl file upload ./report.txt -c docs        # prints { id, size, sha256, index }
-meroctl call -c docs submit --args '{"file":"<id>"}'
+meroctl file upload ./report.txt -i docs        # prints { id, size, sha256, index }
+meroctl call -i docs submit --args '{"file":"<id>"}'
 ```
 
 ```ts
@@ -259,6 +259,8 @@ outputs: [total.outputs]
 refused with `NOT_IN_V1`, never ignored.
 A source is at most 64 KiB, with at most 64 steps, 64 inputs, 64 params and
 10,000 items per fan-out (`crates/pipeline/src/compile.rs`).
+A run takes at most 1,024 files, so an install, or a check against a release,
+refuses an input's `maxItems` above that (`BAD_MAX_ITEMS`).
 
 ### Check it before you pack
 
@@ -320,7 +322,7 @@ each pipeline's hash, worst-case fuel, pinned modules and canonical JSON.
   ]} />
 
 ```bash
-meroctl file upload ./a.txt -c docs                    # one id per file
+id1=$(meroctl file upload ./a.txt -i docs | jq -r .id)  # one id per file
 meroctl cloud compute pipeline estimate docs wordcount --input docs=<id1>,<id2>,<id3>
 meroctl cloud compute pipeline run docs wordcount --input docs=<id1>,<id2>,<id3> \
   --param min-len=4 --max-cost 5000000 --wait
@@ -376,7 +378,7 @@ receipts, events and exports are also covered in
 | `400 BAD_PIPELINE` | at install: a pipeline does not compile or check; `details` lists every error |
 | `404 NO_SUCH_PIPELINE` | the app's release registers no pipeline of that name |
 | `400 BAD_INPUTS` | an input that is not the pipeline's, unbound, past its `maxItems`, more than 1,024 files in all, or not a file id |
-| `410 OUTPUT_EXPIRED` | an input (or, on a retry, an original input) is not a file the app holds |
+| `410 INPUT_EXPIRED` | an input (or, on a retry, an original input) is not a file the app holds |
 | `400 BAD_PARAMS` | a param of the wrong type, outside `min`/`max`/`enum`, or undeclared |
 | `409 NO_PRICE_TABLE`, `400 BAD_MAX_COST` | `maxCost` given and the operator set no prices, or it is not a whole number of micro-units |
 | `429 TOO_MANY_PIPELINE_RUNS` | 8 runs already going in this app |

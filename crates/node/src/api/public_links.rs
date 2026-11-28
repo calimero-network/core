@@ -351,6 +351,7 @@ pub(super) async fn public_link_list(
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
+    p.within(&node, &app)?;
     let now = now_secs();
     let org = node.org_of(&app.org);
     node.sys(|s| {

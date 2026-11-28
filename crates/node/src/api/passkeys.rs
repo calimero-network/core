@@ -32,9 +32,10 @@ pub(super) fn unknown_here() -> ApiError {
     )
 }
 
-/// The `user.name` and `user.displayName` of a passkey made here: `alice ·
-/// eu-shared-1 · 3f2a`, or `alice · kv-store (eu-shared-1 · 3f2a)` when it is
-/// made on the frontend of the app named `app`. `tag` is [`cluster_tag`]: a
+/// The `user.name` and `user.displayName` of a passkey made here: `eu-shared-1 ·
+/// alice · 3f2a`, or `eu-shared-1 · alice (kv-store) · 3f2a` when it is made on
+/// the frontend of the app named `app`. The cluster leads so a password manager
+/// lists a person's passkeys grouped by cluster. `tag` is [`cluster_tag`]: a
 /// cluster made again under the same name (a new cluster key) gets another,
 /// so a password manager still holding the old cluster's passkeys lists them
 /// apart from this one's. An empty `tag` is left out.
@@ -44,15 +45,15 @@ pub(super) fn passkey_user_name(
     tag: &str,
     app: Option<&str>,
 ) -> String {
-    let person = clip(person);
-    let cluster = if tag.is_empty() {
-        clip(cluster)
-    } else {
-        format!("{} · {tag}", clip(cluster))
+    let person = match app {
+        Some(app) => format!("{} ({})", clip(person), clip(app)),
+        None => clip(person),
     };
-    match app {
-        Some(app) => format!("{person} · {} ({cluster})", clip(app)),
-        None => format!("{person} · {cluster}"),
+    let head = format!("{} · {person}", clip(cluster));
+    if tag.is_empty() {
+        head
+    } else {
+        format!("{head} · {tag}")
     }
 }
 
@@ -110,16 +111,17 @@ mod tests {
     fn a_passkey_is_named_by_its_cluster_and_app() {
         assert_eq!(
             passkey_user_name("alice", "eu-shared-1", "3f2a", None),
-            "alice · eu-shared-1 · 3f2a"
+            "eu-shared-1 · alice · 3f2a"
         );
         assert_eq!(
             passkey_user_name("alice", "eu-shared-1", "3f2a", Some("kv-store")),
-            "alice · kv-store (eu-shared-1 · 3f2a)"
+            "eu-shared-1 · alice (kv-store) · 3f2a"
         );
         assert_eq!(
             passkey_user_name("alice", "eu-shared-1", "", None),
-            "alice · eu-shared-1"
+            "eu-shared-1 · alice"
         );
+        assert!(passkey_user_name("ronit", "eu-shared-staging-1", "6c80", None).len() <= 64);
     }
 
     #[test]

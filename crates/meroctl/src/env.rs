@@ -39,6 +39,7 @@ impl Trust {
             },
             allowed_tcb_statuses: Vec::new(),
             allow_debug_profiles: self.allow_debug_profiles,
+            require_fresh_quote: false,
         }
     }
 }

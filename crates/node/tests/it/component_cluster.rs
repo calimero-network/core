@@ -1793,21 +1793,21 @@ async fn an_owner_removed_from_the_organization_no_longer_manages_its_app() {
         let err = set_access(&bob, app, json!([{ "kind": "anyone" }]))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), Some("REJECTED"), "{app}: access: {err}");
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: access: {err}");
         let err = set(&bob, app, "back").await.unwrap_err();
         assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: reached: {err}");
         let err = set_metadata(&bob, app, json!({ "pinned": true }))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), Some("REJECTED"), "{app}: metadata: {err}");
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: metadata: {err}");
         let err = bob
             .apps()
             .transfer(app, &bob_id, Some(&mut b))
             .await
             .unwrap_err();
-        assert_eq!(err.code(), Some("FORBIDDEN"), "{app}: transfer: {err}");
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: transfer: {err}");
         let err = bob.apps().delete(app).await.unwrap_err();
-        assert_eq!(err.code(), Some("REJECTED"), "{app}: delete: {err}");
+        assert_eq!(err.code(), Some("NOT_FOUND"), "{app}: delete: {err}");
     }
     let record = alice.apps().get(&kept).await.map(wire).unwrap();
     assert_eq!(record["grants"], json!([{ "kind": "org" }]), "{record}");
@@ -2012,19 +2012,19 @@ async fn an_owner_out_of_the_apps_team_no_longer_reaches_or_manages_it() {
     let err = set_access(&bob, &bobs, json!([{ "kind": "anyone" }]))
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("REJECTED"), "access: {err}");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "access: {err}");
     let err = set_metadata(&bob, &bobs, json!({ "pinned": true }))
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("REJECTED"), "metadata: {err}");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "metadata: {err}");
     let err = bob
         .apps()
         .transfer(&bobs, &bob_id, Some(&mut b))
         .await
         .unwrap_err();
-    assert_eq!(err.code(), Some("FORBIDDEN"), "transfer: {err}");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "transfer: {err}");
     let err = bob.apps().delete(&bobs).await.unwrap_err();
-    assert_eq!(err.code(), Some("REJECTED"), "delete: {err}");
+    assert_eq!(err.code(), Some("NOT_FOUND"), "delete: {err}");
 
     // The organization's owner takes Bob's channel; Dave, added back to
     // Blocks, has his again.
@@ -3456,6 +3456,7 @@ async fn oversized_view_args_are_refused_before_running() {
                 strong: true,
                 min_index: 0,
                 via: None,
+                action: None,
             })
             .await
             .unwrap_err();
@@ -4649,8 +4650,10 @@ async fn hosted_on(
 /// target.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_logged_run_waiting_in_a_host_call_holds_up_no_apply_or_read_of_its_app() {
-    const WALL: Duration = Duration::from_millis(600);
-    const QUICK: Duration = Duration::from_millis(200);
+    // A held lock would keep the entry waiting for the rest of the run (2/3 of `WALL`), so
+    // `QUICK` is half of that: the bound sits clear of a loaded runner's scheduling delay.
+    const WALL: Duration = Duration::from_millis(1_500);
+    const QUICK: Duration = Duration::from_millis(500);
     let c = Cluster::start_with(1, |cfg| {
         cfg.budget = Some(calimero_app_host::Budget {
             fuel: u64::MAX,
@@ -5649,6 +5652,129 @@ async fn component_xcalls_are_delivered_in_order_or_dead_lettered() {
     assert_eq!(e.code(), Some("NOT_FOUND"), "{e}");
 }
 
+/// Each xcall a client's call sends starts a chain that ends once it has taken
+/// `MAX_XCALL_CHAIN` deliveries, however it fans out: the messages past it go to the
+/// source's dead letters, and the app runs no more with no client calling.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn an_app_that_xcalls_itself_stops_at_the_chain_budget() {
+    use calimero_node::component::xcall::MAX_XCALL_CHAIN;
+
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    async fn hops(cl: &Client, app: &str) -> u32 {
+        let got = strong_view(cl, app, "get", json!({ "key": "hops" })).await;
+        got.as_str().map_or(0, |n| n.parse::<u32>().unwrap())
+    }
+    for fanout in [1_u32, 2] {
+        let app = alice
+            .apps()
+            .create(typed(
+                json!({ "name": format!("hop{fanout}"), "bundle": &bundle }),
+            ))
+            .await
+            .map(|a| a.app_id)
+            .unwrap();
+        let _r = alice
+            .apps()
+            .call(&app, "hop", Some(json!({ "fanout": fanout })), None, None)
+            .await
+            .unwrap();
+        let dead = crate::harness::poll::eventually(
+            Duration::from_secs(120),
+            "the chain ends in a dead letter with nothing pending",
+            || async {
+                let x = alice.apps().xcalls(&app).await.map(wire).unwrap();
+                let dead = x["deadLetters"].as_array().cloned().unwrap_or_default();
+                if !dead.is_empty() && x["pending"] == json!(0) {
+                    Ok(dead)
+                } else {
+                    Err((hops(&alice, &app).await, x["pending"].clone()))
+                }
+            },
+        )
+        .await;
+        assert!(
+            dead.iter()
+                .all(|d| d["reason"].as_str().unwrap().contains("budget")),
+            "{dead:?}"
+        );
+        // The client's call, then each message it sent starts a chain, whose runs hand on
+        // what is left: every chain takes its whole budget, and no more.
+        let ran = hops(&alice, &app).await;
+        assert_eq!(ran, 1 + fanout * MAX_XCALL_CHAIN);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(hops(&alice, &app).await, ran, "the app kept running");
+    }
+}
+
+/// An xcall sent from `onXcallFailed` carries on the failed message's chain: an app whose
+/// handler sends again each message that is dead-lettered stops once the chain has taken
+/// `MAX_XCALL_CHAIN` deliveries, the last message going to the dead letters as spent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn xcalls_sent_from_on_xcall_failed_share_the_chain_budget() {
+    use calimero_node::component::xcall::MAX_XCALL_CHAIN;
+
+    let c = Cluster::start(3).await;
+    let (alice, _a) = signed_up(&c, 0, "alice").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(json!({ "name": "bouncer", "bundle": &bundle })))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    let bounces = || async {
+        let got = strong_view(&alice, &app, "get", json!({ "key": "bounces" })).await;
+        got.as_str().map_or(0, |n| n.parse::<u32>().unwrap())
+    };
+    let _r = alice
+        .apps()
+        .call(
+            &app,
+            "bounce",
+            Some(json!({ "app": "no-such-app" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let dead = crate::harness::poll::eventually(
+        Duration::from_secs(120),
+        "the loop ends in a spent dead letter with nothing pending",
+        || async {
+            let x = alice.apps().xcalls(&app).await.map(wire).unwrap();
+            let dead = x["deadLetters"].as_array().cloned().unwrap_or_default();
+            let spent = dead
+                .last()
+                .is_some_and(|d| d["reason"].as_str().unwrap().contains("budget"));
+            if spent && x["pending"] == json!(0) {
+                Ok(dead)
+            } else {
+                Err((bounces().await, x["pending"].clone(), dead.len()))
+            }
+        },
+    )
+    .await;
+    // The client's call, then one handler run per delivery the chain took: the handler run
+    // of a dead-lettered message stands in for its delivery.
+    let ran = bounces().await;
+    assert_eq!(ran, 1 + MAX_XCALL_CHAIN, "{dead:?}");
+    assert_eq!(dead.len(), usize::try_from(ran).unwrap(), "{dead:?}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(bounces().await, ran, "the app kept running");
+}
+
 /// An app calls another as the person its run serves only with that person's grant
 /// (`PUT /apps/{app}/delegations/{target}`, their passkey over the methods the source's
 /// release lists for the target's package): then the target sees the person as its caller
@@ -6047,6 +6173,7 @@ fn mpk_bound(
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: outbound.iter().map(|u| (*u).to_owned()).collect(),
         secrets,
         uses: serde_json::from_value(uses).unwrap(),
@@ -6098,7 +6225,7 @@ pub(crate) async fn eventually(
 }
 
 /// An action runs on the app's leader outside the log, reads
-/// through a view, calls out over `wasi:http` only to a prefix the signed manifest
+/// through its app's `allow(action)` view, calls out over `wasi:http` only to a prefix the signed manifest
 /// declares and the owner approved (with a secret its manifest binds to a header, which
 /// the node attaches and redacts), and
 /// writes through a keyed call to an `allow(action)` method no client can call. One that
@@ -6237,6 +6364,64 @@ async fn actions_run_on_the_leader_and_reach_only_declared_approved_hosts() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("APP_ERROR"), "{e}");
+
+    // No client reads the `allow(action)` view `enrich` read, not even by naming an action
+    // in the body of `/views` or `/intents`.
+    let forbidden = |r: Result<Value, calimero_client::Error>| match r {
+        Err(calimero_client::Error::Api { code, details, .. })
+            if code == "APP_ERROR" && details["code"] == "Forbidden" => {}
+        other => panic!("not refused as Forbidden: {other:?}"),
+    };
+    forbidden(
+        alice
+            .apps()
+            .view(
+                &app,
+                "enrichSource",
+                Some(json!({ "key": "acme" })),
+                None,
+                None,
+            )
+            .await
+            .map(wire),
+    );
+    for route in ["views", "intents"] {
+        let body = json!({ "method": "enrichSource", "args": { "key": "acme" }, "action": id });
+        forbidden(
+            alice
+                .transport()
+                .json(Request::new(Method::POST, format!("apps/{app}/{route}")).json(body))
+                .await,
+        );
+    }
+
+    // Another app's action does not read it either: `allow(action)` admits only the app's own.
+    let other = alice
+        .apps()
+        .create(typed(json!({ "name": "kv-other", "package": PACKAGE })))
+        .await
+        .map(wire)
+        .unwrap()["appId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let _r = alice
+        .apps()
+        .call(
+            &other,
+            "enrichFrom",
+            Some(json!({ "app": app, "key": "acme" })),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let failures = eventually(&alice, &other, "actionFailures", json!({}), |f| {
+        f["enrichFrom"].is_string()
+    })
+    .await;
+    let failure = failures["enrichFrom"].as_str().unwrap();
+    assert!(failure.contains("Forbidden"), "{failure}");
 
     // An app error fails an action at once, without a retry.
     let _r = alice
@@ -9406,8 +9591,8 @@ async fn fuel_limit_everywhere(c: &Cluster, limit: u64) {
     .await;
 }
 
-/// Waits until every running node has applied what the app's leader has, so a
-/// usage read on any replica counts every run that committed.
+/// Waits until every running node has applied what the app's leader has: a
+/// replica's own applied state then holds every run that committed.
 async fn applied_everywhere(c: &Cluster, app: &str) {
     let target = c.applied_on(c.app_leader(app).unwrap(), app);
     for i in (0..c.nodes.len()).filter(|i| c.nodes[*i].is_some()) {
@@ -9825,7 +10010,6 @@ async fn only_the_owner_and_org_admins_read_an_apps_usage() {
         )
         .await
         .unwrap();
-    applied_everywhere(&c, &in_org).await;
 
     let owner = app_usage(&alice, &in_org).await;
     assert_eq!(figure(&owner["today"]["runs"]), 2, "{owner}");
@@ -9923,7 +10107,6 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     for v in ["a", "b", "c"] {
         set(&alice, &in_org, v).await.unwrap();
     }
-    applied_everywhere(&c, &in_org).await;
     let app_fuel = figure(&app_usage(&alice, &in_org).await["today"]["fuel"]);
     assert!(app_fuel > 0);
     let org = alice.orgs().usage(&acme).await.map(wire).unwrap();
@@ -9947,7 +10130,6 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
         .map(|a| a.app_id)
         .unwrap();
     set(&alice, &personal, "p").await.unwrap();
-    applied_everywhere(&c, &personal).await;
     let mine = figure(&app_usage(&alice, &personal).await["today"]["fuel"]);
     let home = alice.apps().get(&personal).await.map(wire).unwrap()["org"]
         .as_str()
@@ -9960,6 +10142,67 @@ async fn an_org_apps_runs_count_toward_the_org_not_its_owner() {
     assert_eq!(figure(&me["developerFuelToday"]), 0, "{me}");
     let org = alice.orgs().usage(&acme).await.map(wire).unwrap();
     assert_eq!(figure(&org["developerFuelToday"]), app_fuel, "{org}");
+}
+
+/// A usage read right after a call counts it, on any node. A replica that has not
+/// applied the call yet (its applies are held: `calimero_log::testing::hold_apply`)
+/// still answers `GET /apps/{app}/usage` and `GET /orgs/{org}/usage` with it: each
+/// app's usage is read at the app group's read index, not from whatever the
+/// answering replica applied. See
+/// [Reads](https://calimero-network.github.io/core/protocol/reads/#usage).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_usage_read_right_after_a_call_counts_it_on_a_lagging_replica() {
+    let c = Cluster::start(3).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let acme = new_org(&alice, "Acme").await;
+    let bundle = alice
+        .packages()
+        .bundle_put(kv_wasm())
+        .await
+        .map(|b| b.hash)
+        .unwrap();
+    let app = alice
+        .apps()
+        .create(typed(
+            json!({ "name": "kv-org", "bundle": &bundle, "org": acme }),
+        ))
+        .await
+        .map(|a| a.app_id)
+        .unwrap();
+    set(&alice, &app, "a").await.unwrap();
+    applied_everywhere(&c, &app).await;
+    let leader = c.app_leader(&app).unwrap();
+    let lagging = (0..3).find(|i| *i != leader).unwrap();
+    let reader = c.client(lagging);
+    let _s = reader.sign_in(&mut pk).await.unwrap();
+    let before = usage_totals(&app_usage(&reader, &app).await).0;
+    let org_before =
+        figure(&reader.orgs().usage(&acme).await.map(wire).unwrap()["developerWritesToday"]);
+
+    let dir = c.configs[lagging].data_dir.clone();
+    let group = hosted_on(&c, lagging, &app).await;
+    let held_at = group.applied();
+    calimero_log::testing::hold_apply(&dir, group.id());
+    set(&alice, &app, "b").await.unwrap();
+    assert_eq!(
+        group.applied(),
+        held_at,
+        "the replica applied the call while held"
+    );
+
+    let runs = usage_totals(&app_usage(&reader, &app).await).0;
+    let org_writes =
+        figure(&reader.orgs().usage(&acme).await.map(wire).unwrap()["developerWritesToday"]);
+    calimero_log::testing::release_apply(&dir, group.id());
+    assert_eq!(
+        runs,
+        before + 1,
+        "the app's usage missed the call just made"
+    );
+    assert!(
+        org_writes > org_before,
+        "the org's usage missed the call just made: {org_before} then {org_writes}"
+    );
 }
 
 /// The daily fuel cap holds per developer. An org app made from a release has
@@ -10284,6 +10527,7 @@ async fn a_delivered_xcall_into_an_over_cap_developers_app_is_refused() {
         xcall: Some(XcallFrom {
             source: source.clone(),
             seq: 1,
+            budget: None,
         }),
         ..CallRequest::new(
             target.clone(),

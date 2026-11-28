@@ -91,6 +91,7 @@ fn mpk(package: &str, version: &str, wasm: &[u8], key: &ed25519_dalek::SigningKe
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -636,6 +637,15 @@ fn scenario(root: &Path, url: &str) {
         pk,
     ]);
     let key = s(&key["key"]);
+    // A copy of the passkey file from before that approval signs with a counter
+    // the cluster has seen: meroctl says so, not `UNKNOWN_CHALLENGE`.
+    let old = root.join("old-passkey.json");
+    let _ = std::fs::copy(pk, &old).unwrap();
+    let _ = alice.run(&["account", "api-key", "create", "--dev-passkey", pk]);
+    let refused = alice
+        .try_run(&["account", "api-key", "create", "--dev-passkey", path(&old)])
+        .unwrap_err();
+    assert!(refused.contains("403 SIGN_COUNT_REPLAYED"), "{refused}");
     let service = Meroctl {
         home: root.join("service"),
     };
@@ -948,6 +958,7 @@ fn scenario(root: &Path, url: &str) {
     );
 
     deployments(root, url, &alice, pk, &kv);
+    pipeline_apply(root, &alice, &org);
 
     // network, attest.
     assert_eq!(alice.run(&["network", "status"])["ok"], true);
@@ -992,6 +1003,57 @@ fn scenario(root: &Path, url: &str) {
         .unwrap_err()
         .contains("which node"));
     let _ = alice_id;
+}
+
+/// `meroctl cloud compute pipeline apply`: a pipeline file that does not compile is refused before anything
+/// is packed; a good one ships as a release and comes back registered, with its hash and the modules it pins.
+fn pipeline_apply(root: &Path, alice: &Meroctl, org: &str) {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/fixture-compute");
+    let built = calimero_app_build::build_in_repo_cache(&fixture).unwrap();
+    let (wasm, compute) = (
+        root.join("fanout.app.wasm"),
+        root.join("fanout.compute.wasm"),
+    );
+    std::fs::write(&wasm, &built.app.component).unwrap();
+    std::fs::write(&compute, &built.compute.unwrap().component).unwrap();
+    let out = root.join("fanout-dist");
+    let apply = |file: &Path, version: &str| {
+        alice.try_run(&[
+            "cloud",
+            "compute",
+            "pipeline",
+            "apply",
+            path(file),
+            "--wasm",
+            path(&wasm),
+            "--compute",
+            path(&compute),
+            "--package",
+            "com.test.fanout",
+            "--version",
+            version,
+            "--install-org",
+            org,
+            "--out",
+            path(&out),
+        ])
+    };
+
+    let broken = root.join("broken.yaml");
+    std::fs::write(
+        &broken,
+        "apiVersion: compute.calimero.network/v1\nkind: Pipeline\n",
+    )
+    .unwrap();
+    let refused = apply(&broken, "1.0.0").unwrap_err();
+    assert!(refused.contains("the pipeline is not valid"), "{refused}");
+    assert!(!out.exists(), "nothing is packed for a broken pipeline");
+
+    let shipped = apply(&fixture.join("pipelines/fanout.yaml"), "1.0.0").unwrap();
+    assert_eq!(shipped["installed"]["version"], "1.0.0", "{shipped}");
+    let fanout = &shipped["pipelines"]["fanout"];
+    assert!(fanout["hash"].is_string(), "{shipped}");
+    assert_eq!(fanout["pipeline"]["name"], "fanout", "{shipped}");
 }
 
 /// `meroctl app release` and `meroctl deployment`: a release shipped in one

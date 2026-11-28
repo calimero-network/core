@@ -300,7 +300,7 @@ fn a_final_of_a_linked_run_settles_its_step_and_pins_its_outputs() {
 }
 
 #[test]
-fn every_step_settled_ends_the_run_succeeded_and_releases_its_inputs() {
+fn every_step_settled_ends_the_run_succeeded_and_keeps_its_holds() {
     let mut w = World::new();
     let base = refs(&w, INPUT);
     let _a = begin(&mut w, PIPE, &["a", "b"]);
@@ -311,11 +311,11 @@ fn every_step_settled_ends_the_run_succeeded_and_releases_its_inputs() {
     assert_eq!(p.state, PipelineState::Succeeded);
     assert_eq!(p.end_ts_ms, Some(6));
     assert!(w.r.machine.active_pipelines().is_empty());
-    assert_eq!(refs(&w, INPUT), base);
+    assert_eq!(refs(&w, INPUT), base + 1);
     assert_eq!(
         refs(&w, 1),
         1,
-        "outputs stay pinned while the record is kept"
+        "inputs and outputs stay pinned while the record is kept"
     );
 }
 
@@ -433,6 +433,32 @@ fn a_dropped_pipeline_run_releases_the_holds_on_its_outputs() {
     assert!(w.r.machine.pipeline_run("first").is_none());
     assert_eq!(refs(&w, 1), 0);
     assert!(w.r.machine.pipeline_run("n0").is_some());
+}
+
+#[test]
+fn a_pipeline_run_holds_its_inputs_until_its_record_is_dropped() {
+    let mut w = World::new();
+    let base = refs(&w, INPUT);
+    let _a = begin(&mut w, "first", &["a"]);
+    let _s = decide(&mut w, "first", "a", StepVerdict::Skipped);
+    assert_eq!(pipeline(&w, "first").state, PipelineState::Succeeded);
+    assert_eq!(
+        refs(&w, INPUT),
+        base + 1,
+        "an ended run still holds its input"
+    );
+    for i in 0..FINISHED_PIPELINE_RUNS_KEPT {
+        let id = format!("n{i}");
+        let _b = begin(&mut w, &id, &["a"]);
+        let _d = decide(&mut w, &id, "a", StepVerdict::Skipped);
+    }
+    assert!(w.r.machine.pipeline_run("first").is_none());
+    let kept = u64::try_from(FINISHED_PIPELINE_RUNS_KEPT).unwrap();
+    assert_eq!(
+        refs(&w, INPUT),
+        base + kept,
+        "the dropped run released its hold"
+    );
 }
 
 #[test]

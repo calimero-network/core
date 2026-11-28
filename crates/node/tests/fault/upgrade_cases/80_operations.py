@@ -66,24 +66,24 @@ class UpgradePolicies(DeepCase):
                 "read back as the defaults")
 
     def populate(self, w):
-        pia = person(w, "pia")
-        org = new_org(pia, "Policy Org")
-        pia.raw("post", f"orgs/{org}/upgrade-policy", {"policy": {"secondApprover": True, "holdHours": 48}})
-        s = {"org": org, "policy": pia.get(f"orgs/{org}/upgrade-policy")}
+        pru = person(w, "pru")
+        org = new_org(pru, "Policy Org")
+        pru.raw("post", f"orgs/{org}/upgrade-policy", {"policy": {"secondApprover": True, "holdHours": 48}})
+        s = {"org": org, "policy": pru.get(f"orgs/{org}/upgrade-policy")}
         eq(s["policy"]["policy"], {"autoApply": "never", "holdHours": 48, "secondApprover": True},
            "the update policy as set")
         return s
 
     def check(self, w, s):
-        pia = person(w, "pia")
+        pru = person(w, "pru")
         for n in w.members():
-            eq(pia.get(f"orgs/{s['org']}/upgrade-policy", node=n), s["policy"],
+            eq(pru.get(f"orgs/{s['org']}/upgrade-policy", node=n), s["policy"],
                f"the organization's update policy on node {n}")
 
     def exercise(self, w, s):
-        pia = person(w, "pia")
-        pia.raw("post", f"orgs/{s['org']}/upgrade-policy", {"policy": None})
-        s["policy"] = pia.get(f"orgs/{s['org']}/upgrade-policy")
+        pru = person(w, "pru")
+        pru.raw("post", f"orgs/{s['org']}/upgrade-policy", {"policy": None})
+        s["policy"] = pru.get(f"orgs/{s['org']}/upgrade-policy")
         eq(s["policy"]["source"], "default", "the update policy dropped")
 
 
@@ -106,6 +106,7 @@ def _backup(w, node):
 @case
 class OpsState(DeepCase):
     name = "ops-state"
+    exclusive = True  # quotas and pools are the cluster's
     area = "Ops"
     seeds = "account quotas changed, a per-organization quota override, a compute pool"
     verifies = ("quotas, overrides, pools, the cluster's sign-up policy as before (its invites are `sign-up-invites`'); a quota changed "
@@ -250,9 +251,12 @@ class StateDigests(DeepCase):
         for a in s["apps"]:
             for i in range(20):
                 dax.call(a, "set", {"key": f"new{i:02}", "value": f"n{i}"})
-        time.sleep(DIGEST_COMPARE_SECS + 15)
-        after = _comparisons(w, s["apps"])
-        check(all(after[a] > before[a] for a in s["apps"]), f"a leader did not compare again: {before} then {after}")
+
+        def compared_again():
+            after = _comparisons(w, s["apps"])
+            check(all(after[a] > before[a] for a in s["apps"]), f"a leader did not compare again: {before} then {after}")
+
+        until("each leader compares again after the new writes", compared_again, DIGEST_COMPARE_SECS + 15)
         self.check(w, s)
 
 
@@ -486,3 +490,18 @@ not_covered("Operations", "Peers' quotes queued apart from anonymous `/attestati
             "it stores nothing and changes no answer: a node of an earlier release sends no header and is queued with "
             "anyone, as before, so a roll has no data to carry. `a_flood_of_attestations_does_not_keep_peers_from_attesting` "
             "(`cluster.rs`) and `a_peer_passes_a_full_anonymous_queue` (`attest.rs`) cover it on one build")
+
+not_covered("Operations", "Interval quotes (`GET /attestation?form=interval`, `attest::IntervalQuotes`, `IntervalProof`)",
+            "it stores nothing: the interval key and its quote live in memory and are made again at every start, so a "
+            "roll has no data to carry. While a cluster rolls, the new nodes ask the old ones for the form, which they "
+            "ignore and answer with a quote over the nonce as before, and the old nodes ask the new ones for nothing "
+            "new, so every roll in the upgrade path attests across both releases. "
+            "`new_clients_attest_and_sign_in_while_the_quote_queue_is_full` (`cluster.rs`) and "
+            "`an_interval_answer_verifies_for_its_own_request_only` (`attest.rs`) cover it on one build")
+
+not_covered("Operations", "Peers attest each other with a quote over their own nonce (`Policy::require_fresh_quote`)",
+            "it stores nothing and changes no answer a node gives: a node asks its peers without `form` and refuses "
+            "an interval proof from them, and still answers `form=interval` to a node that asks for it, so a roll "
+            "has no data to carry and attests across both releases. "
+            "`a_peer_is_attested_with_a_quote_over_its_own_nonce` (`attest.rs`) and "
+            "`a_flood_of_attestations_does_not_keep_peers_from_attesting` (`cluster.rs`) cover it on one build")

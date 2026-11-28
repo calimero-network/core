@@ -90,6 +90,10 @@ pub struct SessionClaims {
     /// the cluster's own origins and served frontends.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
+    /// The registration of `origin` the session was opened under: the origin
+    /// registered anew does not bring the session back.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub registration: String,
     /// The node that issued and signed the token.
     pub node: u64,
     /// That node's signing key (Ed25519, base64url): the key its attestation
@@ -469,6 +473,7 @@ mod tests {
             passkey: Some("cred".into()),
             app: None,
             origin: None,
+            registration: String::new(),
             node: 3,
             key: b64url(&public),
         };

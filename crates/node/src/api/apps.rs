@@ -498,8 +498,13 @@ async fn app_create(
     match p.bound_app() {
         // A frontend makes instances of its own package, already installed.
         Some(pkg) => {
-            let installed = node.sys(|s| s.packages.contains_key(pkg));
-            if body.bundle.is_some() || body.package.as_deref() != Some(pkg) || !installed {
+            let (installed, admitted) =
+                node.sys(|s| (s.packages.contains_key(pkg), p.origin_admits(s, None)));
+            if body.bundle.is_some()
+                || body.package.as_deref() != Some(pkg)
+                || !installed
+                || !admitted
+            {
                 return Err(ApiError::forbidden(
                     "a session opened on an app's frontend creates instances of that app only",
                 ));
@@ -783,6 +788,7 @@ async fn create_instance(
                 attached: BTreeMap::new(),
                 restore_point: None,
                 egress_off: false,
+                lineage: None,
             }),
             org: baked_org,
             unit_offer: body.unit_offer,
@@ -1021,6 +1027,7 @@ async fn app_list(
             })
             .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
             .filter(|a| s.may_reach(a, account.as_deref(), org_recs.get(&a.org)))
+            .filter(|a| p.as_ref().is_none_or(|p| p.origin_admits(s, Some(&a.app_id))))
             .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
             .map(|a| (a, crate::report::release_of_app(s, a, reader)))
             // Releases may share a WASM: filter by the release the row names, not the bundle's.
@@ -1065,11 +1072,12 @@ async fn app_delete(
         )
     });
     if let Some(instance) = instance {
-        return Err(ApiError::new(
+        let refused = ApiError::new(
             409,
             "UNIT_MEMBER",
             &format!("this app is a member of instance {instance}'s unit: delete the instance"),
-        ));
+        );
+        return Err(hidden_from(&node, &app, Some(&account), refused));
     }
     // The whole-unit rule once the cluster applies it; an instance with members waits for it
     // (`409 FEATURE_NOT_ACTIVE`), and any other app is deleted alone either way.
@@ -1283,6 +1291,7 @@ async fn app_invite_list(
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
+    p.within(&node, &app)?;
     let now = now_secs();
     let org = node.org_of(&app.org);
     node.sys(|s| {
@@ -1412,6 +1421,22 @@ async fn app_access(
     Ok(Json(json!({})))
 }
 
+/// `refused`, or to an account that does not reach `app` the answer to an app
+/// that does not exist (`404 no such app`), as `GET /apps/{app}` answers it:
+/// a write refused on an instance it cannot see tells it nothing more.
+pub(crate) fn hidden_from(
+    node: &Node,
+    app: &crate::types::AppRecord,
+    account: Option<&str>,
+    refused: ApiError,
+) -> ApiError {
+    if reaches(node, app, account) {
+        refused
+    } else {
+        ApiError::not_found("no such app")
+    }
+}
+
 /// Delete an organization, its teams, invites and apps: the owner's, with a
 /// passkey assertion over this exact deletion (a 412 asks for it).
 #[derive(Deserialize)]
@@ -1441,7 +1466,8 @@ async fn app_transfer(
             fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, org.as_ref()))
         })
     } {
-        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER));
+        let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER);
+        return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
     // Before organizations are ordinary, an app in a personal organization handed to
     // someone outside it goes to theirs. After, an organization's app goes only to a
@@ -1523,7 +1549,8 @@ async fn app_move(
             fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, org.as_ref()))
         })
     } {
-        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE));
+        let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE);
+        return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
     let to_org = node.org_of(&body.to_org);
     if !node.sys(|s| s.is_org_admin(to_org.as_ref(), &actor)) {
@@ -1881,6 +1908,7 @@ async fn app_undelegate(
     let source_id = node.canonical_app_id(&source_id);
     let target_id = node.canonical_app_id(&target_id);
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     let granted = node.sys(|s| {
         s.delegations
@@ -1919,6 +1947,9 @@ async fn app_delegations(
     let account = p.account()?;
     let source = node.app(&source_id).await?;
     p.within(&node, &source)?;
+    if !reaches(&node, &source, Some(&account)) {
+        return Err(ApiError::not_found("no such app"));
+    }
     let granted = node.sys(|s| {
         s.delegations
             .get(&account)
@@ -1963,9 +1994,10 @@ async fn secrets_gate(
     let app = node.app(&app_id).await?;
     p.within(node, &app)?;
     if !manages_app(node, &app, p.caller.account()) {
-        return Err(ApiError::forbidden(
+        let refused = ApiError::forbidden(
             "only the app's owner, or whoever manages its organization's apps, handles its secrets",
-        ));
+        );
+        return Err(hidden_from(node, &app, p.caller.account(), refused));
     }
     let declared = node
         .release_of_app(&app)
@@ -1992,6 +2024,7 @@ async fn app_secrets(
             strong: true,
             min_index: 0,
             via: None,
+            action: None,
         })
         .await?
         .result;
@@ -2264,7 +2297,9 @@ async fn app_link(
             && fresh_record(s, &target)
                 .is_some_and(|target| s.manages_app(target, &actor, torg.as_ref()))
     }) {
-        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
+        let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK);
+        let refused = hidden_from(&node, &target, Some(&actor), refused);
+        return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
     if target_id == app_id || target.org != app.org {
         return Err(ApiError::bad_request(
@@ -2334,7 +2369,8 @@ async fn app_unlink(
             fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, org.as_ref()))
         })
     } {
-        return Err(ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK));
+        let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK);
+        return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
     if !app.attached.contains_key(&name) {
         return Err(ApiError::new(
@@ -2358,6 +2394,189 @@ async fn app_unlink(
     Ok(Json(json!({})))
 }
 
+/// An instance's origin: never served, so no `served`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(super) struct AddAppOriginBody {
+    origin: String,
+    #[serde(default)]
+    rp_id: Option<String>,
+    #[serde(default)]
+    confirm: Option<ConfirmBody>,
+}
+
+/// Refuse unless `account` manages instance `app_id`, on fresh state: `404` for an
+/// instance it does not reach, `403` for one it reaches.
+async fn manages_instance(node: &Node, account: &str, app_id: &str) -> Result<(), ApiError> {
+    let _caught_up = node.sys_fresh().await;
+    node.sys(|s| {
+        let Some(app) = s.apps.get(app_id) else {
+            return Err(ApiError::not_found("no such app"));
+        };
+        let org = s.orgs.get(&app.org);
+        if s.manages_app(app, account, org) {
+            return Ok(());
+        }
+        if s.may_reach(app, Some(account), org) {
+            return Err(ApiError::forbidden(
+                "only whoever manages the instance handles its origins: its owner or an admin of its organization",
+            ));
+        }
+        Err(ApiError::not_found("no such app"))
+    })
+}
+
+/// The origins registered for app instance `app`, for whoever manages it.
+async fn app_origins(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app): Path<String>,
+) -> ApiResult<Json<AppOriginList>> {
+    let app = node.canonical_app_id(&app);
+    let account = holder(&node, &headers).await?.account()?;
+    manages_instance(&node, &account, &app).await?;
+    let origins = node.sys(|s| {
+        s.origins_of_app(&app)
+            .map(|(origin, o)| crate::origins::origin_json(origin, o))
+            .collect()
+    });
+    Ok(Json(AppOriginList { app, origins }))
+}
+
+/// `GET /apps/{app}/origins`: the origins registered for an instance.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct AppOriginList {
+    app: String,
+    origins: Vec<crate::origins::OriginView>,
+}
+
+/// Register an origin for app instance `app`, with a manager's passkey assertion over
+/// `{app} / __add_origin / { origin, rpId }` (the rp-id as the node resolves it): the
+/// sessions opened there reach that instance alone.
+async fn app_origin_add(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app): Path<String>,
+    Json(body): Json<AddAppOriginBody>,
+) -> ApiResult {
+    let app = node.canonical_app_id(&app);
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    let origin = body.origin;
+    let rp_id = super::origins::registrable(&node, &origin, body.rp_id.as_deref())?;
+    manages_instance(&node, &account, &app).await?;
+    node.sys(|s| {
+        match s.package_origins.get(&origin) {
+            Some(o) if o.app.as_deref() != Some(app.as_str()) => {
+                return Err(super::origins::taken(
+                    "another package or app registered that origin",
+                ))
+            }
+            Some(_) => return Ok(()),
+            None => {}
+        }
+        if s.origins_of_app(&app).count() >= crate::origins::MAX_ORIGINS_PER_APP {
+            return Err(ApiError::new(
+                429,
+                "QUOTA_EXCEEDED",
+                &format!(
+                    "an instance registers at most {} origins",
+                    crate::origins::MAX_ORIGINS_PER_APP
+                ),
+            ));
+        }
+        if s.apps.get(&app).is_some_and(|r| s.org_origins_full(&r.org)) {
+            return Err(ApiError::new(
+                429,
+                "QUOTA_EXCEEDED",
+                &format!(
+                    "an organization's instances register at most {} origins",
+                    crate::origins::MAX_APP_ORIGINS_PER_ORG
+                ),
+            ));
+        }
+        if s.origins_full(true) {
+            return Err(ApiError::new(
+                429,
+                "QUOTA_EXCEEDED",
+                "this cluster holds as many origins as it takes",
+            ));
+        }
+        Ok(())
+    })?;
+    // Before the passkey step-up: a node that could not apply it refuses it anyway.
+    node.require_features(&[Feature::AppOrigins]).await?;
+    let consent = consent(
+        &node,
+        &p,
+        &app,
+        "__add_origin",
+        &crate::origins::add_args(&origin, &rp_id, false),
+        body.confirm,
+    )
+    .await?;
+    let out = node
+        .sys_write(&SystemCmd::AddAppOrigin {
+            app_id: app.clone(),
+            origin: origin.clone(),
+            rp_id: rp_id.clone(),
+            registration: crate::origins::new_registration(),
+            actor: account.clone(),
+            at: now_secs(),
+            consent,
+        })
+        .await?;
+    info!(%app, %origin, %rp_id, "registered an origin for an instance");
+    tracing::debug!(%app, %origin, %account, "the origin's registrant");
+    Ok(Json(out))
+}
+
+/// Remove an origin of app instance `app`, with a manager's passkey assertion over
+/// `{app} / __remove_origin / { origin }`. The sessions opened on it are refused from then on.
+async fn app_origin_remove(
+    State(node): State<Arc<Node>>,
+    headers: HeaderMap,
+    Path(app): Path<String>,
+    Json(body): Json<super::origins::RemoveOriginBody>,
+) -> ApiResult {
+    let app = node.canonical_app_id(&app);
+    let p = holder(&node, &headers).await?;
+    let account = p.account()?;
+    manages_instance(&node, &account, &app).await?;
+    let origin = body.origin;
+    let held = node.sys(|s| {
+        s.package_origins
+            .get(&origin)
+            .is_some_and(|o| o.app.as_deref() == Some(app.as_str()))
+    });
+    if !held {
+        return Err(ApiError::not_found(
+            "that origin is not registered for this app",
+        ));
+    }
+    node.require_features(&[Feature::AppOrigins]).await?;
+    let consent = consent(
+        &node,
+        &p,
+        &app,
+        "__remove_origin",
+        &json!({ "origin": origin }),
+        body.confirm,
+    )
+    .await?;
+    let out = node
+        .sys_write(&SystemCmd::RemoveAppOrigin {
+            app_id: app.clone(),
+            origin: origin.clone(),
+            actor: account.clone(),
+            consent,
+        })
+        .await?;
+    info!(%app, %origin, "removed an origin of an instance");
+    tracing::debug!(%app, %origin, %account, "the origin's remover");
+    Ok(Json(out))
+}
+
 pub(super) fn routes() -> Router<Arc<Node>> {
     Router::new()
         .route("/apps", post(app_create).get(app_list))
@@ -2370,6 +2589,12 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/apps/{app}/openapi.json", get(app_openapi))
         .route("/apps/{app}/attestation", get(app_attestation))
         .route("/apps/{app}/access", post(app_access))
+        .route(
+            "/apps/{app}/origins",
+            get(app_origins)
+                .post(app_origin_add)
+                .delete(app_origin_remove),
+        )
         .route(
             "/apps/{app}/invites",
             post(app_invite_create).get(app_invite_list),

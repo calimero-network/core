@@ -1,8 +1,10 @@
 //! Quote generation for this node; the document and its verification live in
 //! `calimero-client`, shared with every client.
+//!
+//! Spec: [TEE attestation](https://calimero-network.github.io/core/protocol/tee-attestation/)
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use calimero_client::attest::*;
 use tokio::sync::Semaphore;
@@ -237,6 +239,167 @@ impl Quoter {
         .await
         .map_err(|e| QuoteError::Failed(eyre::eyre!("the quote's task: {e}")))?
         .map_err(QuoteError::Failed)
+    }
+}
+
+/// How often a node makes a new interval key and its quote
+/// ([`IntervalQuotes::refresh`]).
+///
+/// Spec: [Interval quotes](https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes)
+pub const INTERVAL_QUOTE_EVERY: Duration = Duration::from_secs(60);
+
+/// How soon a node tries again after an interval quote failed.
+pub const INTERVAL_QUOTE_RETRY: Duration = Duration::from_secs(5);
+
+/// How old an interval quote a node still answers `form=interval` with, in
+/// seconds; older, it answers the per-request quote. Well under
+/// [`INTERVAL_QUOTE_MAX_AGE_SECS`], so a verifier whose clock differs from the
+/// node's by a few minutes still takes it.
+pub const INTERVAL_QUOTE_SERVED_FOR: u64 = 120;
+
+/// The current interval key, and the quote that binds it.
+struct IntervalQuote {
+    key: ed25519_dalek::SigningKey,
+    quote: Vec<u8>,
+    quote_nonce: [u8; 32],
+    issued_at: u64,
+    transport_key: [u8; 32],
+}
+
+/// This node's interval quote: one quote per [`INTERVAL_QUOTE_EVERY`] over a
+/// fresh Ed25519 key held only in memory, which signs each `form=interval`
+/// request's nonce ([`interval_message`]), so such a request makes no quote.
+///
+/// Spec: [Interval quotes](https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes)
+#[derive(Default)]
+pub struct IntervalQuotes {
+    current: RwLock<Option<Arc<IntervalQuote>>>,
+}
+
+impl std::fmt::Debug for IntervalQuotes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let issued_at = self
+            .current
+            .read()
+            .ok()
+            .and_then(|c| c.as_ref().map(|c| c.issued_at));
+        f.debug_struct("IntervalQuotes")
+            .field("issued_at", &issued_at)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Unix seconds by this node's clock.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+impl IntervalQuotes {
+    /// Make a new interval key and its quote over `transport_key` through
+    /// `quoter` ([`Lane::Peer`]: anonymous requests never hold it up), and
+    /// answer with them from now on.
+    pub async fn refresh(
+        &self,
+        quoter: &Quoter,
+        transport_key: [u8; 32],
+    ) -> Result<(), QuoteError> {
+        let key = ed25519_dalek::SigningKey::from_bytes(&calimero_identity::random::<32>());
+        let quote_nonce = calimero_identity::random::<32>();
+        let issued_at = unix_now();
+        let report = interval_report_data(
+            &quote_nonce,
+            &transport_key,
+            &key.verifying_key().to_bytes(),
+            issued_at,
+        );
+        let quote = quoter.quote_in(Lane::Peer, report).await?;
+        let next = Arc::new(IntervalQuote {
+            key,
+            quote,
+            quote_nonce,
+            issued_at,
+            transport_key,
+        });
+        if let Ok(mut current) = self.current.write() {
+            *current = Some(next);
+        }
+        Ok(())
+    }
+
+    /// The interval quote and this request's [`IntervalProof`], signed over
+    /// `nonce`, `app_hash` and `transport_key`; `None` while there is no
+    /// quote at most [`INTERVAL_QUOTE_SERVED_FOR`] old that binds
+    /// `transport_key`, so the caller makes a quote of its own.
+    #[must_use]
+    pub fn answer(
+        &self,
+        nonce: &[u8; 32],
+        app_hash: &[u8; 32],
+        transport_key: &[u8; 32],
+    ) -> Option<(Vec<u8>, IntervalProof)> {
+        use ed25519_dalek::Signer;
+        let current = self.current.read().ok()?.clone()?;
+        if current.transport_key != *transport_key
+            || unix_now().saturating_sub(current.issued_at) > INTERVAL_QUOTE_SERVED_FOR
+        {
+            return None;
+        }
+        let signature = current
+            .key
+            .sign(&interval_message(nonce, app_hash, transport_key));
+        Some((
+            current.quote.clone(),
+            IntervalProof {
+                key: hex::encode(current.key.verifying_key().to_bytes()),
+                quote_nonce: hex::encode(current.quote_nonce),
+                issued_at: current.issued_at,
+                signature: hex::encode(signature.to_bytes()),
+            },
+        ))
+    }
+
+    /// Make this quote `secs` older, as though made then (tests).
+    #[cfg(test)]
+    fn age(&self, secs: u64) {
+        let mut current = self.current.write().expect("lock");
+        if let Some(c) = current.as_mut() {
+            let c = Arc::get_mut(c).expect("no answer holds it");
+            c.issued_at -= secs;
+        }
+    }
+}
+
+/// Keep `node`'s interval quote current: a new one every
+/// [`INTERVAL_QUOTE_EVERY`], or after [`INTERVAL_QUOTE_RETRY`] when one failed,
+/// until `stop` or the node is gone.
+pub async fn refresh_interval_quotes(
+    node: std::sync::Weak<crate::node::Node>,
+    stop: tokio_util::sync::CancellationToken,
+) {
+    loop {
+        let Some(n) = node.upgrade() else { return };
+        let wait = match n
+            .intervals
+            .refresh(&n.quoter, n.transport.public_key())
+            .await
+        {
+            Ok(()) => INTERVAL_QUOTE_EVERY,
+            Err(QuoteError::Busy) => {
+                tracing::warn!("no interval quote made (busy); trying again");
+                INTERVAL_QUOTE_RETRY
+            }
+            Err(QuoteError::Failed(_)) => {
+                tracing::warn!("no interval quote made (failed); trying again");
+                INTERVAL_QUOTE_RETRY
+            }
+        };
+        drop(n);
+        tokio::select! {
+            () = stop.cancelled() => return,
+            () = tokio::time::sleep(wait) => {}
+        }
     }
 }
 
@@ -565,6 +728,201 @@ mod tests {
             "c",
             &[1; 32]
         ));
+    }
+
+    /// The interval form round-trips through the shared verifier: the answer
+    /// verifies for its own nonce, app and transport key, and for no other;
+    /// a quote older than [`INTERVAL_QUOTE_SERVED_FOR`], or over another
+    /// transport key, is not served.
+    #[tokio::test]
+    async fn an_interval_answer_verifies_for_its_own_request_only() {
+        let q = Quoter::new(Mode::Mock);
+        let intervals = IntervalQuotes::default();
+        let transport = [5; 32];
+        assert!(intervals.answer(&[1; 32], &[0; 32], &transport).is_none());
+        intervals.refresh(&q, transport).await.unwrap();
+        let (quote, proof) = intervals.answer(&[1; 32], &[0; 32], &transport).unwrap();
+        let doc = AttestationDoc {
+            quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, quote),
+            transport_key: hex::encode(transport),
+            app_hash: hex::encode([0; 32]),
+            nonce: hex::encode([1; 32]),
+            release: Release {
+                version: "0.0.0".into(),
+                profile: "dev".into(),
+            },
+            cluster: "c".into(),
+            node: 1,
+            mock: true,
+            receipt_key: None,
+            governance: None,
+            kms: None,
+            job_key: None,
+            cluster_identity: None,
+            interval: Some(proof),
+        };
+        let policy = Policy {
+            allow_mock: true,
+            ..Policy::default()
+        };
+        assert_eq!(verify(&doc, &[1; 32], &policy).await.unwrap(), transport);
+        assert!(verify(&doc, &[2; 32], &policy).await.is_err());
+        let other_app = Policy {
+            app_hash: Some([9; 32]),
+            ..policy.clone()
+        };
+        assert!(verify(&doc, &[1; 32], &other_app).await.is_err());
+
+        assert!(intervals.answer(&[1; 32], &[0; 32], &[6; 32]).is_none());
+        intervals.age(INTERVAL_QUOTE_SERVED_FOR + 1);
+        assert!(intervals.answer(&[1; 32], &[0; 32], &transport).is_none());
+    }
+
+    /// What a mock peer saw of one `GET /attestation`: its query and whether it
+    /// carried [`PEER_ATTEST_HEADER`].
+    type Asked = Arc<std::sync::Mutex<Vec<(String, bool)>>>;
+
+    /// A peer at the returned URL that answers `/attestation` as a node with
+    /// the interval form does: the interval proof when asked `form=interval`
+    /// (or always, with `always_interval`), else a quote over the nonce.
+    async fn mock_peer(always_interval: bool) -> (url::Url, Asked) {
+        use axum::extract::{RawQuery, State};
+        use axum::http::HeaderMap;
+
+        struct Peer {
+            quoter: Quoter,
+            intervals: IntervalQuotes,
+            asked: Asked,
+            always_interval: bool,
+        }
+        const TRANSPORT: [u8; 32] = [5; 32];
+
+        async fn answer(
+            State(p): State<Arc<Peer>>,
+            headers: HeaderMap,
+            RawQuery(query): RawQuery,
+        ) -> axum::Json<AttestationDoc> {
+            let query = query.unwrap_or_default();
+            p.asked
+                .lock()
+                .unwrap()
+                .push((query.clone(), headers.contains_key(PEER_ATTEST_HEADER)));
+            let nonce: [u8; 32] = url::form_urlencoded::parse(query.as_bytes())
+                .find(|(k, _)| k == "nonce")
+                .and_then(|(_, v)| hex::decode(v.as_bytes()).ok())
+                .and_then(|v| v.try_into().ok())
+                .unwrap();
+            let interval = (p.always_interval || query.contains("form=interval"))
+                .then(|| p.intervals.answer(&nonce, &[0; 32], &TRANSPORT))
+                .flatten();
+            let (quote, interval) = match interval {
+                Some((quote, proof)) => (quote, Some(proof)),
+                None => (
+                    p.quoter
+                        .quote_in(Lane::Peer, report_data(&nonce, &[0; 32], &TRANSPORT))
+                        .await
+                        .unwrap(),
+                    None,
+                ),
+            };
+            axum::Json(AttestationDoc {
+                quote: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, quote),
+                transport_key: hex::encode(TRANSPORT),
+                app_hash: hex::encode([0; 32]),
+                nonce: hex::encode(nonce),
+                release: Release {
+                    version: "0.0.0".into(),
+                    profile: "dev".into(),
+                },
+                cluster: "c".into(),
+                node: 1,
+                mock: true,
+                receipt_key: None,
+                governance: None,
+                kms: None,
+                job_key: None,
+                cluster_identity: None,
+                interval,
+            })
+        }
+
+        let peer = Arc::new(Peer {
+            quoter: Quoter::new(Mode::Mock),
+            intervals: IntervalQuotes::default(),
+            asked: Asked::default(),
+            always_interval,
+        });
+        peer.intervals
+            .refresh(&peer.quoter, TRANSPORT)
+            .await
+            .unwrap();
+        let asked = Arc::clone(&peer.asked);
+        let app = axum::Router::new()
+            .route("/attestation", axum::routing::get(answer))
+            .with_state(peer);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        drop(tokio::spawn(
+            async move { axum::serve(listener, app).await },
+        ));
+        (url.parse().unwrap(), asked)
+    }
+
+    /// A node attests a peer with a quote made for its own nonce: it does not
+    /// ask for the interval form (but still sends its peer header, so the peer
+    /// queues the quote in [`Lane::Peer`]), and refuses an interval proof a
+    /// peer answers anyway. A client still asks for the interval form.
+    #[tokio::test]
+    async fn a_peer_is_attested_with_a_quote_over_its_own_nonce() {
+        use calimero_sealed::client::Attest;
+
+        let http = reqwest::Client::new();
+        let peer_policy = crate::node::peer_policy(true, &Measurements::None, None);
+        let peer_attestor = PeerAttestor {
+            attestor: HttpAttestor {
+                policy: peer_policy,
+                seen_release: Arc::default(),
+            },
+            cluster_key: [7; 32],
+            cluster: "c".into(),
+        };
+
+        let (url, asked) = mock_peer(false).await;
+        assert_eq!(
+            peer_attestor
+                .attest_transport_key(&http, &url)
+                .await
+                .unwrap(),
+            [5; 32]
+        );
+        let (query, peer_header) = asked.lock().unwrap().pop().unwrap();
+        assert!(!query.contains("form="), "a peer asked {query}");
+        assert!(peer_header, "a peer's request carries its header");
+
+        let client = HttpAttestor {
+            policy: Policy {
+                allow_mock: true,
+                ..Policy::default()
+            },
+            seen_release: Arc::default(),
+        };
+        assert_eq!(
+            client.attest_transport_key(&http, &url).await.unwrap(),
+            [5; 32]
+        );
+        let (query, _) = asked.lock().unwrap().pop().unwrap();
+        assert!(query.contains("form=interval"), "a client asked {query}");
+
+        let (url, _asked) = mock_peer(true).await;
+        let e = peer_attestor
+            .attest_transport_key(&http, &url)
+            .await
+            .expect_err("a peer's interval proof is refused");
+        assert!(format!("{e:#}").contains("interval"), "{e:#}");
+        assert_eq!(
+            client.attest_transport_key(&http, &url).await.unwrap(),
+            [5; 32]
+        );
     }
 
     /// A request that waits [`QUOTE_WAIT`] without getting the slot is busy.

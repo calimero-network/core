@@ -35,6 +35,7 @@ use crate::naming::{ident, pascal, snake};
 const REPLACED: &[(&str, &str, bool)] = &[
     ("Assertion", "calimero_identity::Assertion", false),
     ("AttestationDoc", "crate::attest::AttestationDoc", false),
+    ("IntervalProof", "crate::attest::IntervalProof", true),
     ("Governance", "crate::attest::Governance", true),
     ("Receipt", "crate::attest::Receipt", true),
     ("Registration", "calimero_identity::Registration", false),

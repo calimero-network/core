@@ -1084,3 +1084,194 @@ fn uses_update_pins_and_vendors_what_pack_signs() {
         "0.1.3"
     );
 }
+
+/// Writes a crate `name` under `root` (an empty library) with `tail` after its `[package]`.
+fn fixture_crate(root: &Path, name: &str, tail: &str) {
+    let dir = root.join(name);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/lib.rs"), "").unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n{tail}"),
+    )
+    .unwrap();
+}
+
+/// Packs the fixture crate `root/app` with a stand-in component, answering the manifest and
+/// pack's stderr, or the failure.
+fn pack_app(root: &Path) -> Result<(Value, String), String> {
+    let app = root.join("app");
+    std::fs::write(app.join("app.wasm"), [COMPONENT, b"app"].concat()).unwrap();
+    let out = meroctl(
+        &app,
+        &["app", "pack", ".", "--wasm", "app.wasm", "--out", "a.mpk"],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    if !out.status.success() {
+        return Err(stderr);
+    }
+    Ok((manifest(&untar(&app.join("a.mpk"))), stderr))
+}
+
+/// A connector declaring one prefix and the key `KEY` bound to it, as `format`.
+fn connector_with(format: &str) -> String {
+    format!(
+        "[package.metadata.calimero.connector]\noutbound = [\"https://api.example.com/v1/\"]\n\n\
+         [package.metadata.calimero.connector.secrets.KEY]\nhost = \"api.example.com\"\n\
+         paths = [\"/v1/\"]\nheader = \"authorization\"\nformat = \"{format}\"\n\
+         description = \"Example key\"\nrequired = true\n"
+    )
+}
+
+/// An app listing `connectors`, depending on each of `deps` by path, with `extra` in its table.
+fn app_with(connectors: &[&str], deps: &[&str], extra: &str) -> String {
+    let deps: String = deps
+        .iter()
+        .map(|d| format!("{d} = {{ path = \"../{d}\" }}\n"))
+        .collect();
+    format!(
+        "[dependencies]\n{deps}\n[package.metadata.calimero]\npackage = \"com.example.app\"\n\
+         connectors = {connectors:?}\n{extra}"
+    )
+}
+
+/// `connectors = [NAME]` signs the listed dependency's `[package.metadata.calimero.connector]`
+/// into the manifest as if the app had written it, and pack says what it added and from where;
+/// here from the NEAR AI connector itself.
+#[test]
+fn pack_merges_what_a_listed_connector_declares() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    let nearai = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sdks/plugins/connectors/nearai");
+    let declared: toml::Table = std::fs::read_to_string(nearai.join("Cargo.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let declared =
+        serde_json::to_value(&declared["package"]["metadata"]["calimero"]["connector"]).unwrap();
+    fixture_crate(
+        d,
+        "app",
+        &format!(
+            "[dependencies]\ncalimero-connector-nearai = {{ path = {:?} }}\n\n\
+             [package.metadata.calimero]\npackage = \"com.example.app\"\n\
+             connectors = [\"calimero-connector-nearai\"]\n\
+             outbound = [\"https://own.example.com/\"]\n",
+            nearai.display().to_string()
+        ),
+    );
+
+    let (m, stderr) = pack_app(d).unwrap();
+    let mut outbound = vec![serde_json::json!("https://own.example.com/")];
+    outbound.extend(declared["outbound"].as_array().unwrap().iter().cloned());
+    assert_eq!(m["outbound"], Value::Array(outbound));
+    assert_eq!(m["secrets"], declared["secrets"]);
+    assert!(m.get("connectors").is_none(), "{m}");
+    for (name, _) in declared["secrets"].as_object().unwrap() {
+        assert!(
+            stderr.contains(&format!("calimero-connector-nearai: secret {name}")),
+            "{stderr}"
+        );
+    }
+    for prefix in declared["outbound"].as_array().unwrap() {
+        assert!(
+            stderr.contains(&format!(
+                "calimero-connector-nearai: outbound {}",
+                prefix.as_str().unwrap()
+            )),
+            "{stderr}"
+        );
+    }
+}
+
+/// Only a listed dependency contributes: one with a `connector` table the app does not list
+/// adds nothing.
+#[test]
+fn pack_ignores_a_connector_the_app_does_not_list() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    fixture_crate(d, "conn", &connector_with("Bearer {}"));
+    fixture_crate(d, "app", &app_with(&[], &["conn"], ""));
+
+    let (m, stderr) = pack_app(d).unwrap();
+    assert!(m.get("outbound").is_none(), "{m}");
+    assert!(m.get("secrets").is_none(), "{m}");
+    assert!(!stderr.contains("conn:"), "{stderr}");
+}
+
+/// A listed name that is not a normal dependency of the app, or a dependency that declares no
+/// connector, is refused, naming it.
+#[test]
+fn pack_refuses_a_listed_connector_it_cannot_find() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    fixture_crate(d, "conn", &connector_with("Bearer {}"));
+    fixture_crate(d, "plain", "");
+
+    fixture_crate(d, "app", &app_with(&["conn"], &[], ""));
+    let err = pack_app(d).unwrap_err();
+    assert!(
+        err.contains("conn") && err.contains("not a dependency"),
+        "{err}"
+    );
+
+    fixture_crate(
+        d,
+        "app",
+        &format!(
+            "[dev-dependencies]\nconn = {{ path = \"../conn\" }}\n\n{}",
+            app_with(&["conn"], &[], "")
+        ),
+    );
+    let err = pack_app(d).unwrap_err();
+    assert!(
+        err.contains("conn") && err.contains("not a dependency"),
+        "{err}"
+    );
+
+    fixture_crate(d, "app", &app_with(&["plain"], &["plain"], ""));
+    let err = pack_app(d).unwrap_err();
+    assert!(
+        err.contains("plain") && err.contains("[package.metadata.calimero.connector]"),
+        "{err}"
+    );
+}
+
+/// A secret declared twice, by the app and a connector or by two connectors, is refused unless
+/// both bindings are the same.
+#[test]
+fn pack_refuses_a_secret_two_declarations_bind_differently() {
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    fixture_crate(d, "conn", &connector_with("Bearer {}"));
+    fixture_crate(d, "same", &connector_with("Bearer {}"));
+    fixture_crate(d, "other", &connector_with("Token {}"));
+
+    fixture_crate(
+        d,
+        "app",
+        &app_with(&["conn", "same"], &["conn", "same"], ""),
+    );
+    let (m, _) = pack_app(d).unwrap();
+    assert_eq!(m["secrets"]["KEY"]["format"], "Bearer {}");
+    assert_eq!(
+        m["outbound"],
+        serde_json::json!(["https://api.example.com/v1/"])
+    );
+
+    fixture_crate(
+        d,
+        "app",
+        &app_with(&["conn", "other"], &["conn", "other"], ""),
+    );
+    let err = pack_app(d).unwrap_err();
+    assert!(err.contains("KEY") && err.contains("other"), "{err}");
+
+    // The app's own binding of the same name, differently.
+    let own = connector_with("Token {}")
+        .replace("[package.metadata.calimero.connector]\n", "")
+        .replace(".connector.secrets", ".secrets");
+    fixture_crate(d, "app", &app_with(&["conn"], &["conn"], &own));
+    let err = pack_app(d).unwrap_err();
+    assert!(err.contains("KEY") && err.contains("conn"), "{err}");
+}

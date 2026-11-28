@@ -273,7 +273,8 @@ Reported in `/ops/status` (`rollback`) and `/health` (`rollbackEpoch`).
 
 Code: `node/restore.rs`, `api/restore.rs`, `POST /ops/apps/{app}/restore`.
 
-Operator-signed (`<app> / __restore_app / { backup, sha256 }`), judged before the signature
+Operator-signed (`<app> / __restore_app / { backup, sha256 }`, and for a pinned instance
+`bundle` and `computeBundle` too, `SystemState::restore_args`), judged before the signature
 (`backup::find`, `Found::check_release`, the bundle the backup's head names still installed,
 `require_current_release`).
 `SystemCmd::RestoreApp` moves the app to a new group with the receiving node first

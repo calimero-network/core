@@ -27,6 +27,21 @@ transport_binding | SHA-256(JCS(kms)))`. Opt in: a document without `kms` is che
 exactly as before. mero-js does not ask for it yet; the attestation verifier
 (mero-tee) recomputes it, pinned by `the_kms_binding_matches_the_published_vector`.
 
+`HttpAttestor` (every client channel) asks `GET /attestation` for the interval form
+(`form=interval`, `INTERVAL_FORM`): the node answers from a quote it makes once a minute over an
+Ed25519 interval key held in memory, `report_data = quoteNonce || SHA-256("calimero.tee-attest.interval-key.v1"
+| transport_key | interval_key | u64_be(issuedAt))` (`interval_report_data`), with `interval`
+(`IntervalProof`): that key's signature over `"calimero.tee-attest.interval-sig.v1\0" | nonce |
+app_hash | transport_key` (`interval_message`). `verify` takes a document with `interval` only through
+`verify_interval`: `issuedAt` at most `INTERVAL_QUOTE_MAX_AGE_SECS` old and
+`INTERVAL_QUOTE_MAX_SKEW_SECS` ahead by this clock, the strict signature over this nonce, then the
+same quote check (`verify_quote`) over `quoteNonce` and the interval binding. A document without
+`interval` (a node before the form, or one with no current interval quote) is checked as before.
+mero-js, mero-kotlin and mero-swift ask for and check the form the same way.
+A policy with `require_fresh_quote` (the node's peer policy) neither asks for the form nor takes it:
+`verify` refuses a document with `interval`, so a peer channel rests on a quote over its own nonce
+(`a_fresh_quote_policy_refuses_an_interval_answer`).
+
 The receipt-key binding hashes `Governance::canonical`, the governance JSON in
 declaration order; `deployments` and `deployers` are written only when not the
 defaults (`open`, `operator`), so a default cluster binds the bytes it did before
@@ -79,7 +94,12 @@ node takes) and the request sent once more (`Transport::send`: `send_once`, then
 `refreshed_after`; the `Request` keeps its `Body` for that). Requests that get a `401` together refresh once
 (`refreshing`): a refresh token presented twice ends the session. A `401` to
 `auth/refresh` itself, an API key, or a session held without its refresh token is
-returned as it is. Why a `401` can need it: the node that issued the session was
+returned as it is, and so is one to a request whose JSON body carries a passkey's
+approval (`confirm`): the node spent its single-use challenge on the first send, so
+sent again it could only be `400 UNKNOWN_CHALLENGE` (test
+`a_401_to_an_approved_request_is_not_refreshed_or_sent_again`). The node answers a
+refused approval `403` (`SIGN_COUNT_REPLAYED`, `ASSERTION_REFUSED`); this keeps
+the `401`s left (`PASSKEY_UNKNOWN_HERE`, and an older node's refusals) from being lost. Why a `401` can need it: the node that issued the session was
 removed, or replaced on a new data directory (a new signing key); a node's
 restart keeps its key, and a stopped node's sessions verify on the others
 (node `AGENTS.md`, "Sessions are node-signed"). Test:

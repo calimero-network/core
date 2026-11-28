@@ -69,6 +69,7 @@ fn mpk_using(
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: serde_json::from_value(uses).unwrap(),
@@ -1732,15 +1733,37 @@ async fn on_a_granted_cluster_a_customer_creates_only_from_an_offer() {
         .await
         .unwrap_err();
     assert_eq!(e.code(), Some("DEPLOY_NOT_GRANTED"), "{e}");
-    // Refused before the app's group ran anything: every replica runs what it did.
+    // Refused before the app's group ran anything: every replica runs what it did. The
+    // app's `init` entry, which names its bundle, is proposed after the create answers, so
+    // each replica is read once it applied what the app's leader had once `init` applied.
     let bundle = bob.apps().get(&catalog).await.map(wire).unwrap()["bundle"].clone();
+    let target = harness::poll::found(
+        harness::poll::EVENTUALLY,
+        &format!("{catalog}'s leader applied its init"),
+        || {
+            let g = c.nodes[c.app_leader(&catalog)?]
+                .as_ref()?
+                .node
+                .hosted(&catalog)?;
+            g.read_local(|m, _| m.state.initialized || m.state.init_error.is_some())
+                .then(|| g.applied())
+        },
+    )
+    .await;
     for (i, n) in c.nodes.iter().enumerate() {
-        let running = n
-            .as_ref()
-            .unwrap()
-            .node
-            .hosted(&catalog)
-            .map(|g| g.read_local(|m, _| m.state.bundle.clone()));
+        let g = harness::poll::found(
+            harness::poll::EVENTUALLY,
+            &format!("node {i} hosts {catalog}"),
+            || n.as_ref().unwrap().node.hosted(&catalog),
+        )
+        .await;
+        harness::poll::until(
+            harness::poll::EVENTUALLY,
+            &format!("node {i} never applied {target}"),
+            || g.applied() >= target,
+        )
+        .await;
+        let running = Some(g.read_local(|m, _| m.state.bundle.clone()));
         assert_eq!(
             running,
             Some(bundle.as_str().map(str::to_owned)),

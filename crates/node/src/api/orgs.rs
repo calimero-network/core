@@ -281,6 +281,7 @@ async fn org_get(
         return Err(malformed("limit is 1 to 1000"));
     }
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let o = node
@@ -578,6 +579,7 @@ async fn org_metadata(
     Json(body): Json<MetadataBody>,
 ) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     p.unscoped()?;
     let actor = p.account()?;
     let _ok = node
@@ -597,6 +599,7 @@ async fn member_metadata(
     Json(body): Json<MetadataBody>,
 ) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     p.unscoped()?;
     let actor = p.account()?;
     let _ok = node
@@ -972,6 +975,7 @@ async fn team_get(
     Path((org, team)): Path<(String, String)>,
 ) -> ApiResult<Json<TeamView>> {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let v = node
@@ -1014,6 +1018,25 @@ async fn team_update(
         None => {}
     }
     let actor = p.account()?;
+    // An update that names nothing changes nothing: answered without a log entry, `404` to
+    // whoever does not see the team, as a read is.
+    if body.name.is_none()
+        && body.join.is_none()
+        && body.parent.is_none()
+        && body.metadata.is_none()
+    {
+        node.sys_fresh_from(p.sys_index).await;
+        let sees = node.sys(|s| {
+            s.orgs
+                .get(&org)
+                .filter(|o| o.role(&actor).is_some() && o.teams.contains_key(&team))
+                .is_some_and(|o| o.sees_team(&actor, &team))
+        });
+        if !sees {
+            return Err(ApiError::not_found("no such team"));
+        }
+        return Ok(Json(json!({})));
+    }
     let _ok = node
         .sys_write(&SystemCmd::UpdateTeam {
             org,
@@ -1519,6 +1542,7 @@ async fn invite_list(
     Path(org): Path<String>,
 ) -> ApiResult<Json<InviteList>> {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let now = now_secs();
@@ -1598,6 +1622,7 @@ async fn app_team_list(
     Path(org): Path<String>,
 ) -> ApiResult<Json<AppTeamList>> {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let v = node
@@ -1717,7 +1742,9 @@ async fn org_usage(
     headers: HeaderMap,
     Path(org): Path<String>,
 ) -> ApiResult<Json<OrgUsage>> {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     node.sys_fresh().await;
     let (role, apps, quotas) = node.sys_with_org(&org, |s, o| {
         (

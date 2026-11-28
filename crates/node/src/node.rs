@@ -207,6 +207,9 @@ pub struct Config {
     /// (`api::REFRESH_ROTATE_AFTER` in production). Zero: every refresh
     /// exchanges it, a system write each.
     pub refresh_rotate_after: Duration,
+    /// Accounts this node creates per minute, a minute's worth at once
+    /// (`api::SIGN_UPS_PER_MINUTE` by default; merod's `--sign-ups-per-minute`).
+    pub sign_ups_per_minute: u32,
     /// The mero-tee release and image profile this node runs (TDX only); its
     /// attestation names them so clients can fetch the signed measurements.
     /// On TDX, `run` refuses to start unless the TD's own registers match
@@ -295,7 +298,9 @@ impl Config {
 
 /// How a node judges a peer's quote. It trusts debug peers only when it runs a
 /// debug image itself: `tee_profile` is the profile its own registers match
-/// (checked at start on TDX, `attest::check_own_profile`).
+/// (checked at start on TDX, `attest::check_own_profile`). It takes only a
+/// quote over its own nonce, never an interval proof
+/// ([Interval quotes](https://calimero-network.github.io/core/protocol/tee-attestation/#interval-quotes)).
 pub(crate) fn peer_policy(
     allow_mock: bool,
     measurements: &calimero_client::Measurements,
@@ -307,6 +312,8 @@ pub(crate) fn peer_policy(
         measurements: measurements.clone(),
         allowed_tcb_statuses: Vec::new(),
         allow_debug_profiles: tee_profile.is_some_and(calimero_client::attest::is_debug_profile),
+        // A peer's channel always rests on a quote made for its own nonce.
+        require_fresh_quote: true,
     }
 }
 
@@ -374,6 +381,14 @@ pub struct CallRequest {
     /// it along on `internal/call`. `None`: the leader runs a round itself.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sys_index: Option<u64>,
+    /// An `onXcallFailed` run: the dead-lettered message's budget
+    /// ([`Outgoing::budget`](crate::component::xcall::Outgoing::budget)), which the run
+    /// spends as its delivery would have, so the xcalls it sends carry on that chain
+    /// ([Chain budget](https://calimero-network.github.io/core/protocol/xcall/#chain-budget)).
+    /// Set only by the source's leader (`Node::on_xcall_failed`); peers pass it along on
+    /// `internal/call`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_budget: Option<u32>,
 }
 
 /// The node's own commands, run by [`Node::call`] only for a [`CallRequest::host`]
@@ -420,6 +435,7 @@ impl CallRequest {
             sync_from: None,
             via: None,
             sys_index: None,
+            chain_budget: None,
         }
     }
 
@@ -461,6 +477,10 @@ pub struct ViewRequest {
     /// A synchronous `xcall_view` made as the person, as [`CallRequest::via`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via: Option<String>,
+    /// A component app's view made by one of its actions, as [`CallRequest::action`]: set only
+    /// by the node's action runner; peers pass it along on `internal/view`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -614,6 +634,8 @@ pub struct Node {
     pub(crate) blob_guards: Arc<blob_guards::BlobGuards>,
     /// How many exports each account has asked of this node lately.
     pub(crate) export_limits: crate::api::ExportLimits,
+    /// The accounts this node created lately (`api::SignUpLimit`).
+    pub(crate) sign_up_limit: crate::api::SignUpLimit,
     /// Visitors' calls through each public link, per visitor key (`api::VisitorLimits`).
     pub(crate) visitor_limits: crate::api::VisitorLimits,
     /// API keys a fresh read found missing lately, refused with no read (`api::credential`).
@@ -654,6 +676,9 @@ pub struct Node {
     /// Makes this node's quotes (`/attestation`, the recovery disk's), off the
     /// async workers and one at a time.
     pub(crate) quoter: crate::attest::Quoter,
+    /// The interval key and its quote, which `/attestation?form=interval`
+    /// answers with (`attest::refresh_interval_quotes` keeps it current).
+    pub(crate) intervals: crate::attest::IntervalQuotes,
     /// Compiles the components installs and uploads hand this node, off the
     /// async workers and one at a time (`compile`).
     pub(crate) compiler: crate::compile::Compiler,
@@ -1170,6 +1195,7 @@ impl Node {
         let compiler = crate::compile::Compiler::default();
         #[cfg(feature = "testing")]
         let compiler = compiler.for_node(&config.public_url);
+        let sign_up_limit = crate::api::SignUpLimit::new(config.sign_ups_per_minute);
         let node = Arc::new(Self {
             cluster_secret: cluster_secret(&cluster_key, &config.cluster),
             cluster_key,
@@ -1195,6 +1221,7 @@ impl Node {
             uploads: component::Uploads::default(),
             blob_guards: Arc::default(),
             export_limits: crate::api::ExportLimits::default(),
+            sign_up_limit,
             visitor_limits: crate::api::VisitorLimits::default(),
             unknown_api_keys: crate::api::UnknownApiKeys::default(),
             #[cfg(feature = "testing")]
@@ -1213,6 +1240,7 @@ impl Node {
             receipt_key,
             recovery: recovery_disk::RecoveryWriter::default(),
             quoter,
+            intervals: crate::attest::IntervalQuotes::default(),
             compiler,
             peers: Mutex::new(HashMap::new()),
             http,
@@ -1705,14 +1733,33 @@ impl Node {
 
     /// Commit a system command through the system group's leader; `409
     /// FEATURE_NOT_ACTIVE` for one that uses a feature above the cluster
-    /// version ([`Node::require_features`]).
+    /// version ([`Node::require_features`]), and the refusal `apply` would
+    /// answer for one it judges refused already (`Node::sys_prejudge`).
     pub async fn sys_write(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         // Nothing is proposed that a node of the cluster cannot apply.
         self.require_features(&cmd.features()).await?;
+        // Authority first: a caller who may not act learns that (or that the subject is
+        // missing), never how full the state is.
+        self.sys_prejudge(cmd).await?;
         // A write past a bound on the system state is refused before it is logged; apply
         // judges it again ([Quotas](https://calimero-network.github.io/core/protocol/limits/#quotas)).
         self.sys(|s| s.check_state_caps(cmd)).map_err(rejected)?;
         self.sys_propose(cmd).await
+    }
+
+    /// Refuse, before it costs a log entry, a command `apply` would refuse
+    /// ([`crate::system::prejudge`]). A refusal on this replica's state is
+    /// judged again once it caught up ([`Node::sys_fresh`]): the write that
+    /// allows the command (this request's own first one, made through
+    /// another node) may not have applied here yet. A replica that cannot
+    /// catch up proposes it, and `apply` judges it.
+    /// Spec: <https://calimero-network.github.io/core/protocol/system-group/#judged-before-it-is-proposed>
+    async fn sys_prejudge(&self, cmd: &SystemCmd) -> Result<(), ApiError> {
+        let judge = || self.sys_machine(|m| crate::system::prejudge(m, cmd));
+        if judge().is_ok() || !self.sys_fresh().await {
+            return Ok(());
+        }
+        judge().map_err(rejected)
     }
 
     /// [`Node::sys_write`] past the gate: only for `SetClusterVersion`, which
@@ -2474,10 +2521,20 @@ impl Node {
         .unwrap_or_else(|| id.to_owned())
     }
 
+    /// One not found here is looked for on a state that caught up with the
+    /// system leader ([`Node::sys_fresh_index`]), which holds every app made
+    /// before the request: missing there, it is missing, answered at once.
+    /// Only when no leader answers does it wait for one ([`Node::sys_until`]).
     pub async fn app(&self, app_id: &str) -> Result<AppRecord, ApiError> {
-        self.sys_until(|s| s.apps.get(app_id).cloned())
-            .await
-            .ok_or_else(|| ApiError::not_found("no such app"))
+        let find = |s: &SystemState| s.apps.get(app_id).cloned();
+        let found = match self.sys(find) {
+            Some(app) => Some(app),
+            None => match self.sys_fresh_index().await {
+                (Some(_), _) => self.sys(find),
+                (None, _) => self.sys_until(find).await,
+            },
+        };
+        found.ok_or_else(|| ApiError::not_found("no such app"))
     }
 
     async fn start_app_group_if_replica(&self, group: GroupId) -> bool {
@@ -4044,8 +4101,34 @@ impl Node {
                 conflict: false,
             });
         }
-        self.upgrade_component(g, &bundle, compute_bundle.as_deref(), migrate.as_deref())
-            .await
+        let strict =
+            self.sys(|s| s.cluster_brings(crate::system::cluster_version::Feature::PinnedLineage));
+        let judged_on = match req
+            .args
+            .get("from")
+            .map(|f| component::JudgedOn::parse(f, strict))
+        {
+            None => None,
+            Some(Ok(judged)) => judged,
+            Some(Err(why)) => {
+                return Ok(Applied {
+                    index: g.applied(),
+                    status: Status::AppError,
+                    result: Value::Null,
+                    error: Value::String(why.to_owned()),
+                    events: Vec::new(),
+                    conflict: false,
+                })
+            }
+        };
+        self.upgrade_component(
+            g,
+            &bundle,
+            compute_bundle.as_deref(),
+            migrate.as_deref(),
+            judged_on.as_ref(),
+        )
+        .await
     }
 
     /// Run a call wherever the app's leader is.
@@ -4235,8 +4318,15 @@ impl Node {
             && req.method != component::PIPELINE_VIEW
             && req.method != SECRETS_VIEW
         {
-            self.abi_gate(&app, &req.method, &req.caller, true, false)
-                .await?;
+            self.abi_gate(
+                &app,
+                &req.method,
+                &req.caller,
+                true,
+                false,
+                req.action.is_some(),
+            )
+            .await?;
         }
         // Like calls, ride out an election (e.g. right after the leader moved off).
         let mut last = None;

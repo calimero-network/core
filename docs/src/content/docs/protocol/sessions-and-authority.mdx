@@ -323,7 +323,9 @@ Not keyed on the peer IP: the node serves plain HTTP behind the operator's TLS f
 client has the front's address, and `X-Forwarded-For` is written outside the TD.
 Those of a known account (step-ups, passkey add, a recovery's start) draw on
 `MAX_CHALLENGES_PER_ACCOUNT` within `MAX_ACCOUNT_CHALLENGES`, so a full anonymous pool never blocks
-a step-up.
+a step-up, and are never refused either: an account past its share displaces its own oldest, and a
+full pool displaces the oldest of the account holding the most (indexed and ranked as sessions
+are), so accounts made to fill it never lock another account's step-up out.
 
 ### Sessions are node-signed
 

@@ -283,6 +283,54 @@ async fn a_flood_of_sign_in_begins_does_not_stop_another_clients_sign_in() {
     assert_eq!(e.code(), Some("UNKNOWN_CHALLENGE"), "{e}");
 }
 
+/// A step-up signed with a stale copy of the passkey, whose counter is behind
+/// the node's (two processes sharing one passkey file sign with the same
+/// count), is refused with what went wrong, `403 SIGN_COUNT_REPLAYED`, and not
+/// a `401`: the client would take that for an expired session, spend a
+/// refresh, and send the spent challenge again (`400 UNKNOWN_CHALLENGE`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_passkey_counter_is_named_and_spends_no_refresh() {
+    let c = Cluster::start(1).await;
+    let (alice, mut pk) = signed_up(&c, 0, "alice").await;
+    let mut stale = SoftAuthenticator::from_json(&pk.to_json()).unwrap();
+    let key = |label: &str| {
+        calimero_client::Request::new(reqwest::Method::POST, "auth/apikeys")
+            .json(json!({ "label": label }))
+    };
+    let _made = alice
+        .transport()
+        .confirmed(key("first"), &mut pk)
+        .await
+        .unwrap();
+    let before = alice.transport().session().await.unwrap();
+
+    let e = alice
+        .transport()
+        .confirmed(key("second"), &mut stale)
+        .await
+        .unwrap_err();
+    let calimero_client::Error::Api { status, code, .. } = &e else {
+        panic!("not the node's answer: {e}");
+    };
+    assert_eq!(
+        (*status, code.as_str()),
+        (403, "SIGN_COUNT_REPLAYED"),
+        "{e}"
+    );
+    let after = alice.transport().session().await.unwrap();
+    assert_eq!(
+        after.session_token, before.session_token,
+        "no refresh spent"
+    );
+
+    // The current passkey still approves.
+    let _made = alice
+        .transport()
+        .confirmed(key("third"), &mut pk)
+        .await
+        .unwrap();
+}
+
 /// A sign-up's name is held with its ceremony until the challenge expires, so
 /// it is bounded: one past `MAX_ACCOUNT_NAME_CHARS` is refused `400` before
 /// anything is held, a body past `MAX_PASSKEY_CEREMONY_BYTES` is refused

@@ -6,6 +6,83 @@
 )]
 use super::*;
 
+/// Accounts one node creates per minute by default (`Config::sign_ups_per_minute`, merod's
+/// `--sign-ups-per-minute`): account creation is a replicated system write that grows every
+/// node's state, so its rate is bounded. See
+/// [Node limits](https://calimero-network.github.io/core/protocol/limits/#node-limits).
+pub const SIGN_UPS_PER_MINUTE: u32 = 30;
+
+/// A token bucket over the accounts this node creates: a minute's worth at once, refilled
+/// evenly over the minute. Node-local: nothing of it is logged. Every sign-up counts, invited
+/// or not. The ceremony is refused while the bucket is empty, before a challenge is made or
+/// spent; a token is spent once the new passkey has signed the account, before the log is
+/// asked to create it.
+pub struct SignUpLimit {
+    per_minute: f64,
+    bucket: Mutex<(f64, Instant)>,
+}
+
+impl SignUpLimit {
+    /// `per_minute` sign-ups a minute, at least one; the bucket starts full.
+    #[must_use]
+    pub fn new(per_minute: u32) -> Self {
+        let per_minute = f64::from(per_minute.max(1));
+        Self {
+            per_minute,
+            bucket: Mutex::new((per_minute, Instant::now())),
+        }
+    }
+
+    /// The bucket refilled to `now`.
+    fn refilled(&self, now: Instant) -> std::sync::MutexGuard<'_, (f64, Instant)> {
+        let mut bucket = self
+            .bucket
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let elapsed = now.saturating_duration_since(bucket.1).as_secs_f64();
+        bucket.0 = elapsed
+            .mul_add(self.per_minute / 60.0, bucket.0)
+            .min(self.per_minute);
+        bucket.1 = now;
+        bucket
+    }
+
+    /// `429 RATE_LIMITED` with `Retry-After` the seconds until the next token, if none is left.
+    pub(super) fn check(&self, now: Instant) -> Result<(), ApiError> {
+        let tokens = self.refilled(now).0;
+        self.refuse_below_one(tokens)
+    }
+
+    /// Spend a token for one account, or refuse as [`Self::check`] does.
+    pub(super) fn take(&self, now: Instant) -> Result<(), ApiError> {
+        let mut bucket = self.refilled(now);
+        self.refuse_below_one(bucket.0)?;
+        bucket.0 -= 1.0;
+        Ok(())
+    }
+
+    fn refuse_below_one(&self, tokens: f64) -> Result<(), ApiError> {
+        if tokens >= 1.0 {
+            return Ok(());
+        }
+        let secs = ((1.0 - tokens) * 60.0 / self.per_minute).ceil().max(1.0);
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "between 1 and 60, as `per_minute` is at least 1"
+        )]
+        let secs = secs as u32;
+        Err(ApiError {
+            retry_after: Some(secs),
+            ..ApiError::new(
+                429,
+                "RATE_LIMITED",
+                "this node has taken as many sign-ups as it takes for now; try again later or on another node",
+            )
+        })
+    }
+}
+
 /// What a client reads before sign-up (`GET /sign-up`, no session): the
 /// cluster's policy and which invites it takes, so a frontend shows "invite
 /// only" instead of failing at the end of a passkey ceremony.
@@ -442,7 +519,9 @@ async fn sign_up_invite_list(
     headers: HeaderMap,
 ) -> ApiResult<Json<SignUpInviteList>> {
     if operator(&node, &headers).is_err() {
-        let account = signed_in(&node, &headers).await?.account()?;
+        let p = signed_in(&node, &headers).await?;
+        p.beyond_instance(&node)?;
+        let account = p.account()?;
         let _caught_up = node.sys_fresh().await;
         let owner = node.sys(|s| {
             s.cluster_owner
@@ -487,4 +566,37 @@ pub(super) fn routes() -> Router<Arc<Node>> {
         .route("/ops/sign-up/invites/{key}", delete(ops_sign_up_invite_revoke))
         // For an HTTP client whose DELETE carries no body (as for deployers).
         .route("/ops/sign-up/invites/{key}/revoke", post(ops_sign_up_invite_revoke))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::{SignUpLimit, SIGN_UPS_PER_MINUTE};
+
+    /// A node takes a minute's sign-ups at once, refuses the next with `429 RATE_LIMITED` and
+    /// the wait in `Retry-After`, and takes one again once that wait has passed.
+    #[test]
+    fn sign_ups_past_the_burst_wait_for_the_refill() {
+        let limit = SignUpLimit::new(SIGN_UPS_PER_MINUTE);
+        let start = Instant::now();
+        for _ in 0..SIGN_UPS_PER_MINUTE {
+            limit.take(start).unwrap();
+        }
+        let refused = limit.take(start).unwrap_err();
+        assert_eq!(
+            (refused.status, refused.code.as_str()),
+            (429, "RATE_LIMITED")
+        );
+        let wait = refused.retry_after.unwrap();
+        assert_eq!(wait, 60_u32.div_ceil(SIGN_UPS_PER_MINUTE));
+        assert!(
+            limit.check(start).is_err(),
+            "a check spends nothing and still refuses"
+        );
+        let later = start + Duration::from_secs(u64::from(wait));
+        limit.check(later).unwrap();
+        limit.take(later).unwrap();
+        assert!(limit.take(later).is_err(), "one token came back, not more");
+    }
 }

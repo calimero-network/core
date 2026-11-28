@@ -91,8 +91,9 @@ each a device of the account.
   ceremonies, 16 per sealed session: a session's next begin replaces its own
   oldest, and in a full pool a new begin replaces the oldest of the session
   holding the most, so a flood of begins never shuts others out. Apart from
-  those it holds 64 step-ups or passkey additions per account (10,000 across
-  accounts); past either it answers `429 RATE_LIMITED`.
+  those it holds 8 step-ups or passkey additions per account, an account's
+  next replacing its own oldest, and 10,000 across accounts, where a new one
+  replaces the oldest of the account holding the most.
 - **Sign-up policy.** Each cluster has one, set at genesis (`--sign-up`)
   and attested with its governance; see [Sign-up policy](#sign-up-policy).
   On an `open` cluster (the default) anyone who can reach it can register an
@@ -300,7 +301,11 @@ the client signs it with a passkey and retries with `confirm: { challengeId,
 assertion }`. Like a sign-in challenge, it is held by the node that issued it
 for 5 minutes, so the retry must reach the same node. Browsers and the SDK
 clients do this; `meroctl` does it with a
-file passkey (`--dev-passkey`) on development clusters.
+file passkey (`--dev-passkey`) on development clusters. A refused approval is
+never a `401`, which a client takes for an expired session: an assertion
+whose signature counter did not advance is `403 SIGN_COUNT_REPLAYED`, any
+other that does not verify `403 ASSERTION_REFUSED`. Either spent the challenge,
+so a client does not send the same `confirm` again: it starts over.
 
 ## The consent page
 

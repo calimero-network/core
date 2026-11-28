@@ -47,6 +47,12 @@ const UPGRADES_OUT_OF_ORDER: Rejection = Rejection::new(
     RejectionKind::Rejected,
     "a release may not give its package's upgrades back to the publisher once a lower one gave them to owners",
 );
+/// A release pinning its instances (`lineage: pinned`) whose version is not semver: no
+/// instance of it could ever move forward.
+const PINNED_NOT_SEMVER: Rejection = Rejection::new(
+    RejectionKind::Rejected,
+    "a release that pins its instances (lineage: pinned) names a semver version",
+);
 /// An uninstall by someone other than whoever installed the package.
 const ONLY_INSTALLER_UNINSTALLS: Rejection = Rejection::new(
     RejectionKind::Rejected,
@@ -136,6 +142,30 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             "__remove_origin",
             &json!({ "origin": origin }),
         ),
+        SystemCmd::AddAppOrigin {
+            app_id,
+            origin,
+            rp_id,
+            actor,
+            consent,
+            ..
+        } => {
+            let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = crate::origins::add_args(origin, rp_id, false);
+            proofs.states(&statement, app_id, "__add_origin", &|a| *a == args)?;
+            Ok(Some(used))
+        }
+        SystemCmd::RemoveAppOrigin {
+            app_id,
+            origin,
+            actor,
+            consent,
+        } => {
+            let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
+            let args = json!({ "origin": origin });
+            proofs.states(&statement, app_id, "__remove_origin", &|a| *a == args)?;
+            Ok(Some(used))
+        }
         _ => Ok(None),
     }
 }
@@ -185,16 +215,32 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             origin,
             rp_id,
             served,
+            registration,
             actor,
             at,
             ..
-        } => state.add_package_origin(package, origin, &rp_id, served, actor, at),
+        } => state.add_package_origin(package, origin, &rp_id, served, registration, actor, at),
         SystemCmd::RemovePackageOrigin {
             package,
             origin,
             actor,
             ..
         } => state.remove_package_origin(&package, &origin, &actor),
+        SystemCmd::AddAppOrigin {
+            app_id,
+            origin,
+            rp_id,
+            registration,
+            actor,
+            at,
+            ..
+        } => state.add_app_origin(app_id, origin, &rp_id, registration, actor, at),
+        SystemCmd::RemoveAppOrigin {
+            app_id,
+            origin,
+            actor,
+            ..
+        } => state.remove_app_origin(&app_id, &origin, &actor),
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached packages::apply"),
@@ -289,6 +335,9 @@ fn install_package(
         .is_some_and(|record| !record.upgrades_in_order(&release.version, release.upgrades))
     {
         return Err(UPGRADES_OUT_OF_ORDER);
+    }
+    if !release.lineage.is_free() && semver::Version::parse(&release.version).is_err() {
+        return Err(PINNED_NOT_SEMVER);
     }
     // The operator's installs count against no account's quota.
     if !by_operator

@@ -434,6 +434,7 @@ async fn attestation(
         kms: None,
         job_key: Some(hex::encode(job_key)),
         cluster_identity: Some(hex::encode(job.config.cluster_identity)),
+        interval: None,
     };
     Ok(Json(to_value(doc).unwrap_or_default()))
 }

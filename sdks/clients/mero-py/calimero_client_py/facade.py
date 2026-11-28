@@ -67,6 +67,9 @@ from .openapi.api.apps import app_metadata as _app_metadata
 from .openapi.api.apps import app_method as _app_method
 from .openapi.api.apps import app_move as _app_move
 from .openapi.api.apps import app_openapi as _app_openapi
+from .openapi.api.apps import app_origin_add as _app_origin_add
+from .openapi.api.apps import app_origin_remove as _app_origin_remove
+from .openapi.api.apps import app_origins as _app_origins
 from .openapi.api.apps import app_outbound_log as _app_outbound_log
 from .openapi.api.apps import app_policy as _app_policy
 from .openapi.api.apps import app_policy_set as _app_policy_set
@@ -293,6 +296,8 @@ from .openapi.models import AppInviteCreateBody
 from .openapi.models import AppLinkBody
 from .openapi.models import AppMethodBody
 from .openapi.models import AppMoveBody
+from .openapi.models import AppOriginAddBody
+from .openapi.models import AppOriginRemoveBody
 from .openapi.models import AppSecretSetBody
 from .openapi.models import AppSetEgressBody
 from .openapi.models import AppTransferBody
@@ -300,6 +305,7 @@ from .openapi.models import AppUndoBody
 from .openapi.models import AppUnlinkBody
 from .openapi.models import AppUpgradeBody
 from .openapi.models import AppUpgradeUnitBody
+from .openapi.models import AttestationForm
 from .openapi.models import AttestationPurpose
 from .openapi.models import BackupKeyBody
 from .openapi.models import CapabilitiesBody
@@ -585,6 +591,26 @@ _APP_MOVE = Operation(
 _APP_OPENAPI = Operation(
     _app_openapi,
     "app_openapi",
+    body="none",
+    answer="json",
+)
+_APP_ORIGIN_ADD = Operation(
+    _app_origin_add,
+    "app_origin_add",
+    body=AppOriginAddBody,
+    answer="json",
+    confirm=True,
+)
+_APP_ORIGIN_REMOVE = Operation(
+    _app_origin_remove,
+    "app_origin_remove",
+    body=AppOriginRemoveBody,
+    answer="json",
+    confirm=True,
+)
+_APP_ORIGINS = Operation(
+    _app_origins,
+    "app_origins",
     body="none",
     answer="json",
 )
@@ -1487,6 +1513,61 @@ class Apps(Group):
         """
         return self._run(_APP_OPENAPI, (app,), {}, None)
 
+    def origin_add(self, *, app, origin, rp_id=UNSET, confirm=None):
+        """Register a web origin for an instance (`POST /apps/{app}/origins`, `app_origin_add`).
+
+        By whoever manages the instance (its owner or an admin of its organization), with a passkey step-up over `{ origin, rpId }`. A passkey ceremony there opens a session bound to the instance's package that reaches this instance alone; what the account may do in it is the instance's grants'. Answers the origin as registered (the one already there, when the same origin is registered again).
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            origin: body `origin`
+            rp_id: body `rpId`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: PackageOrigin
+        """
+        return self._run(
+            _APP_ORIGIN_ADD,
+            (app,),
+            {},
+            {"origin": origin, "rpId": rp_id},
+            confirm=confirm,
+        )
+
+    def origin_remove(self, *, app, origin, confirm=None):
+        """Remove an instance's web origin (`DELETE /apps/{app}/origins`, `app_origin_remove`).
+
+        Whoever manages the instance, with a passkey step-up. The sessions opened there end.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
+
+        Args:
+            app: path
+            origin: body `origin`
+            confirm: a passkey for the step-up, a ready `confirm`, or False
+
+        Returns: OriginRemoved
+        """
+        return self._run(
+            _APP_ORIGIN_REMOVE, (app,), {}, {"origin": origin}, confirm=confirm
+        )
+
+    def origins(self, *, app):
+        """An instance's web origins (`GET /apps/{app}/origins`, `app_origins`).
+
+        The web origins its managers registered for the instance: a site of their own whose people sign in there, with passkeys of its own rp-id, and reach this instance alone.
+
+        **Who:** an account holder (a passkey session not bound to an app's frontend).
+
+        Args:
+            app: path
+
+        Returns: AppOriginList
+        """
+        return self._run(_APP_ORIGINS, (app,), {}, None)
+
     def outbound_log(self, *, app):
         """An app's outbound requests (`GET /apps/{app}/outbound-log`, `app_outbound_log`).
 
@@ -2014,7 +2095,7 @@ class Apps(Group):
     def undo(self, *, app, confirm=None):
         """Undo an app's last upgrade (`POST /apps/{app}/undo`, `app_undo`).
 
-        An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34.
+        An owner or admin of the app's organization, within a week of the upgrade (judged on the logged times), with a step-up over `<app> / __undo_upgrade / { apps: { <app>: { to, bundle, from, restorePoint } } }`. The app, and the members its unit's upgrade moved, go back to the release they ran before and, where the upgrade ran on their group, to their restore point's state in a new group (seeded by the node that holds it, as a restore is): the one move to an older release. Whatever they wrote since the restore point is lost (`apps[].lostWrites`, as `GET` showed it). Answers once each group takes calls again, or after a minute with `restored: false` (calls answer `409 APP_RESTORING` meanwhile; sending the undo again seeds it again). `409 NO_RESTORE_POINT`, `UNDO_WINDOW_PASSED`, `UNDO_STALE` (the app moved on), `UNDO_RELEASE_GONE` (the release it would return to is no longer installed), `UNDO_NOT_AS_NAMED` (a member its unit's run moved: undo its instance), `RESTORE_POINT_UNAVAILABLE` (its node does not answer), each before the step-up; `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.34. A pinned instance (its record's `lineage`) goes back only to a release of its own package and publisher, an older one included: `409 OUTSIDE_LINEAGE`, before the step-up.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -2068,7 +2149,7 @@ class Apps(Group):
     def update(self, *, app):
         """Whether an update is available for an app (`GET /apps/{app}/update`, `app_update`).
 
-        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, or a release newly calls another app as the person (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
+        For whoever may read the app (`GET /apps/{app}`'s rule; a session bound to its package's frontend included), so its frontend can offer the update and open the consent page. `available` carries the update classifier's verdict (`calimero_bundle::update::classify`; absent for an instance on a development bundle), over the whole unit when the instance has members and the caller is a member of its organization or may use every release they move to, as `upgrade-unit` would move them, else the app alone: `class` `red` when the signer changes, egress grows, a state version changes, a member with egress joins or leaves, a release newly calls another app as the person, or a release declaring `lineage: pinned` pins an instance that was not (`reasons` lists each), else `green`; `egress`: the unit's destinations `before` and `after` (empty: no data leaves Calimero; an external endpoint, a TEE included, is a destination like any other), with those `added` and `removed`; `newMethods` and `removedMethods` (a member's as `<path>.<method>`). `available`: for an instance from a deployment, the release the deployment offers for its package, only while that offer serves (someone acting for the deployment's owner may use it), when it is not the one running (`source: deployment`); for any other, the newest release of its package the caller sees, newer than the running one, that the upgrade would take (`source: release`, as a report's `latestReachable`); else `null`. `unit`: whether the instance has apps of its own (`links`), which move with it: review it with `upgradeUnit`. `mayApprove`: whether the caller may approve the upgrade. `approvers`: `owner-and-admins` (the owner and admins of the app's organization), `operator` where the cluster gives it app upgrades, or `managers` on a cluster still below 1.0.0-rc.32 (the rule before: the owner or `MANAGE_APPLICATION` holders, or the publisher's). `policy`: the update policy the app follows and its `source`. `available.summary`: the update in one plain line for a banner (the new destinations it adds, else "Nothing changes where your data goes" when green, else its first reason), the same words the consent page and the node's updates page use; the design's `GET /apps/{app}/updates` is this route. `available.approvalsNeeded`: 2 for a red (or unclassified) update where the policy asks for a second approver, else 1; `available.approvedBy`: who approved it first, while that approval waits. `pendingApprovals`: the first approvals waiting for their second that cover this app (its own, or its unit's). `deployment`: the deployment the instance comes from, which chooses its updates, else `null`.
 
         **Who:** whoever the app's grants admit (`anyone`: any signed-in account).
 
@@ -2092,7 +2173,7 @@ class Apps(Group):
     ):
         """Upgrade an app instance (`POST /apps/{app}/upgrade`, `app_upgrade`).
 
-        To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up.
+        To a release (`version`, of the app's own package unless `package` names another) or a `bundle`, code only: the state stays and is read by the new code. An owner or admin of the app's organization, whatever the package's manifest declares (`403 FORBIDDEN` for anyone else, before the step-up; on a cluster still below 1.0.0-rc.32, as before: whoever the manifest names), with a step-up over `{ bundle, migrate, manifest }`; an upgrade key signs in place of it, and its account is judged the same. A refused or failed upgrade leaves the app on its release and answers `422 UPGRADE_FAILED` with the app log's error in `details` (`MigrationsNotSupported` when `migrate` is named: there are no migrations in this version). `error` is the app log's error value (`null` when it ran), free-form: the app's own. An instance created from a deployment moves only to the release its deployment offers for its package (naming no version accepts that offer): another version, another package or a `bundle` is `409 OUTSIDE_DEPLOYMENT`, before the step-up. Where the app's policy asks for a second approver, an update the log cannot classify (a part's release no longer installed) is `409 FEATURE_NOT_ACTIVE` below cluster version 1.0.0-rc.35, before the step-up. An instance of a release declaring `lineage: pinned` (its record's `lineage`) moves only to a release of that package, signed by the same publisher: another package or a `bundle` is `409 OUTSIDE_LINEAGE`, an older release `409 LINEAGE_OLDER_RELEASE`, before the step-up.
 
         **Who:** an account holder (a passkey session not bound to an app's frontend). **Step-up:** answers `412 CONFIRM_REQUIRED` first; send the same request again with `confirm`, a passkey assertion over `details.challenge`.
 
@@ -2802,7 +2883,7 @@ class Auth(Group):
     def me(self):
         """The caller's account (`GET /auth/me`, `me`).
 
-        The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
+        The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.
 
         **Who:** signed in (a session or an API key).
 
@@ -2920,7 +3001,7 @@ class Auth(Group):
     def register_begin(self, *, name=UNSET, origin=UNSET, invite=UNSET):
         """Start a sign-up (`POST /auth/passkey/register/begin`, `register_begin`).
 
-        Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+        Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429 RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
 
         **Who:** anyone.
 
@@ -4440,7 +4521,7 @@ class Ops(Group):
     def restore(self, *, app, backup=UNSET, recovery=UNSET, operator_proof=None):
         """Restore an app from its sealed backup (`POST /ops/apps/{app}/restore`, `ops_restore`).
 
-        Signed over `<app> / __restore_app / { backup, sha256 }`. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's.
+        Signed over `<app> / __restore_app / { backup, sha256 }`, and for a pinned instance (its record's `lineage`) `bundle` and `computeBundle` too, what the restore runs. The receiving node holds the backup (`backup`, else the newest, in `{backup-dir}/{app}/`) and seeds the restore; answers once every replica holds the restored state: the rows restored, the backup (`format` 0, with `merod` and `release` `null`, for one written before manifests) and the app group's Raft status. `recovery` restores from a recovery-disk file instead (in the app's holder's directory under `--recover-from`, else `--recovery-dir`), opened with the data key its holder opened from it (hex); `backup` is then the file's name and `sha256` its body's. A pinned instance (its record's `lineage`) is restored only from a backup whose bundle a release of its own package and publisher ships (`409 OUTSIDE_LINEAGE`), never one older than its `floor` (`409 LINEAGE_OLDER_RELEASE`), whoever signs it, each before the signature is asked for.
 
         **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
 
@@ -4627,7 +4708,7 @@ class Ops(Group):
     ):
         """Upgrade an app as the operator (`POST /ops/apps/{app}/upgrade`, `ops_upgrade`).
 
-        To a release the operator installed, where the operator holds app upgrades. `error` is the app log's error value (`null` when it ran), free-form: the app's own.
+        To a release the operator installed, where the operator holds app upgrades. A pinned instance (its record's `lineage`) is held to its package, publisher and forward order as for anyone (`409 OUTSIDE_LINEAGE`, `409 LINEAGE_OLDER_RELEASE`). `error` is the app log's error value (`null` when it ran), free-form: the app's own.
 
         **Who:** the ops token. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
 
@@ -6246,10 +6327,12 @@ _RESTORE_RECOVER_HOLDER = Operation(
 class Public(Group):
     """`client.public`: the operations core's document groups as `public`."""
 
-    def attestation(self, *, nonce, app=UNSET, app_hash=UNSET, purpose=UNSET):
+    def attestation(
+        self, *, nonce, app=UNSET, app_hash=UNSET, purpose=UNSET, form=UNSET
+    ):
         """The node's attestation (`GET /attestation`, `attestation`).
 
-        In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. The node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
+        In the clear. A TDX quote binding the node's transport key (or, with `purpose=receipts`, its receipt key and the governance; with `purpose=kms`, what it verified of its KMS; with `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an unknown id does, so it never says that a private app exists. A client checks it before it seals anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote is made for the request; a node with no current interval quote answers as without it. Otherwise the node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with `Retry-After: 1`, ask again then.
 
         **Who:** anyone.
 
@@ -6258,6 +6341,7 @@ class Public(Group):
             app: query
             app_hash: query
             purpose: query
+            form: query
 
         Returns: AttestationDoc
         """
@@ -6269,6 +6353,7 @@ class Public(Group):
                 "app": app,
                 "app_hash": app_hash,
                 "purpose": Operation.enum(AttestationPurpose, purpose),
+                "form": Operation.enum(AttestationForm, form),
             },
             None,
         )
@@ -6314,7 +6399,7 @@ class Public(Group):
     ):
         """Bring an organization's or account's apps back from its recovery files (`POST /recover/holder`, `restore_recover_holder`).
 
-        Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had.
+        Sent by the holder's own device, over the sealed channel: its newest `holder` file (`slice`), each app's file and the code files, in the receiving node's `--recovery-dir` (or `--recover-from`) under `org-<id>/` or `account-<id>/`, each with the data key the holder opened from it with its backup key (hex). The cluster admits it with the operator's signature over `cluster / __recover_holder / { holder, slice, apps: [{ app, file, sha256 }] }` (`428` first, naming it). Where owners upgrade apps, and only for an organization, account, apps and passkeys the cluster does not hold; the receiving node seeds each app, which answers `409 APP_RESTORING` until its replicas hold it. People sign in again with the passkeys they had. A pinned app keeps its `lineage` (taken again from its release where the record lost it), and is refused `409 OUTSIDE_LINEAGE` where its package here has another publisher.
 
         **Who:** anyone. **Operator signature:** answers `428 OPERATOR_SIGNATURE_REQUIRED` first; send it again with `operatorProof`, the operator key's signature over `details.message` and its `nonce`.
 

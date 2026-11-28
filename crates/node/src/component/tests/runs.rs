@@ -169,6 +169,7 @@ pub(super) fn job_doc(signer: &SigningKey, node: u64) -> crate::attest::Attestat
         kms: None,
         job_key: Some(hex::encode(signer.verifying_key().to_bytes())),
         cluster_identity: Some("cc".repeat(32)),
+        interval: None,
     }
 }
 
@@ -2041,6 +2042,66 @@ fn the_owner_takes_a_published_blob_down_and_its_charge_is_queued_for_release() 
     assert_eq!(why(&owner_cmd(&mut w, &forget)), "no such blob in this app");
 }
 
+/// An upload of `plain(1)`, charged by its uploader when `metered`.
+fn upload_cmd(size: u64, metered: bool) -> ComponentCmd {
+    ComponentCmd::Blob {
+        id: plain(1),
+        size,
+        mime: "text/plain".to_owned(),
+        ts_ms: 20,
+        metered,
+    }
+}
+
+#[test]
+fn a_metered_upload_holds_one_charge_and_its_delete_queues_it_for_release() {
+    let mut w = done_world();
+    let first = owner_cmd(&mut w, &upload_cmd(9, true));
+    assert_eq!(
+        (first.status, &first.result["metered"]),
+        (Status::Ok, &json!(true))
+    );
+    // The same bytes again: the record already holds a charge, so the uploader gives this one back.
+    let again = owner_cmd(&mut w, &upload_cmd(9, true));
+    assert_eq!(again.result["metered"], json!(false));
+    assert!(plain_record(&w, 1).unwrap().metered);
+
+    let forget = ComponentCmd::BlobForget { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
+    let head = &w.r.machine.state.component.head;
+    assert_eq!(head.collect_files[&plain(1)], 9);
+    let freed = w.r.apply(w.last + 1, &collected(&[plain(1)]));
+    assert_eq!(freed.result["freed"], json!(9));
+}
+
+#[test]
+fn an_unmetered_upload_takes_no_charge_and_releases_none() {
+    let mut w = done_world();
+    let a = owner_cmd(&mut w, &upload_cmd(9, false));
+    assert_eq!(
+        (a.status, &a.result["metered"]),
+        (Status::Ok, &json!(false))
+    );
+    let forget = ComponentCmd::BlobForget { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
+    assert!(w.r.machine.state.component.head.collect_files.is_empty());
+}
+
+#[test]
+fn an_upload_of_a_published_blobs_bytes_takes_no_second_charge() {
+    let mut w = published_world();
+    let a = owner_cmd(&mut w, &upload_cmd(out(1).size, true));
+    assert_eq!(
+        a.result["metered"],
+        json!(false),
+        "the publish already charged it"
+    );
+    let forget = ComponentCmd::BlobForget { id: plain(1) };
+    assert_eq!(owner_cmd(&mut w, &forget).status, Status::Ok);
+    let head = &w.r.machine.state.component.head;
+    assert_eq!(head.collect_files[&plain(1)], out(1).size, "released once");
+}
+
 #[test]
 fn a_sealed_file_is_still_not_the_owners_to_delete() {
     let mut w = published_world();
@@ -2076,6 +2137,7 @@ fn an_upload_of_a_published_blobs_bytes_keeps_its_revocations() {
         size: out(1).size,
         mime: "text/plain".to_owned(),
         ts_ms: 20,
+        metered: false,
     };
     assert_eq!(owner_cmd(&mut w, &upload).status, Status::Ok);
     let record = plain_record(&w, 1).unwrap();
@@ -2114,6 +2176,7 @@ fn a_blob_published_over_a_forgotten_upload_starts_above_the_uploads_epoch() {
         size: out(1).size,
         mime: "text/plain".to_owned(),
         ts_ms: 20,
+        metered: false,
     };
     assert_eq!(owner_cmd(&mut w, &upload).status, Status::Ok);
     let forget = ComponentCmd::BlobForget { id: plain(1) };
@@ -2132,6 +2195,7 @@ fn a_file_cannot_take_the_id_of_a_plain_blob_the_app_holds() {
         size: 9,
         mime: "text/plain".to_owned(),
         ts_ms: 20,
+        metered: false,
     };
     assert_eq!(owner_cmd(&mut w, &upload).status, Status::Ok);
     let mut call = call_entry(w.last);

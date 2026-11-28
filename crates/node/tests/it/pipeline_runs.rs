@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 const JOB_A: u64 = 4;
 const JOB_B: u64 = 5;
 const WAIT: Duration = Duration::from_secs(180);
+const QUEUED_TIMEOUT: Duration = Duration::from_secs(3); // far below the 10 minutes a node waits
 const INPUT_LEN: usize = 3 * 1024 * 1024 + 512 * 1024; // 3.5 MiB
 
 const CHAIN: &str = "apiVersion: compute.calimero.network/v1
@@ -563,6 +564,44 @@ impl Rig {
             .unwrap()
             .read_local(|m, _| m.active_runs().len())
     }
+
+    /// The app's runs the system queue holds but has not granted.
+    fn queued(&self) -> usize {
+        self.leader().sys(|s| {
+            let runs = s
+                .compute
+                .get(&self.app)
+                .into_iter()
+                .flat_map(|r| r.values());
+            runs.filter(|slot| !slot.granted && !slot.refused).count()
+        })
+    }
+
+    /// A queue timeout of seconds, not minutes: a run that has to wait for a place fails fast.
+    fn short_queue_timeout(&self) {
+        for n in self.c.nodes.iter().flatten() {
+            n.node.set_compute_limits(ComputeLimits {
+                queued_timeout: QUEUED_TIMEOUT,
+                ..test_limits()
+            });
+        }
+    }
+
+    /// The pipeline run once it ended, and the most of the app's runs that waited in the system
+    /// queue at once while it ran.
+    async fn ended_queueing(&self, run: &str) -> (Value, usize) {
+        let started = Instant::now();
+        let mut most = 0;
+        loop {
+            most = most.max(self.queued());
+            let v = self.run(run).await;
+            if v["state"] != "running" {
+                return (v, most);
+            }
+            assert!(started.elapsed() < WAIT, "the run did not end: {v}");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -617,6 +656,64 @@ async fn a_fan_out_over_many_items_with_a_few_failures_succeeds_with_failures() 
         "collect got 97 outputs (over 64) in item order"
     );
     assert_eq!(done["steps"]["all"]["status"], "succeeded", "{done}");
+}
+
+/// `maxParallel` asks for more runs than the one job node's places: the rest wait in the step,
+/// not in the system queue, where a run ends `not-granted` once it waited out the queue timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_fan_out_wider_than_its_pool_waits_in_the_step_not_the_queue() {
+    let rig = Rig::start(&[JOB_A]).await;
+    rig.short_queue_timeout();
+    let texts: Vec<String> = (0..20).map(|i| format!("item {i}")).collect();
+    let files = rig.uploads(&texts).await;
+    let run = rig
+        .start_run("lots", json!({ "docs": files }), json!({}))
+        .await;
+    let (done, queued) = rig.ended_queueing(&run).await;
+    let outcomes: Vec<_> = rig.all_records().into_iter().map(|r| r.final_).collect();
+    assert_eq!(done["state"], "succeeded", "{outcomes:?}");
+    assert_eq!(done["steps"]["each"]["failedItems"], 0, "{done}");
+    // One can wait while the places of runs that just ended are released.
+    assert!(queued <= 1, "{queued} runs waited in the queue at once");
+}
+
+/// Two pipeline runs of one payer, idle on a pool with one place, take turns and both finish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn two_fan_outs_of_one_payer_share_a_one_place_pool() {
+    let mut rig = Rig::start(&[]).await;
+    rig.short_queue_timeout();
+    let pools = json!({ "pools": { "standard": { "runsPerNode": 1, "maxMemoryMib": 4096 } } });
+    let ops = rig.c.client(0);
+    ops.use_api_key("ops-secret").await;
+    let _ = common::ops_signed(&ops, "ops/pools", pools).await.unwrap();
+    let job = rig.c.start_job_node(JOB_A, |_| {}).await;
+    rig.c
+        .register_job_node_in(JOB_A, &job.url, Some("standard"))
+        .await;
+    rig.jobs.push(job);
+
+    let texts: Vec<String> = (0..6).map(|i| format!("item {i}")).collect();
+    let files = rig.uploads(&texts).await;
+    let first = rig
+        .start_run("lots", json!({ "docs": files }), json!({}))
+        .await;
+    let second = rig
+        .start_run("lots", json!({ "docs": files }), json!({}))
+        .await;
+    for run in [first, second] {
+        let done = rig.ended(&run).await;
+        assert_eq!(done["state"], "succeeded", "{done}");
+    }
+    let not_granted = FinalOutcome::Failed {
+        reason: FailedReason::NotGranted,
+    };
+    let records = rig.all_records();
+    assert!(
+        !records
+            .iter()
+            .any(|r| r.final_.as_ref().is_some_and(|f| f.outcome == not_granted)),
+        "{records:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1024,7 +1121,7 @@ async fn a_start_is_refused_with_a_stable_code() {
     );
     assert_eq!(
         code(start("broken", json!({ "docs": ["ab".repeat(32)] }), json!({})).await),
-        Some("OUTPUT_EXPIRED".into()),
+        Some("INPUT_EXPIRED".into()),
         "a file the app does not hold"
     );
     assert_eq!(
@@ -1068,7 +1165,7 @@ async fn a_start_while_the_apps_leader_changes_finds_its_uploaded_file() {
     assert!(started.is_ok(), "{started:?}");
 }
 
-/// A start while the app has no leader answers `503 UNAVAILABLE`, not `OUTPUT_EXPIRED`: an input the
+/// A start while the app has no leader answers `503 UNAVAILABLE`, not `INPUT_EXPIRED`: an input the
 /// leader cannot be asked about is not a forgotten one.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_start_while_the_app_has_no_leader_is_unavailable_not_expired() {
@@ -1180,9 +1277,9 @@ async fn a_fan_out_reuses_its_cached_items() {
     assert_eq!(rig.all_records().len(), 2, "no new run");
 }
 
-/// A start naming a file the app forgot answers `410 OUTPUT_EXPIRED` and starts nothing.
+/// A start naming a file the app forgot answers `410 INPUT_EXPIRED` and starts nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn starting_with_an_expired_output_answers_output_expired() {
+async fn starting_with_an_expired_input_answers_input_expired() {
     let rig = Rig::start(&[JOB_A]).await;
     let file = rig.upload(b"will be forgotten").await;
     rig.c
@@ -1194,7 +1291,7 @@ async fn starting_with_an_expired_output_answers_output_expired() {
         .start_pipeline_run(&rig.app, "fresh", json!({ "docs": [file] }), json!({}))
         .await
         .unwrap_err();
-    assert_eq!(refused.code(), Some("OUTPUT_EXPIRED"), "{refused}");
+    assert_eq!(refused.code(), Some("INPUT_EXPIRED"), "{refused}");
 }
 
 /// The operator's prices, signed as mdma does: `check` then costs 2020 per run at worst.
@@ -1249,7 +1346,8 @@ async fn max_cost_without_a_price_table_is_refused() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_run_stops_admitting_before_it_crosses_its_cost_cap() {
-    let rig = Rig::start(&[JOB_A]).await;
+    // Places for a wave of four, so the cap and not the queue is what holds the step back.
+    let rig = Rig::start(&[JOB_A, JOB_A + 1, JOB_A + 2]).await;
     set_prices(&rig).await;
     let mut files = Vec::new();
     for i in 0..6 {
@@ -1280,6 +1378,24 @@ async fn a_run_stops_admitting_before_it_crosses_its_cost_cap() {
     assert_eq!(done["cost"]["maxCost"], json!(max_cost.to_string()));
     assert_eq!(done["cost"]["priceVersion"], 1);
     assert_eq!(done["steps"]["each"]["cost"], done["costSoFar"], "{done}");
+}
+
+/// On a pool too small for a wide wave, finished runs count at what they used, so the same cap that
+/// stops a wide wave at three runs lets the step finish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_fan_out_held_to_its_pool_can_finish_under_a_cap_a_wide_wave_crosses() {
+    let rig = Rig::start(&[JOB_A]).await;
+    set_prices(&rig).await;
+    let mut files = Vec::new();
+    for i in 0..6 {
+        files.push(rig.upload(format!("document {i}").as_bytes()).await);
+    }
+    let max_cost = 3 * CHECK_RUN_COST;
+    let started = start_capped(&rig, &files, max_cost).await;
+    let done = rig.ended(started["run"].as_str().unwrap()).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
+    let so_far: u64 = done["costSoFar"].as_str().unwrap().parse().unwrap();
+    assert!(so_far <= max_cost, "{done}");
 }
 
 /// The compute runs a pipeline run made, by item index.
@@ -1350,6 +1466,34 @@ async fn a_retry_with_raised_limits_reruns_only_the_failed_items() {
         done["steps"]["each"]["outputs"].as_array().unwrap().len(),
         6
     );
+}
+
+/// A failed run is retried long after it ended: its record still holds its inputs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_failed_run_is_retried_after_an_unreferenced_file_would_expire() {
+    let rig = Rig::start(&[JOB_A]).await;
+    let file = rig.upload(&vec![7u8; 1024 * 1024]).await;
+    let first = rig
+        .start_run("strict", json!({ "docs": [file] }), json!({}))
+        .await;
+    let done = rig.ended(&first).await;
+    assert_eq!(done["state"], "failed", "{done}");
+
+    rig.c
+        .advance_all(i64::try_from(BLOB_IDLE_MS).unwrap() + 1000);
+    // Any later entry expires what nothing refers to.
+    let _other = rig.upload(b"a later file").await;
+    let retried = rig
+        .alice
+        .retry_pipeline_run(
+            &rig.app,
+            &first,
+            json!({ "limits": { "a": { "fuel": 400_000_000u64 } } }),
+        )
+        .await
+        .unwrap();
+    let done = rig.ended(retried["run"].as_str().unwrap()).await;
+    assert_eq!(done["state"], "succeeded", "{done}");
 }
 
 /// Running out of fuel is deterministic: the item fails after one attempt instead of being retried
@@ -2450,6 +2594,21 @@ async fn validate_against_a_release_uses_its_methods_and_caps() {
     assert_eq!(
         error_keys(&missing),
         [("steps.a.method".to_owned(), "UNKNOWN_METHOD".to_owned())]
+    );
+
+    // An input that declares more files than a start takes is refused before it ships.
+    let wide = STILL_OK.replace(
+        "steps:",
+        "inputs:\n  docs: { kind: files, maxItems: 1025 }\nsteps:",
+    );
+    let wide = rig.alice.validate_pipeline(against(&wide)).await.unwrap();
+    assert_eq!(
+        error_keys(&wide),
+        [(
+            "inputs.docs.maxItems".to_owned(),
+            "BAD_MAX_ITEMS".to_owned()
+        )],
+        "{wide}"
     );
 
     let ok = rig

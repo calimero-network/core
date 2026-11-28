@@ -152,6 +152,56 @@ the capability sheet (outbound, frontend origins, interfaces, methods,
 events, timers, the state version each side declares, build) and takes the owner's passkey there
 ([The consent page](/protocol/consent-page/)).
 
+### Pinned instances
+
+A release whose signed manifest declares `lineage: pinned` pins the instances
+created from it, or upgraded into it, to its package and its publisher's key:
+the record's `lineage` names both and its `floor`, the newest version the
+instance has been judged at (raised by every move that applies, never
+lowered), and nothing clears it, a later release that declares nothing
+included. An upgrade that pins an instance is red (`pinsLineage`), and the
+consent page says so before the owner approves it. Such an instance moves only
+to a release of that package, still signed by that key, whose version is no
+older than its floor or the release it runs (read as semver), whatever is
+installed or uninstalled meanwhile. Another package, the operator's
+catalog and a raw bundle are refused `409 OUTSIDE_LINEAGE`, an older release
+`409 LINEAGE_OLDER_RELEASE`, before the step-up. Every path is judged again
+before the upgrade reaches the app's group (an organization's or publisher's
+run, an update on its own, the operator's upgrade where it holds app
+upgrades: no one is exempt), since the group runs `__upgrade` before the
+directory logs `UpgradeApp`, and `UpgradeApp` is judged once more where it
+applies. Who approves the upgrade is unchanged: the lineage says only where it
+may go.
+
+The app's group switches code before the directory records the upgrade, so a
+switch whose record never followed (a crash, a refusal at apply) leaves the
+group ahead: a later upgrade judged on the recorded code is refused
+`BundleMoved`, which names the bundle the group runs. Upgrading to that release
+repairs it: nothing runs, the record catches up and no restore point is taken.
+If that release was uninstalled meanwhile, install it again first (or undo, or
+restore); the directory knows only what it recorded, so it cannot keep that
+release installed for the group.
+
+An undo, the one move to an older release, goes back only along the lineage:
+it returns code and state together to the restore point, so the older code
+sees only state it already held, but undoing the upgrade that pinned an
+instance from another package is refused `409 OUTSIDE_LINEAGE`. The operator's
+restore takes a backup only when a release of the lineage ships both its
+bundle and its compute component, and never one older than the instance's
+floor (`409 LINEAGE_OLDER_RELEASE`), whoever signs it: a pinned store is not
+rolled back, and a fix ships as a newer release. The operator's signature names
+the bundle and compute component the restore runs. A holder's import keeps the
+pin, takes it again from the record's release in the slice where the record
+lost it, and is refused where this cluster holds that package under another
+publisher, or not at all. It raises the floor to the release the record runs;
+a floor that is missing or does not parse takes that release's version, and
+with no version that parses the import is refused. A floor is never set to a
+version that does not parse. Every one of them, and moving the instance to
+another organization, keeps the record's `lineage`, and its floor only rises.
+
+A pinning release is installed only from cluster version 1.0.0-rc.39
+(`409 FEATURE_NOT_ACTIVE` below it), and must name a semver version.
+
 ## What an upgrade runs
 
 An upgrade is **code only**: the app's state stays as the old code wrote it,
@@ -254,6 +304,7 @@ an update **red** when any of these holds, and **green** otherwise:
 | The app or a member declares another state version (`stateVersionChanged`) | No migration runs, so the new code reads data in a shape it may not expect |
 | A member with egress joins or leaves the unit (`memberAdded`, `memberRemoved`) | A joining member brings its own destinations; one that leaves is no longer upgraded under this consent |
 | A release newly calls a method of another app as the person (`delegatedMethodsAdded`) | A new way to act as the user |
+| The app or a member, not pinned yet, moves into a release declaring `lineage: pinned` (`pinsLineage`) | From then on it moves only to newer releases of that package by the same publisher ([Pinned instances](#pinned-instances)) |
 
 New and removed methods are reported (`newMethods`, `removedMethods`) but do not
 make an update red. The class decides how an update applies: a red one waits
@@ -272,10 +323,10 @@ the members it has, as they run when it moves; in a unit's run the instance
 carries the whole unit's class, its members moving to the run's targets, and
 each member its own). Apply cannot read a release's ABI (it is in the `.mpk`), but the
 log holds each release's pinned signer, its `outbound` prefixes, its secrets'
-hosts. Apply classifies the move again from
+hosts, whether it pins its instances. Apply classifies the move again from
 those (`SystemState::check_class`) and refuses, `409 UPGRADE_CLASS_MISMATCH`, a
 class that leaves out a reason the log shows (a new signer, a destination no
-release before reached), or that the classifier could never answer (red without
+release before reached, a pin), or that the classifier could never answer (red without
 a reason, green with one). So no node can log a red update as green. What the
 log cannot show (a state version, a method called as the person) is the
 proposer's to say. A move the log cannot rebuild (a release the app or a member
@@ -797,6 +848,8 @@ the cluster's system log; the other nodes go on.
 | `heldTeamGrants` | No entry: a rule `SetTeamMember`, `SetTeamMembers`, `SetCapabilities` and `SetDefaultCapabilities` apply from the logged version. Below admin, a team's row, a row's capabilities and a team's default are set only on a team the actor sees, and grant only capabilities the actor holds organization-wide, as an invite's. An earlier release would apply what this one refuses | 1.0.0-rc.38 |
 | `inviteCreatorStanding` | No entry: a rule `RedeemInvite` (and a sign-up with an organization invite) and `RedeemAppInvite` apply from the logged version. An organization invite whose creator is no longer a member, is below its role, or no longer sees a team it names gives nothing; an instance invite whose creator no longer manages the instance's grants names nobody. An earlier release would apply it | 1.0.0-rc.38 |
 | `backupKeyApprovers` | No entry: a rule `SetBackupKey` applies from the logged version. An organization's backup key is set only by its owner and admins, who approve its upgrades. An earlier release would take an org-wide `MANAGE_APPLICATION` holder's | 1.0.0-rc.38 |
+| `xcallKeepsQueue` | `keepQueue` on a run's outcome in an app's log: an xcall past a full outbox goes to the dead letters alone and the queued messages stay; an earlier release ignores the field and would skip every queued message. Below it an entry applies as before | 1.0.0-rc.39 |
+| `meteredBlobs` | `componentBlob` with `metered` in an app's log: an upload charged to the app's organization, whose record keeps the charge and gives it back when the blob is forgotten; an earlier release ignores the field and would never give it back. Below it uploads are not charged | 1.0.0-rc.39 |
 | `ownerApprovedUpgrades` | `UpgradeApp`, `StartUpgradeRun` and `CreateApiKey` with `owner_approves`: only an owner or admin of the app's organization upgrades it, starts a run of it or makes and uses an upgrade key for it; an earlier release ignores the field and would apply a member's, a team lead's or a publisher's upgrade where a later one refuses it. Once the logged cluster version brings it, an entry without the flag is judged by it too | 1.0.0-rc.33 |
 | `upgradeInDeployment` | `UpgradeApp` with `in_deployment`: an instance from a deployment moves only to the release its deployment offers; an earlier release ignores the field and would move it where a later one refuses | 1.0.0-rc.32 |
 | `expireProofs` | `ExpireProofs`, the system leader's one-time mark after which a sign-in's or sign-up's proof is forgotten once the session it opened expires (at a later entry's own time), and a sign-in whose session expired by then is refused; an earlier release cannot read it, and would keep every proof. The leader writes it only once the logged cluster version brings it | 1.0.0-rc.31 |
@@ -810,9 +863,10 @@ the cluster's system log; the other nodes go on.
 
 The rc.15 features were added before the gate: on a cluster whose every node
 runs rc.15 or newer they work as before, and they are refused only while a
-node on rc.14 or older replicates the log. App groups have no gated entry
-yet; a new app log entry gets a feature the same way, and the cluster version
-bounds every replica, since no node below it joins.
+node on rc.14 or older replicates the log. An app log entry is gated the
+same way (`meteredBlobs` is the first): the API writes the field only once the
+logged version brings it, and the cluster version bounds every replica, since no
+node below it joins.
 
 ## In `calimero-node`
 
@@ -837,6 +891,15 @@ Code: `system/cluster_version.rs`, `node/cluster_version.rs`.
 A component upgrade is the app-log entry `componentUpgrade`, which swaps the bundle; a named `migrate` is refused `MigrationsNotSupported`.
 The directory records the new bundle only once the upgrade succeeded.
 The consent page's `stateVersion` comes from each side's `calimero:abi`.
+
+### Pinned instances
+
+Code: `system.rs` (`SystemState::within_lineage`, `SystemState::lineage_of`), `system/apps.rs`, `api/upgrades.rs`.
+
+- `PackageVersion::lineage` records the manifest's `lineage`; `Feature::PinnedLineage` gates installing a pinning release.
+- `CreateApp` and `UpgradeApp` set `AppRecord::lineage` from the release that governs the instance, and never clear it; the classifier's `pinsLineage` (`Release::pinned`) is judged at apply from `PackageVersion::lineage`.
+- `on_lineage` (package and signer, any order) judges an undo; `ships_on_lineage` and `restores_older` a restore (never below the floor); `imported_lineage` an `ImportHolder`'s record.
+- `within_lineage` runs before the step-up, in `run_upgrade` before `__upgrade` reaches the group, and in `UpgradeApp`'s apply, without an operator exemption.
 
 ### Runtime requirements
 

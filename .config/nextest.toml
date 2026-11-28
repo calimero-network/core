@@ -13,10 +13,13 @@
 # The longest tests start first, so they run beside the rest instead of after them:
 # the guest builder's own tests compile components from an empty cache (up to 170 s
 # on CI), and the SDK's compile-fail cases run rustc. Started last, two of them
-# held one shard about four minutes past the others. Only `priority` is set here,
-# so the overrides below still apply to every test.
+# held one shard about four minutes past the others. They also run alone: a build
+# saturates the runner's cores for minutes, and the cluster tests beside it took 25 s
+# or more for 12 s of work, past the 30 s kill of CI's profile. Only `priority` and
+# `threads-required` are set here, so the overrides below still apply to every test.
 filter = 'package(calimero-app-build) | binary_id(calimero-sdk::compile_fail)'
 priority = 100
+threads-required = "num-test-threads"
 
 [[profile.default.overrides]]
 # Cluster plus job node, and multi-MiB sealed inputs written through an app.

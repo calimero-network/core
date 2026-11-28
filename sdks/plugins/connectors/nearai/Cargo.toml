@@ -8,6 +8,16 @@ repository.workspace = true
 license.workspace = true
 publish = false
 
+[package.metadata.calimero.connector]
+outbound = ["https://cloud-api.near.ai/v1/chat/completions"]
+[package.metadata.calimero.connector.secrets.NEAR_AI_API_KEY]
+host = "cloud-api.near.ai"
+paths = ["/v1/chat/completions"]
+header = "authorization"
+format = "Bearer {}"
+description = "NEAR AI Cloud API key"
+required = true
+
 [dependencies]
 calimero-sdk.workspace = true
 hex.workspace = true

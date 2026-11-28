@@ -58,6 +58,9 @@ sdks/
   its path from the SDK's directory (`../../../docs/...`). A change to a
   client's API updates its pages there in the same pull request.
 - **Examples** live in each SDK's own `examples/` and are built by its CI job.
+- **Connectors** (`plugins/connectors/<provider>/`) are workspace crates, not SDKs:
+  no `sdk.json`, named `calimero-connector-<provider>`, shipped by core's git tag.
+  Adding one: `docs/src/content/docs/build/guides/connectors.mdx`.
 - **Tests run only when they can be affected**: `scripts/sdks.py scope` maps a
   change to the SDKs it reaches (own directory, a dependency, an `inputs` file,
   its workflow, VERSION, the shared machinery). `.github/workflows/sdks.yml`

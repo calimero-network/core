@@ -8,8 +8,11 @@ import type { SignedNodeRelease } from '../sealed/release.js';
 import { transportKeyBinding } from '../sealed/sealed.js';
 import type { DcapCollateral, DcapVerifiedReport } from '../sealed/verify.js';
 import {
+  INTERVAL_QUOTE_MAX_AGE_SECS,
   MOCK_QUOTE_HEADER,
   claimedRelease,
+  intervalKeyBinding,
+  intervalMessage,
   fetchAttestedKey,
   freshCollateral,
   Unanswered,
@@ -519,5 +522,113 @@ describe("the default mirrors follow the page's Calimero Cloud", () => {
     await expect(result).resolves.toEqual(TRANSPORT_KEY);
     expect(mirrorAsked).toEqual(['https://mirror.example/api/tee/node-releases/2.3.87']);
     expect(dcapCalls.getCollateral.map((a) => a[0])).toEqual(['https://pccs.example']);
+  });
+});
+
+interface Interval {
+  /** Sign this nonce instead of the one asked for. */
+  signedNonce?: Uint8Array;
+  /** Bind this key in the quote instead of the one that signs. */
+  boundKey?: Uint8Array;
+  /** Seconds the quote is old (by the node's clock, which the test shares). */
+  age?: number;
+  /** Flip a bit of the signature. */
+  badSignature?: boolean;
+}
+
+/** A development node answering the interval form: a mock quote over its interval key, and that key's signature over the request. */
+async function intervalNode(o: Interval = {}): Promise<{ fetchImpl: typeof fetch; queries: URLSearchParams[] }> {
+  const pair = (await crypto.subtle.generateKey('Ed25519', true, ['sign', 'verify'])) as CryptoKeyPair;
+  const key = new Uint8Array(await crypto.subtle.exportKey('raw', pair.publicKey));
+  const quoteNonce = crypto.getRandomValues(new Uint8Array(32));
+  const issuedAt = Math.floor(Date.now() / 1000) - (o.age ?? 0);
+  const report = new Uint8Array(64);
+  report.set(quoteNonce);
+  report.set(await intervalKeyBinding(TRANSPORT_KEY, o.boundKey ?? key, issuedAt), 32);
+  const quote = new Uint8Array([...new TextEncoder().encode(MOCK_QUOTE_HEADER), ...report]);
+  const queries: URLSearchParams[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    const params = new URL(String(input)).searchParams;
+    queries.push(params);
+    const nonce = o.signedNonce ?? fromHex(params.get('nonce') ?? '', 'nonce', 32);
+    const signature = new Uint8Array(await crypto.subtle.sign('Ed25519', pair.privateKey, intervalMessage(nonce, new Uint8Array(32), TRANSPORT_KEY)));
+    if (o.badSignature) signature[40] ^= 1;
+    return new Response(
+      JSON.stringify({
+        quote: btoa(String.fromCharCode(...quote)),
+        transportKey: hex(TRANSPORT_KEY),
+        appHash: hex(new Uint8Array(32)),
+        nonce: params.get('nonce'),
+        release: { version: '9.9.9', profile: 'debug' },
+        cluster: 'claimed',
+        node: 1,
+        mock: true,
+        interval: { key: hex(key), quoteNonce: hex(quoteNonce), issuedAt, signature: hex(signature) },
+      }),
+    );
+  }) as typeof fetch;
+  return { fetchImpl, queries };
+}
+
+describe('the interval form (one quote per interval, each nonce signed by the key it binds)', () => {
+  it('is asked for, and attests the transport key', async () => {
+    const n = await intervalNode();
+    await expect(fetchAttestedKey(BASE, { allowMock: true }, n.fetchImpl)).resolves.toEqual(TRANSPORT_KEY);
+    expect(n.queries[0].get('form')).toBe('interval');
+  });
+
+  it('refuses a signature over another nonce', async () => {
+    const n = await intervalNode({ signedNonce: new Uint8Array(32).fill(9) });
+    await expect(fetchAttestedKey(BASE, { allowMock: true }, n.fetchImpl)).rejects.toThrow(/did not sign this nonce/);
+  });
+
+  it('refuses a quote older than the maximum age', async () => {
+    const n = await intervalNode({ age: INTERVAL_QUOTE_MAX_AGE_SECS + 30 });
+    await expect(fetchAttestedKey(BASE, { allowMock: true }, n.fetchImpl)).rejects.toThrow(/old, more than/);
+  });
+
+  it('refuses a quote dated ahead of this clock', async () => {
+    const n = await intervalNode({ age: -600 });
+    await expect(fetchAttestedKey(BASE, { allowMock: true }, n.fetchImpl)).rejects.toThrow(/ahead of this clock/);
+  });
+
+  it('refuses a quote that binds another key than the one that signed', async () => {
+    const n = await intervalNode({ boundKey: new Uint8Array(32).fill(3) });
+    await expect(fetchAttestedKey(BASE, { allowMock: true }, n.fetchImpl)).rejects.toThrow(/does not bind/);
+  });
+
+  it('refuses a bad signature', async () => {
+    const n = await intervalNode({ badSignature: true });
+    await expect(fetchAttestedKey(BASE, { allowMock: true }, n.fetchImpl)).rejects.toThrow(/did not sign this nonce/);
+  });
+
+  it('judges a real quote over the quote nonce and the interval binding', async () => {
+    const n = await intervalNode();
+    const seen: Array<{ nonce: string; reportDataSuffix: string }> = [];
+    const realQuote = (async (input: RequestInfo | URL) => {
+      const doc = await (await n.fetchImpl(input)).json();
+      return new Response(JSON.stringify({ ...doc, quote: REAL_QUOTE, mock: false }));
+    }) as typeof fetch;
+    const policy: NodePolicy = {
+      verifyQuote: async (args) => {
+        seen.push(args);
+        return true;
+      },
+    };
+    await expect(fetchAttestedKey(BASE, policy, realQuote)).resolves.toEqual(TRANSPORT_KEY);
+    const doc = await (await n.fetchImpl(`${BASE}/attestation?nonce=${'00'.repeat(32)}`)).json();
+    expect(seen[0].nonce).toBe(doc.interval.quoteNonce);
+    expect(seen[0].reportDataSuffix).toBe(hex(await intervalKeyBinding(TRANSPORT_KEY, fromHex(doc.interval.key, 'key', 32), doc.interval.issuedAt)));
+  });
+
+  it('still attests a node that answers the per-request quote (a node before the interval form)', async () => {
+    const queries: URLSearchParams[] = [];
+    const old = mockNode();
+    const recorded = (async (input: RequestInfo | URL) => {
+      queries.push(new URL(String(input)).searchParams);
+      return old(input);
+    }) as typeof fetch;
+    await expect(fetchAttestedKey(BASE, { allowMock: true }, recorded)).resolves.toEqual(TRANSPORT_KEY);
+    expect(queries[0].get('form')).toBe('interval');
   });
 });

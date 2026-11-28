@@ -38,14 +38,26 @@ async fn new_session(
     consent: Value,
 ) -> ApiResult<Json<SessionAnswer>> {
     let origin = from.as_ref().and_then(AppOrigin::registered);
+    let registration = from
+        .as_ref()
+        .map(|a| a.registration.clone())
+        .unwrap_or_default();
     let app = from.map(|a| a.package);
     if let (Some(package), Some(origin)) = (&app, &origin) {
         info!(%package, %origin, "a session opened on a registered origin");
     }
-    let token = session_token_for(node, account, passkey, app.clone(), origin.clone(), &new)?;
+    let token = session_token_for(
+        node,
+        account,
+        passkey,
+        app.clone(),
+        origin.clone(),
+        registration.clone(),
+        &new,
+    )?;
     let record = RefreshRecord {
         opened_at: now_secs(),
-        ..new.record(account, passkey, app, origin)
+        ..new.record(account, passkey, app, origin, registration)
     };
     let _ok = node
         .sys_write(&SystemCmd::CreateRefresh {
@@ -135,10 +147,12 @@ async fn begin_rp_id(node: &Node, origin: Option<&str>) -> Result<String, ApiErr
 }
 
 /// Refuse a sign-up the cluster's policy would refuse (`403
-/// SIGN_UP_REFUSED`), before a challenge is made or spent. A refusal is
+/// SIGN_UP_REFUSED`), or this node's sign-up rate (`429 RATE_LIMITED`,
+/// [`super::SignUpLimit`]), before a challenge is made or spent. A refusal is
 /// judged again on fresh state, so a replica behind a policy change or a new
 /// invite does not refuse what the log would take; `apply` decides in the end.
 async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiError> {
+    node.sign_up_limit.check(Instant::now())?;
     let key = invite.map(crate::proof::invite_key);
     let now = now_secs();
     let judge = |s: &SystemState| s.admits_key(key.as_deref().map(|k| (k, now))).map(|_| ());
@@ -292,10 +306,20 @@ async fn register_finish(
         .and_then(|a| a.rp_id.clone())
         .unwrap_or_else(|| node.config.rp_id.clone());
     let origin = app.as_ref().and_then(AppOrigin::registered);
+    let registration = app
+        .as_ref()
+        .map(|a| a.registration.clone())
+        .unwrap_or_default();
     let app = app.map(|a| a.package);
     let grant = RefreshGrant {
         hash: session.hash(),
-        record: session.record(&account.account_id, &cred.id, app.clone(), origin.clone()),
+        record: session.record(
+            &account.account_id,
+            &cred.id,
+            app.clone(),
+            origin.clone(),
+            registration.clone(),
+        ),
     };
     let statement = crate::proof::Statement::new(
         &format!("account:{}", account.account_id),
@@ -313,6 +337,7 @@ async fn register_finish(
             session,
             app,
             origin,
+            registration,
         },
         sealed.map(|Extension(s)| s),
     )?;
@@ -340,6 +365,7 @@ async fn sign_up_confirmed(
         session,
         app,
         origin,
+        registration,
         ..
     } = take_pending(node, &confirm.challenge_id).await?
     else {
@@ -358,7 +384,11 @@ async fn sign_up_confirmed(
     // origin itself, for one), or the cluster's.
     let from = claimed_app(node, &confirm.assertion.client_data_json)
         .await
-        .filter(|a| app.as_deref() == Some(a.package.as_str()) && a.registered() == origin);
+        .filter(|a| {
+            app.as_deref() == Some(a.package.as_str())
+                && a.registered() == origin
+                && a.registration == registration
+        });
     if origin.is_some() && from.is_none() {
         return Err(ApiError::unauthenticated(
             "confirm the sign-up on the origin it began on",
@@ -379,6 +409,7 @@ async fn sign_up_confirmed(
         &passkey,
         app.clone(),
         origin.clone(),
+        registration.clone(),
         &session,
     )?;
     let consent = crate::proof::Consent {
@@ -406,6 +437,8 @@ async fn sign_up_confirmed(
             org_id: typed_id::<16>(),
             release: Some(node.own_release()),
         });
+    // Spent once the new passkey has signed the account, whatever the log then answers.
+    node.sign_up_limit.take(Instant::now())?;
     let invite = invite.map(|token| crate::system::SignUpRedemption {
         invite_key: crate::proof::invite_key(token),
         now,
@@ -418,7 +451,7 @@ async fn sign_up_confirmed(
             invite,
             refresh: Some(RefreshGrant {
                 hash: session.hash(),
-                record: session.record(&account_id, &passkey, app, origin),
+                record: session.record(&account_id, &passkey, app, origin, registration),
             }),
             consent: super::consent_value(&consent)?,
             at: now,
@@ -775,7 +808,7 @@ async fn refresh(
         // Judged on the cluster's latest state: a removal made through
         // another node holds here at once.
         let _caught_up = node.sys_fresh().await;
-        if !origin_holds(&node, rec.app.as_deref(), origin) {
+        if !origin_holds(&node, rec.app.as_deref(), origin, &rec.registration) {
             return Err(origin_gone());
         }
     }
@@ -790,6 +823,7 @@ async fn refresh(
         passkey: rec.passkey.clone(),
         app: rec.app.clone(),
         origin: rec.origin.clone(),
+        registration: rec.registration.clone(),
         key: crate::proof::refresh_key(&new_refresh),
         opened_at: rec.opened_at,
         holder: rec.holder.clone(),
@@ -848,6 +882,7 @@ async fn refresh(
             passkey: rec.passkey,
             app: rec.app,
             origin: rec.origin,
+            registration: rec.registration,
             node: 0,
             key: String::new(),
         },
@@ -909,6 +944,7 @@ async fn kept_refresh(
             passkey: rec.passkey.clone(),
             app: rec.app.clone(),
             origin: rec.origin.clone(),
+            registration: rec.registration.clone(),
             node: 0,
             key: String::new(),
         },
@@ -1113,15 +1149,26 @@ fn activity_entry(e: &crate::types::ActivityEntry) -> ActivityView {
 async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json<AccountView>> {
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
-    let (acc, orgs, (recovery, pending)) = node.sys(|s| {
+    // An instance's own site learns the account's name and that instance's organization alone.
+    let (acc, orgs, (recovery, pending), site) = node.sys(|s| {
         let acc = s.accounts.get(&account).cloned();
+        let site = p
+            .site_instance(s)
+            .map(|app| s.apps.get(&app).map(|a| a.org.clone()));
         let recovery = (
-            s.recovery_keys.values().any(|a| *a == account),
-            s.account_recoveries.get(&account).map(|p| p.view(&account)),
+            site.is_none() && s.recovery_keys.values().any(|a| *a == account),
+            s.account_recoveries
+                .get(&account)
+                .filter(|_| site.is_none())
+                .map(|p| p.view(&account)),
         );
         let orgs: Vec<AccountOrg> = s
             .orgs
             .values()
+            .filter(|o| {
+                site.as_ref()
+                    .is_none_or(|org| org.as_ref() == Some(&o.org_id))
+            })
             .filter_map(|o| {
                 o.role(&account).map(|role| AccountOrg {
                     org_id: o.org_id.clone(),
@@ -1131,7 +1178,7 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json
                 })
             })
             .collect();
-        (acc, orgs, recovery)
+        (acc, orgs, recovery, site)
     });
     let acc = acc.ok_or_else(|| ApiError::not_found("account"))?;
     Ok(Json(AccountView {
@@ -1140,6 +1187,7 @@ async fn me(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json
         passkeys: acc
             .passkeys
             .iter()
+            .filter(|_| site.is_none())
             .map(|c| {
                 let times = acc.passkey_times.get(&c.id);
                 AccountPasskey {
@@ -1817,6 +1865,7 @@ async fn alias_delete(
     Path(alias): Path<String>,
 ) -> ApiResult {
     let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
     p.settings_write()?;
     let account = p.account()?;
     let _ok = node
@@ -1834,7 +1883,9 @@ async fn alias_get(
     headers: HeaderMap,
     Path(alias): Path<String>,
 ) -> ApiResult<Json<AliasView>> {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let app = node
         .sys(|s| s.accounts.get(&account)?.aliases.get(&alias).cloned())
         .ok_or_else(|| ApiError::not_found("no such alias"))?;
@@ -1845,7 +1896,9 @@ async fn alias_list(
     State(node): State<Arc<Node>>,
     headers: HeaderMap,
 ) -> ApiResult<Json<AliasList>> {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let aliases = node.sys(|s| {
         s.accounts
             .get(&account)
@@ -1885,7 +1938,9 @@ async fn passkey_label(
 /// are the organization's (`GET /orgs/{org}/usage`). Sums of 64-bit counters are
 /// decimal strings: `bundleBytes`, `developerFuelToday`, `developerWritesToday`.
 async fn usage(State(node): State<Arc<Node>>, headers: HeaderMap) -> ApiResult<Json<AccountUsage>> {
-    let account = signed_in(&node, &headers).await?.account()?;
+    let p = signed_in(&node, &headers).await?;
+    p.beyond_instance(&node)?;
+    let account = p.account()?;
     let today = node
         .developer_usage_today(&crate::usage::account_payer(&account))
         .await;

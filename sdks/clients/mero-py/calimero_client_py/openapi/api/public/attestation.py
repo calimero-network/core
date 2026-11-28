@@ -8,6 +8,7 @@ from ...types import Response, UNSET
 from ... import errors
 
 from ...models.attestation_doc import AttestationDoc
+from ...models.attestation_form import AttestationForm
 from ...models.attestation_purpose import AttestationPurpose
 from ...models.error import Error
 from ...types import UNSET, Unset
@@ -21,6 +22,7 @@ def _get_kwargs(
     app: Union[Unset, str] = UNSET,
     app_hash: Union[Unset, str] = UNSET,
     purpose: Union[Unset, AttestationPurpose] = UNSET,
+    form: Union[Unset, AttestationForm] = UNSET,
 ) -> dict[str, Any]:
 
     params: dict[str, Any] = {}
@@ -36,6 +38,12 @@ def _get_kwargs(
         json_purpose = purpose.value
 
     params["purpose"] = json_purpose
+
+    json_form: Union[Unset, str] = UNSET
+    if not isinstance(form, Unset):
+        json_form = form.value
+
+    params["form"] = json_form
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -95,6 +103,7 @@ def sync_detailed(
     app: Union[Unset, str] = UNSET,
     app_hash: Union[Unset, str] = UNSET,
     purpose: Union[Unset, AttestationPurpose] = UNSET,
+    form: Union[Unset, AttestationForm] = UNSET,
 ) -> Response[Union[AttestationDoc, Error]]:
     """The node's attestation
 
@@ -103,8 +112,11 @@ def sync_detailed(
     `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an
     app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an
     unknown id does, so it never says that a private app exists. A client checks it before it seals
-    anything to the key. The node makes one quote at a time and lets a few requests wait for it: past
-    that `503 BUSY` with `Retry-After: 1`, ask again then.
+    anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once
+    a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote
+    is made for the request; a node with no current interval quote answers as without it. Otherwise the
+    node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with
+    `Retry-After: 1`, ask again then.
 
     **Who:** anyone.
 
@@ -113,6 +125,7 @@ def sync_detailed(
         app (Union[Unset, str]):
         app_hash (Union[Unset, str]):
         purpose (Union[Unset, AttestationPurpose]):
+        form (Union[Unset, AttestationForm]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -127,6 +140,7 @@ def sync_detailed(
         app=app,
         app_hash=app_hash,
         purpose=purpose,
+        form=form,
     )
 
     response = client.get_httpx_client().request(
@@ -143,6 +157,7 @@ def sync(
     app: Union[Unset, str] = UNSET,
     app_hash: Union[Unset, str] = UNSET,
     purpose: Union[Unset, AttestationPurpose] = UNSET,
+    form: Union[Unset, AttestationForm] = UNSET,
 ) -> Optional[Union[AttestationDoc, Error]]:
     """The node's attestation
 
@@ -151,8 +166,11 @@ def sync(
     `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an
     app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an
     unknown id does, so it never says that a private app exists. A client checks it before it seals
-    anything to the key. The node makes one quote at a time and lets a few requests wait for it: past
-    that `503 BUSY` with `Retry-After: 1`, ask again then.
+    anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once
+    a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote
+    is made for the request; a node with no current interval quote answers as without it. Otherwise the
+    node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with
+    `Retry-After: 1`, ask again then.
 
     **Who:** anyone.
 
@@ -161,6 +179,7 @@ def sync(
         app (Union[Unset, str]):
         app_hash (Union[Unset, str]):
         purpose (Union[Unset, AttestationPurpose]):
+        form (Union[Unset, AttestationForm]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -176,6 +195,7 @@ def sync(
         app=app,
         app_hash=app_hash,
         purpose=purpose,
+        form=form,
     ).parsed
 
 
@@ -186,6 +206,7 @@ async def asyncio_detailed(
     app: Union[Unset, str] = UNSET,
     app_hash: Union[Unset, str] = UNSET,
     purpose: Union[Unset, AttestationPurpose] = UNSET,
+    form: Union[Unset, AttestationForm] = UNSET,
 ) -> Response[Union[AttestationDoc, Error]]:
     """The node's attestation
 
@@ -194,8 +215,11 @@ async def asyncio_detailed(
     `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an
     app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an
     unknown id does, so it never says that a private app exists. A client checks it before it seals
-    anything to the key. The node makes one quote at a time and lets a few requests wait for it: past
-    that `503 BUSY` with `Retry-After: 1`, ask again then.
+    anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once
+    a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote
+    is made for the request; a node with no current interval quote answers as without it. Otherwise the
+    node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with
+    `Retry-After: 1`, ask again then.
 
     **Who:** anyone.
 
@@ -204,6 +228,7 @@ async def asyncio_detailed(
         app (Union[Unset, str]):
         app_hash (Union[Unset, str]):
         purpose (Union[Unset, AttestationPurpose]):
+        form (Union[Unset, AttestationForm]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -218,6 +243,7 @@ async def asyncio_detailed(
         app=app,
         app_hash=app_hash,
         purpose=purpose,
+        form=form,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -232,6 +258,7 @@ async def asyncio(
     app: Union[Unset, str] = UNSET,
     app_hash: Union[Unset, str] = UNSET,
     purpose: Union[Unset, AttestationPurpose] = UNSET,
+    form: Union[Unset, AttestationForm] = UNSET,
 ) -> Optional[Union[AttestationDoc, Error]]:
     """The node's attestation
 
@@ -240,8 +267,11 @@ async def asyncio(
     `purpose=orchestrator`, the cluster identity this replica holds) to `nonce`; `app`/`appHash` bind an
     app's bundle hash: `app` only an app anyone may reach (public), any other answering `404` as an
     unknown id does, so it never says that a private app exists. A client checks it before it seals
-    anything to the key. The node makes one quote at a time and lets a few requests wait for it: past
-    that `503 BUSY` with `Retry-After: 1`, ask again then.
+    anything to the key. `form=interval` (without `purpose`) answers from the quote the node makes once
+    a minute over its interval key, with `interval`: that key's signature over this nonce, so no quote
+    is made for the request; a node with no current interval quote answers as without it. Otherwise the
+    node makes one quote at a time and lets a few requests wait for it: past that `503 BUSY` with
+    `Retry-After: 1`, ask again then.
 
     **Who:** anyone.
 
@@ -250,6 +280,7 @@ async def asyncio(
         app (Union[Unset, str]):
         app_hash (Union[Unset, str]):
         purpose (Union[Unset, AttestationPurpose]):
+        form (Union[Unset, AttestationForm]):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -266,5 +297,6 @@ async def asyncio(
             app=app,
             app_hash=app_hash,
             purpose=purpose,
+            form=form,
         )
     ).parsed

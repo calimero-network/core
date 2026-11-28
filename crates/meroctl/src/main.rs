@@ -28,6 +28,8 @@ mod cloud;
 mod context;
 mod deployment;
 mod dev;
+#[cfg(test)]
+mod doc_commands;
 mod env;
 mod file;
 mod group;
@@ -562,7 +564,7 @@ async fn main() -> eyre::Result<()> {
             to_json(
                 &env.client
                     .public()
-                    .attestation(&nonce, None, None, None)
+                    .attestation(&nonce, None, None, None, None)
                     .await?,
             )?
         }

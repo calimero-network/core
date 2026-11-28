@@ -139,6 +139,12 @@ pub struct NodeArgs {
     #[arg(long, env = "MEROD_SNAPSHOT_SCALE_BYTES")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot_scale_bytes: Option<u64>,
+    /// Accounts this node creates per minute [default: 30], a minute's worth at once; past
+    /// it a sign-up is refused `429 RATE_LIMITED` with `Retry-After`. Account creation is a
+    /// replicated system write, so each node bounds its rate; invited sign-ups count.
+    #[arg(long, env = "MEROD_SIGN_UPS_PER_MINUTE", value_parser = clap::value_parser!(u32).range(1..))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sign_ups_per_minute: Option<u32>,
     /// The passkey (WebAuthn) relying party id [default: localhost]. It must
     /// be a registrable suffix of every host that runs a passkey ceremony:
     /// each `--origins` host and `--apps-domain` must equal it or be a
@@ -422,6 +428,7 @@ impl NodeArgs {
             job_slots: self.job_slots.or(base.job_slots),
             sys_read_lease_ms: self.sys_read_lease_ms.or(base.sys_read_lease_ms),
             snapshot_scale_bytes: self.snapshot_scale_bytes.or(base.snapshot_scale_bytes),
+            sign_ups_per_minute: self.sign_ups_per_minute.or(base.sign_ups_per_minute),
             storage_key: self.storage_key.or(base.storage_key),
             rp_id: self.rp_id.or(base.rp_id),
             origins: list(self.origins, base.origins),

@@ -264,10 +264,38 @@ pub enum Feature {
     /// this one refuses, holds it below the version; so are the three quotas, which an earlier
     /// release drops, written only from it.
     StateCaps,
+    /// `componentBlob { metered }` in an app's log: an uploaded blob's bytes are charged to the
+    /// app's payer (`ChargeFileBytes`) and given back when the app forgets it
+    /// (`component::blobs::BlobRecord::metered`). An earlier release ignores the field and would
+    /// keep no record of the charge, so it would never give it back. Below it, uploads are not
+    /// charged. No system entry names it: the API reads the logged version before an upload.
+    MeteredBlobs,
+    /// A component app's xcall carries its chain's budget (`XcallOut::budget`), and apply
+    /// dead-letters one sent with none left
+    /// ([Chain budget](https://calimero-network.github.io/core/protocol/xcall/#chain-budget)).
+    /// An app's entry, not a system one: an earlier release ignores the field and would
+    /// queue the message.
+    XcallBudget,
+    /// `InstallPackage` of a release that declares `lineage: pinned`
+    /// (`PackageVersion::lineage`): an earlier release drops the field, so its replicas would
+    /// let an instance of it move off its package, signer or forward order. Also an
+    /// `ImportHolder` bringing a lineage (`brings_lineage`), which it would drop, and
+    /// `UpgradeApp` and `ApproveUpgrade` whose class carries a `pinsLineage` reason.
+    PinnedLineage,
+    /// `AddAppOrigin` and `RemoveAppOrigin`: an earlier release cannot read them, so its
+    /// replicas would keep no instance's origin; nor `AddPackageOrigin`'s `registration`.
+    AppOrigins,
+    /// `outcome.keepQueue` in an app's entry: an xcall past a full outbox
+    /// ([`MAX_OUTBOX`](crate::component::xcall::MAX_OUTBOX)) goes to the dead letters alone
+    /// and the messages queued before it stay queued
+    /// ([Outbox](https://calimero-network.github.io/core/protocol/xcall/#outbox)). An earlier
+    /// release ignores the field and would skip every queued message. An app's entry, not a
+    /// system one: the leader writes the field from the logged version.
+    XcallKeepsQueue,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 58] = [
+pub const FEATURES: [Feature; 63] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -326,6 +354,11 @@ pub const FEATURES: [Feature; 58] = [
     Feature::DeploymentTransfer,
     Feature::SessionHolders,
     Feature::StateCaps,
+    Feature::MeteredBlobs,
+    Feature::XcallBudget,
+    Feature::PinnedLineage,
+    Feature::AppOrigins,
+    Feature::XcallKeepsQueue,
 ];
 
 impl Feature {
@@ -391,12 +424,19 @@ impl Feature {
             Self::DeploymentTransfer => "deploymentTransfer",
             Self::SessionHolders => "sessionHolders",
             Self::StateCaps => "stateCaps",
+            Self::MeteredBlobs => "meteredBlobs",
+            Self::XcallBudget => "xcallBudget",
+            Self::PinnedLineage => "pinnedLineage",
+            Self::AppOrigins => "appOrigins",
+            Self::XcallKeepsQueue => "xcallKeepsQueue",
         }
     }
 
-    /// Whether an entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
+    /// Whether a system entry carries it ([`SystemCmd::features`] names it). `HeldTeamGrants`,
     /// `InviteCreatorStanding`, `BackupKeyApprovers` and `StateCaps` are rules apply reads from
-    /// the logged version: no entry names them.
+    /// the logged version, and `MeteredBlobs`, `XcallBudget` and `XcallKeepsQueue` are fields
+    /// of an app's entry,
+    /// which the leader shapes from the logged version: no system entry names them.
     #[must_use]
     pub const fn names_an_entry(self) -> bool {
         !matches!(
@@ -405,6 +445,9 @@ impl Feature {
                 | Self::InviteCreatorStanding
                 | Self::BackupKeyApprovers
                 | Self::StateCaps
+                | Self::MeteredBlobs
+                | Self::XcallBudget
+                | Self::XcallKeepsQueue
         )
     }
 
@@ -468,7 +511,13 @@ impl Feature {
             | Self::BackupKeyApprovers
             | Self::DeploymentNeedsRecovery
             | Self::DeploymentTransfer => "1.0.0-rc.38",
-            Self::SessionHolders | Self::StateCaps => "1.0.0-rc.39",
+            Self::SessionHolders
+            | Self::StateCaps
+            | Self::MeteredBlobs
+            | Self::XcallBudget
+            | Self::PinnedLineage
+            | Self::AppOrigins
+            | Self::XcallKeepsQueue => "1.0.0-rc.39",
         }
     }
 }
@@ -694,6 +743,25 @@ fn unclassified(class: &crate::types::UpgradeClass) -> bool {
         .any(|r| matches!(r, calimero_bundle::update::Reason::Unclassified { .. }))
 }
 
+/// Whether `slice` brings a lineage ([`Feature::PinnedLineage`]): an app record pinned, or a
+/// release declaring `lineage: pinned`.
+fn brings_lineage(slice: &super::HolderSlice) -> bool {
+    slice.apps.values().any(|a| a.lineage.is_some())
+        || slice
+            .packages
+            .values()
+            .flat_map(|p| p.versions.values())
+            .any(|v| !v.lineage.is_free())
+}
+
+/// Whether `class` carries a `pinsLineage` reason ([`Feature::PinnedLineage`]).
+fn pins_lineage(class: &crate::types::UpgradeClass) -> bool {
+    class
+        .reasons
+        .iter()
+        .any(|r| matches!(r, calimero_bundle::update::Reason::PinsLineage { .. }))
+}
+
 impl SystemCmd {
     /// The features this entry uses: none for a shape every 1.0 release
     /// applies alike. Every command is listed, so a new one decides here.
@@ -747,6 +815,9 @@ impl SystemCmd {
                 if class.as_ref().is_some_and(unclassified) {
                     f.push(Feature::UnclassifiedUpdates);
                 }
+                if class.as_ref().is_some_and(pins_lineage) {
+                    f.push(Feature::PinnedLineage);
+                }
                 if *auto {
                     f.push(Feature::AutoUpdates);
                 }
@@ -762,12 +833,17 @@ impl SystemCmd {
                 from_release: Some(_),
                 ..
             } => vec![Feature::AutoUpdates],
-            Self::ApproveUpgrade { class, .. } if unclassified(class) => {
-                vec![Feature::UpgradePolicies, Feature::UnclassifiedUpdates]
+            Self::ApproveUpgrade { class, .. } => {
+                let mut f = vec![Feature::UpgradePolicies];
+                if unclassified(class) {
+                    f.push(Feature::UnclassifiedUpdates);
+                }
+                if pins_lineage(class) {
+                    f.push(Feature::PinnedLineage);
+                }
+                f
             }
-            Self::SetUpgradePolicy { .. } | Self::ApproveUpgrade { .. } => {
-                vec![Feature::UpgradePolicies]
-            }
+            Self::SetUpgradePolicy { .. } => vec![Feature::UpgradePolicies],
             Self::UndoUpgrade {
                 release_installed, ..
             } => {
@@ -844,6 +920,10 @@ impl SystemCmd {
             Self::OfferDeployment { .. }
             | Self::AcceptDeployment { .. }
             | Self::CancelDeploymentTransfer { .. } => vec![Feature::DeploymentTransfer],
+            Self::AddAppOrigin { .. } | Self::RemoveAppOrigin { .. } => vec![Feature::AppOrigins],
+            Self::AddPackageOrigin { registration, .. } if !registration.is_empty() => {
+                vec![Feature::AppOrigins]
+            }
             Self::ScopeApps {
                 apps, by_release, ..
             } => {
@@ -865,6 +945,9 @@ impl SystemCmd {
             Self::AttributeByRelease => vec![Feature::AttributeByRelease],
             Self::RequireCurrentRules => vec![Feature::CurrentRules],
             Self::ExpireProofs => vec![Feature::ExpireProofs],
+            Self::ImportHolder { slice, .. } if brings_lineage(slice) => {
+                vec![Feature::BackupKeys, Feature::PinnedLineage]
+            }
             Self::SetBackupKey { .. } | Self::ImportHolder { .. } => vec![Feature::BackupKeys],
             Self::SetTeamMembers { .. } | Self::RemoveTeamMembers { .. } => {
                 vec![Feature::TeamMembersBatch]
@@ -923,6 +1006,9 @@ impl SystemCmd {
                 }
                 if release.visibility.is_some() || !release.orgs.is_empty() {
                     f.push(Feature::PrivateReleases);
+                }
+                if !release.lineage.is_free() {
+                    f.push(Feature::PinnedLineage);
                 }
                 f
             }
@@ -1112,6 +1198,63 @@ mod tests {
     const RC37: &str = "1.0.0-rc.37";
     const RC38: &str = "1.0.0-rc.38";
     const RC39: &str = "1.0.0-rc.39";
+
+    /// An `ImportHolder` of a slice whose app record, or whose package's release, carries a
+    /// lineage: an earlier release drops both.
+    fn pinned_import(record: bool) -> SystemCmd {
+        let mut app = json!({ "appId": "a", "name": "a", "group": 2, "bundle": "b",
+            "owner": "alice", "org": "org", "replicas": [1], "createdAt": 0 });
+        let mut release = json!({ "version": "1.0.0", "mpk": "h", "mpkSize": 1,
+            "source": "upload", "services": { "": "b" }, "installedBy": "alice",
+            "installedAt": 0 });
+        if record {
+            app["lineage"] = json!({ "package": "p", "signerId": "did:key:z", "floor": "1.0.0" });
+        } else {
+            release["lineage"] = json!("pinned");
+        }
+        entry(
+            json!({ "op": "importHolder", "holder": { "kind": "org", "id": "org" },
+            "slice": { "holder": { "kind": "org", "id": "org" }, "accounts": [], "apps": { "a": app },
+                "bundles": {}, "packages": { "p": { "name": "p", "signerId": "did:key:z",
+                    "owner": "alice", "versions": { "1.0.0": release } } } },
+            "slice_sha256": "ab", "public_key": "cd", "seed": 1, "apps": [], "at": 1,
+            "proof": null }),
+        )
+    }
+
+    /// An import bringing a lineage needs the feature as well as backup keys.
+    #[test]
+    fn an_import_that_brings_a_lineage_needs_the_feature() {
+        for record in [true, false] {
+            assert_eq!(
+                pinned_import(record).features(),
+                [Feature::BackupKeys, Feature::PinnedLineage],
+                "record: {record}"
+            );
+        }
+    }
+
+    /// An approval or upgrade whose class carries `pinsLineage` names the feature: an
+    /// earlier release cannot decode the reason.
+    #[test]
+    fn a_class_that_pins_a_lineage_needs_the_feature() {
+        let class = json!({ "class": "red", "reasons": [{ "code": "pinsLineage",
+            "member": null, "package": "p" }] });
+        let approve = entry(
+            json!({ "op": "approveUpgrade", "app_id": "app", "package": "p",
+            "version": "2.0.0", "actor": "alice", "at": 1, "class": class }),
+        );
+        assert_eq!(
+            approve.features(),
+            [Feature::UpgradePolicies, Feature::PinnedLineage]
+        );
+        let upgrade = entry(json!({ "op": "upgradeApp", "app_id": "app", "bundle": "b",
+            "actor": "alice", "class": class }));
+        assert_eq!(
+            upgrade.features(),
+            [Feature::UpgradeClasses, Feature::PinnedLineage]
+        );
+    }
 
     /// An entry that uses `feature`, as a node proposes it.
     fn uses(feature: Feature) -> SystemCmd {
@@ -1376,6 +1519,9 @@ mod tests {
                 "deployment": "d", "to": { "org": "org" }, "actor": "alice", "at": 1 })),
             Feature::SessionHolders => entry(json!({ "op": "createRefresh", "hash": "h",
                 "record": { "account": "a", "session": "s", "expiresAt": 1, "holder": "BA" } })),
+            Feature::AppOrigins => entry(json!({ "op": "addAppOrigin", "app_id": "app",
+                "origin": "https://kv.example.com", "rp_id": "kv.example.com", "actor": "alice",
+                "at": 1 })),
             Feature::UnclassifiedUpdates => entry(json!({ "op": "approveUpgrade",
                 "app_id": "app", "package": "p", "version": "2.0.0", "actor": "alice", "at": 1,
                 "class": { "class": "red", "reasons": [{ "code": "unclassified",
@@ -1383,6 +1529,7 @@ mod tests {
             Feature::PrivateReleases => {
                 install(json!({ "visibility": "private", "orgs": ["org"] }))
             }
+            Feature::PinnedLineage => install(json!({ "lineage": "pinned" })),
             Feature::Pipelines => install(json!({
                 "pipelines": { "p1": { "hash": "h", "worstCaseFuel": "1" } },
             })),
@@ -1393,7 +1540,10 @@ mod tests {
             Feature::HeldTeamGrants
             | Feature::InviteCreatorStanding
             | Feature::BackupKeyApprovers
-            | Feature::StateCaps => unreachable!("no entry names {feature:?}"),
+            | Feature::StateCaps
+            | Feature::MeteredBlobs
+            | Feature::XcallBudget
+            | Feature::XcallKeepsQueue => unreachable!("no system entry names {feature:?}"),
             Feature::NamedPool => entry(json!({
                 "op": "acquireRun", "app": "app", "run": "r", "payer": "p", "fuel": 1,
                 "memory_mib": 1, "pool": "big",
@@ -2050,9 +2200,16 @@ mod tests {
         for &feature in &rc38 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.39's (a session bound to a holder key) waits past rc.38: an rc.38 node drops
-        // the record's holder and would hold the session unbound.
-        assert_eq!(rc39, [Feature::SessionHolders]);
+        // rc.39's (holder-bound sessions, pinning releases, instance origins) wait past rc.38:
+        // an rc.38 node drops the holder and the lineage, and cannot read the origin ops.
+        assert_eq!(
+            rc39,
+            [
+                Feature::SessionHolders,
+                Feature::PinnedLineage,
+                Feature::AppOrigins
+            ]
+        );
         for &feature in &rc39 {
             let refused = propose(&mut nodes, &uses(feature)).unwrap_err();
             assert_eq!(
@@ -2060,6 +2217,8 @@ mod tests {
                 (feature, Some(RC38))
             );
         }
+        let refused = propose(&mut nodes, &pinned_import(true)).unwrap_err();
+        assert_eq!(refused.feature, Feature::PinnedLineage);
         for n in &mut nodes {
             n.release = RC39;
         }
@@ -2071,6 +2230,7 @@ mod tests {
         for &feature in &rc39 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
+        propose(&mut nodes, &pinned_import(true)).unwrap();
         assert!(same_state(&nodes));
     }
 

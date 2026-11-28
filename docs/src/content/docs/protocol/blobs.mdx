@@ -85,7 +85,16 @@ The blob is stored with the request's `Content-Type` (printable ASCII, at most
 The node pins the id on the app's leader, stores the bytes on a majority, then
 commits `componentBlob { id, size, mime, tsMs }` to the app's log. Any `sealed`
 parameter is refused `400 USE_FILES_API`: sealed files have their own routes.
-An app holds at most 100,000 blobs (`429 QUOTA_EXCEEDED` past it).
+An app holds at most 100,000 blobs and 10 GiB of plain blobs (`429 QUOTA_EXCEEDED` past either).
+
+From cluster version 1.0.0-rc.39 an upload is charged to the app's organization like a
+file: its size counts against `maxFileBytesPerOrg`, and `GET /auth/usage` shows it in
+`fileBytes`. The charge is taken before any bytes are stored, so an upload past the quota
+is `429 QUOTA_EXCEEDED` and stores nothing. The entry carries `metered: true`, and the
+blob's record keeps the charge: an upload of bytes the app already holds charged is given
+back at once, and the owner's delete or the idle time gives the record's charge back when
+the leader collects the bytes. Below that version uploads are not charged, and a blob
+uploaded then stays uncharged.
 
 ## Reading, grants and listing
 
@@ -239,7 +248,8 @@ Past that `publish` answers the soft error `run published too much` and records 
 | A blob's content type | 127 bytes, printable ASCII |
 | A blob held with no reference (`BLOB_IDLE_MS`) | 1 hour |
 | A sealed file held with no reference | 1 hour |
-| Plaintext bytes of an organization's files | `maxFileBytesPerOrg`, 50 GB (`429 QUOTA_EXCEEDED` past it) |
+| Plain blob bytes one app holds (`MAX_APP_BLOB_BYTES`) | 10 GiB (`429 QUOTA_EXCEEDED` past it) |
+| Plaintext bytes of an organization's files and uploaded blobs | `maxFileBytesPerOrg`, 50 GB (`429 QUOTA_EXCEEDED` past it) |
 | New-file ciphertext all runs of a node hold before their entries | 256 MiB |
 | A grant | 1 s to 24 h |
 
@@ -270,7 +280,8 @@ Code: `component/blobs.rs`.
 
 - `BlobRecord { size, mime, refs, idleSinceMs }` lives in `rows::CBLOB`, in memory as `BlobTable`.
 - Upload and the owner's delete commit `componentBlob` and `componentBlobForget` through `CallRequest::host` (`Node::component_blob_cmd`).
-- The mime is at most `MAX_BLOB_MIME_BYTES`, and an app holds at most `MAX_COMPONENT_BLOBS`.
+- The mime is at most `MAX_BLOB_MIME_BYTES`, and an app holds at most `MAX_COMPONENT_BLOBS` and `MAX_APP_BLOB_BYTES` of plain blobs (`refuse_full_app`, in `api/files.rs`).
+- From `Feature::MeteredBlobs` (`Node::require_features`), `blob_upload` charges the size with `ChargeFileBytes` before storing, and `componentBlob { metered }` sets `BlobRecord::metered`. `BlobTable::upload` answers whether the record took the charge (not when it already held one, metered or published); the API refunds a charge the entry did not take. `forget_blob` and `expire` queue a metered record's size in `collect_files`, released by `BlobsCollected` like a file's.
 - The `BlobRef` CBOR tag is `calimero_app_host::BLOB_REF_TAG`; `apply` counts references with `ref_deltas`.
 - Idle blobs are forgotten by `expiry_now` at most `BLOB_EXPIRY_STEP` per entry and queued in `ComponentHead::collect`; the leader's timer poll collects them.
 - Runs see the records through `RunBlobs` (`HostCore::with_blobs`); grants are keyed with `grant_key(K_c)`.

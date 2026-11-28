@@ -24,6 +24,7 @@
 package com.calimero.mero.api.models
 
 import com.calimero.mero.api.models.Governance
+import com.calimero.mero.api.models.IntervalProof
 import com.calimero.mero.api.models.KmsKeys
 import com.calimero.mero.api.models.Release
 
@@ -32,7 +33,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Contextual
 
 /**
- * A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`; `jobKey` only from a job node, never from this API.
+ * A node's attestation: the TDX quote (base64), the key it binds (hex) and what it was asked for. `receiptKey` and `governance` with `purpose=receipts`, `kms` with `purpose=kms` on a node with a KMS record, `clusterIdentity` with `purpose=orchestrator`, `interval` with `form=interval` (the quote is then the node's interval quote); `jobKey` only from a job node, never from this API.
  *
  * @param quote 
  * @param transportKey 
@@ -47,6 +48,7 @@ import kotlinx.serialization.Contextual
  * @param kms 
  * @param jobKey 
  * @param clusterIdentity 
+ * @param interval 
  */
 @Serializable
 
@@ -89,7 +91,10 @@ data class AttestationDoc (
     val jobKey: kotlin.String? = null,
 
     @SerialName(value = "clusterIdentity")
-    val clusterIdentity: kotlin.String? = null
+    val clusterIdentity: kotlin.String? = null,
+
+    @SerialName(value = "interval")
+    val interval: IntervalProof? = null
 
 ) {
 

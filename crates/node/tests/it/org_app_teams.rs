@@ -82,6 +82,7 @@ fn release_shipping(package: &str, wasm: Vec<u8>) -> Vec<u8> {
         upgrades: None,
         instance_org: None,
         guests: None,
+        lineage: None,
         outbound: Vec::new(),
         secrets: None,
         uses: None,
@@ -324,9 +325,10 @@ async fn an_admin_and_the_apps_team_manager_change_its_access_not_only_its_owner
     // The owner, not in team two, holds no owner powers over an app on it;
     // once in it, they may change its access anywhere in the organization.
     let to_org = vec![Grant::Org];
+    // Out of the team, the app is not theirs to see: as if missing.
     refused(
         &bob.apps().access(&app, to_org).await.unwrap_err(),
-        "MANAGE_APPLICATION",
+        "404 NOT_FOUND: no such app",
     );
     let _ok = alice
         .orgs()
@@ -1033,7 +1035,7 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
             .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
             .await
             .unwrap_err(),
-        "not allowed to create this team",
+        "404 NOT_FOUND: no such team",
     );
     let _outside = erin
         .orgs()
@@ -1045,12 +1047,13 @@ async fn members_of_an_app_team_make_private_channels_below_it() {
         .team_remove_member(&org, &chat_team, &bob_id, Some(&mut a))
         .await
         .unwrap();
+    // Out of Chat, it is not theirs to see: as if missing.
     refused(
         &bob.orgs()
             .team_create(&org, "design", TeamJoin::Invite, Some(&chat_team))
             .await
             .unwrap_err(),
-        "not allowed to create this team",
+        "404 NOT_FOUND: no such team",
     );
 
     // Dave, removed from Chat, and Carol, who leaves it, are out of the

@@ -513,6 +513,60 @@ impl Apps<'_> {
         route::json(self.client.transport(), req, None, None, false).await
     }
 
+    /// Register a web origin for an instance.
+    ///
+    /// `POST /apps/{app}/origins` (`app_origin_add`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn origin_add(
+        self,
+        app: &str,
+        origin: &str,
+        rp_id: Option<&str>,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<PackageOrigin> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "origin", &origin)?;
+        route::put_some(&mut fields, "rpId", rp_id)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::POST,
+            format!("apps/{}/origins", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// Remove an instance's web origin.
+    ///
+    /// `DELETE /apps/{app}/origins` (`app_origin_remove`). Who: an account holder (a passkey session not bound to an app's frontend).
+    ///
+    /// Step-up: answers `412 CONFIRM_REQUIRED` first; `passkey` answers it (user verification `required`), without one the refusal is returned.
+    pub async fn origin_remove(
+        self,
+        app: &str,
+        origin: &str,
+        passkey: Option<&mut dyn Passkey>,
+    ) -> Result<OriginRemoved> {
+        let mut fields = Map::new();
+        route::put(&mut fields, "origin", &origin)?;
+        let body = Value::Object(fields);
+        let req = Request::new(
+            Method::DELETE,
+            format!("apps/{}/origins", route::segment(app)),
+        )
+        .json(body);
+        route::json(self.client.transport(), req, passkey, None, false).await
+    }
+
+    /// An instance's web origins.
+    ///
+    /// `GET /apps/{app}/origins` (`app_origins`). Who: an account holder (a passkey session not bound to an app's frontend).
+    pub async fn origins(self, app: &str) -> Result<AppOriginList> {
+        let req = Request::new(Method::GET, format!("apps/{}/origins", route::segment(app)));
+        route::json(self.client.transport(), req, None, None, false).await
+    }
+
     /// An app's outbound requests.
     ///
     /// `GET /apps/{app}/outbound-log` (`app_outbound_log`). Who: signed in (a session or an API key).
@@ -3908,6 +3962,7 @@ impl Public<'_> {
         app: Option<&str>,
         app_hash: Option<&str>,
         purpose: Option<AttestationPurpose>,
+        form: Option<AttestationForm>,
     ) -> Result<AttestationDoc> {
         let mut req = Request::new(Method::GET, "attestation");
         req = req.query("nonce", nonce);
@@ -3919,6 +3974,9 @@ impl Public<'_> {
         }
         if let Some(v) = purpose {
             req = req.query("purpose", v.as_str());
+        }
+        if let Some(v) = form {
+            req = req.query("form", v.as_str());
         }
         route::clear(self.client.transport(), req).await
     }

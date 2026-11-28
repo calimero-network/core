@@ -194,6 +194,7 @@ async fn plan(
                     .as_ref()
                     .ok_or(crate::system::NO_RESTORE_POINT)?;
                 s.may_undo(a, p, now)?;
+                s.on_lineage(a, p.from_release.as_ref())?;
                 s.undo_release_installed(p)?;
                 Ok((a.clone(), p.clone()))
             })

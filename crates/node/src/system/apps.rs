@@ -362,10 +362,14 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             app_id,
             source,
             proof,
+            bundle,
+            compute_bundle,
             ..
         } => {
             let (statement, used) = proofs.fresh(proofs.operator(proof)?)?;
-            let args = json!({ "backup": source.name, "sha256": source.sha256 });
+            let args = proofs
+                .s
+                .restore_args(app_id, source, bundle, compute_bundle.as_deref());
             proofs.states(&statement, app_id, "__restore_app", &|a| *a == args)?;
             Ok(Some(used))
         }
@@ -672,7 +676,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             compute_bundle,
             source,
             ..
-        } => restore_app(state, app_id, replicas, bundle, compute_bundle, source),
+        } => restore_app(state, app_id, replicas, (bundle, compute_bundle), source),
         SystemCmd::FinishRestore { app_id, group } => finish_restore(state, app_id, group),
         SystemCmd::SetAccess {
             app_id,
@@ -792,6 +796,7 @@ fn create_app(
     state.next_group = state.next_group.max(1) + 1;
     app.group = state.next_group;
     app.restore = None;
+    app.lineage = state.lineage_of(app.release.as_ref(), &app.bundle, app.created_at);
     let out = json!({ "appId": app.app_id, "group": app.group, "replicas": app.replicas });
     let _prev = state.apps.insert(app.app_id.clone(), app);
     Ok(out)
@@ -1037,6 +1042,10 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
             state.within_deployment(app, release.as_ref(), run.as_deref())?;
         }
     }
+    // A pinned instance stays on its lineage, whoever moves it.
+    if let Some(app) = state.apps.get(&app_id) {
+        state.within_lineage(app, release.as_ref())?;
+    }
     // An instance from no deployment enters another package only as its upgrader
     // could create one there; read from the logged version alone.
     if !by_operator && state.cluster_brings(cluster_version::Feature::OffersOnly) {
@@ -1098,6 +1107,7 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
         actor
     };
     let org = state.apps.get(&app_id).map(|app| app.org.clone());
+    let pins = state.lineage_of(release.as_ref(), &bundle, at);
     // A person who upgraded it themselves saw who runs its deployment now; an update
     // on its own, a key's, a run's or the operator's did not.
     let person_saw =
@@ -1143,10 +1153,16 @@ fn upgrade_app(state: &mut SystemState, index: u64, cmd: SystemCmd) -> Result<Va
             file: taken.file,
             undone_at: None,
         });
+        if let (Some(l), Some(to)) = (app.lineage.as_mut(), release.as_ref()) {
+            l.raise_floor(&to.version);
+        }
         app.bundle = bundle;
         app.compute_bundle = compute_bundle;
         app.release = release;
+        // Pinned once it runs a pinning release; nothing clears it.
+        app.lineage = app.lineage.take().or(pins);
     }
+    state.forget_moved_app_origins(&app_id);
     if let Some(org) = org {
         state.drop_spent_approvals(&org, at);
     }
@@ -1402,6 +1418,7 @@ fn transfer_app(
         }
     }
     state.set_app_file_bytes(&app_id, held);
+    state.forget_app_origins(&app_id);
     let payer = state.apps.get(&app_id).map(crate::usage::payer);
     if let (Some(payer), Some(runs)) = (payer, state.compute.get_mut(&app_id)) {
         for slot in runs.values_mut() {
@@ -1422,36 +1439,7 @@ fn delete_app(
     members: Option<Vec<AppId>>,
 ) -> Result<Value, Rejection> {
     let rule = OwnerRule::logged(owner_in_org, owner_in_team);
-    let may_delete = |state: &SystemState, app: &AppRecord| {
-        state.owner_acts_as_logged(app, &actor, rule, state.orgs.get(&app.org))
-            || state.is_org_admin_self(&app.org, &actor)
-    };
-    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    if !may_delete(state, app) {
-        return Err(ONLY_OWNER_OR_ADMIN_DELETES);
-    }
-    // An entry from before the whole-unit rule deletes the app alone.
-    let unit = match members {
-        None => Vec::new(),
-        Some(named) => {
-            if state.unit_parent(&app_id).is_some() {
-                return Err(UNIT_MEMBER);
-            }
-            let unit = state.unit_of(&app_id);
-            let named: BTreeSet<AppId> = named.into_iter().collect();
-            if named.len() != unit.len() || !unit.iter().all(|m| named.contains(m)) {
-                return Err(UNIT_NOT_AS_NAMED.into());
-            }
-            if unit
-                .iter()
-                .filter_map(|m| state.apps.get(m))
-                .any(|m| !may_delete(state, m))
-            {
-                return Err(UNIT_DELETE_NEEDS_EACH);
-            }
-            unit
-        }
-    };
+    let unit = check_delete(state, &app_id, &actor, rule, members.as_deref())?;
     for member in &unit {
         state.remove_app(member);
     }
@@ -1459,13 +1447,52 @@ fn delete_app(
     Ok(Value::Null)
 }
 
+/// [`delete_app`]'s rules, read-only: the unit it deletes with the app.
+fn check_delete(
+    state: &SystemState,
+    app_id: &str,
+    actor: &str,
+    rule: OwnerRule,
+    members: Option<&[AppId]>,
+) -> Result<Vec<AppId>, Rejection> {
+    let may_delete = |app: &AppRecord| {
+        // The app's organization is read from the apply machine's own shard
+        // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        let org = state.orgs.get(&app.org);
+        state.owner_acts_as_logged(app, actor, rule, org) || state.is_org_admin(org, actor)
+    };
+    let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
+    if !may_delete(app) {
+        return Err(ONLY_OWNER_OR_ADMIN_DELETES);
+    }
+    // An entry from before the whole-unit rule deletes the app alone.
+    let Some(named) = members else {
+        return Ok(Vec::new());
+    };
+    if state.unit_parent(app_id).is_some() {
+        return Err(UNIT_MEMBER);
+    }
+    let unit = state.unit_of(app_id);
+    let named: BTreeSet<&AppId> = named.iter().collect();
+    if named.len() != unit.len() || !unit.iter().all(|m| named.contains(m)) {
+        return Err(UNIT_NOT_AS_NAMED.into());
+    }
+    if unit
+        .iter()
+        .filter_map(|m| state.apps.get(m))
+        .any(|m| !may_delete(m))
+    {
+        return Err(UNIT_DELETE_NEEDS_EACH);
+    }
+    Ok(unit)
+}
+
 /// Restore an app from a backup into a new group on the replicas named.
 fn restore_app(
     state: &mut SystemState,
     app_id: AppId,
     replicas: Vec<u64>,
-    bundle: String,
-    compute_bundle: Option<String>,
+    (bundle, compute_bundle): (String, Option<String>),
     source: crate::types::RestoreSource,
 ) -> Result<Value, Rejection> {
     if !state.bundles.contains_key(&bundle) {
@@ -1483,12 +1510,22 @@ fn restore_app(
     {
         return Err(RESTORE_REPLICAS_DISTINCT);
     }
-    if !state.apps.contains_key(&app_id) {
-        return Err(NO_SUCH_APP);
+    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
+    state.ships_on_lineage(app, &bundle, compute_bundle.as_deref())?;
+    // A pinned store is not rolled back, whoever signs it: an undo is the owner's way back.
+    if state.restores_older(app, &bundle, compute_bundle.as_deref()) {
+        return Err(LINEAGE_OLDER_RELEASE);
     }
+    let restored = app
+        .lineage
+        .as_ref()
+        .and_then(|l| state.lineage_shipping(l, &bundle, compute_bundle.as_deref()));
     let group = state.next_group.max(1) + 1;
     state.next_group = group;
     let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
+    if let (Some(l), Some(r)) = (app.lineage.as_mut(), restored) {
+        l.raise_floor(&r);
+    }
     if app.bundle != bundle {
         // Inferred from the bundle again (`report::release_of_bundle`).
         app.release = None;
@@ -1503,6 +1540,7 @@ fn restore_app(
         seed: Some(seed),
         source: Some(source),
     });
+    state.forget_moved_app_origins(&app_id);
     Ok(json!({ "group": group }))
 }
 
@@ -1534,17 +1572,29 @@ fn set_access(
     owner_in_team: bool,
     baked: Option<Org>,
 ) -> Result<Value, Rejection> {
-    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    // The app's organization comes from its own shard (its tenant group), baked
-    // at propose; `apply` on root judges the manager and validates the grants
-    // against it (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
-    let org = baked.as_ref().or_else(|| state.orgs.get(&app.org));
-    if !state.owner_acts_as_logged(
-        app,
-        &actor,
-        OwnerRule::logged(owner_in_org, owner_in_team),
-        org,
-    ) && !state.may_set_access(app, &access, &actor, org)
+    let rule = OwnerRule::logged(owner_in_org, owner_in_team);
+    let access = check_access(state, &app_id, access, &actor, rule, baked.as_ref())?;
+    let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
+    app.access = access;
+    Ok(Value::Null)
+}
+
+/// [`set_access`]'s rules, read-only: the access the app then has. The app's
+/// organization is the one baked at propose from its own shard (its tenant
+/// group), else read from this machine's own state
+/// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+fn check_access(
+    state: &SystemState,
+    app_id: &str,
+    access: Access,
+    actor: &str,
+    rule: OwnerRule,
+    baked: Option<&Org>,
+) -> Result<Access, Rejection> {
+    let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
+    let org = baked.or_else(|| state.orgs.get(&app.org));
+    if !state.owner_acts_as_logged(app, actor, rule, org)
+        && !state.may_set_access(app, &access, actor, org)
     {
         return Err(ONLY_MANAGERS_SET_ACCESS);
     }
@@ -1555,9 +1605,7 @@ fn set_access(
         .keeping_links(access)
         .ok_or(LINKS_KEEP_THEIR_CONSENT)?;
     state.check_grants(&app.org, org, access.without_links().grants())?;
-    let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
-    app.access = access;
-    Ok(Value::Null)
+    Ok(access)
 }
 
 /// Let `source` call `target` as `account` for `methods`, or take that back.
@@ -1867,23 +1915,85 @@ fn set_app_metadata(
     owner_in_team: bool,
     baked: Option<Org>,
 ) -> Result<Value, Rejection> {
-    metadata_fits(&metadata)?;
-    let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    // The app's organization from its own shard (its tenant group), baked at
-    // propose (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
-    let org = baked.as_ref().or_else(|| state.orgs.get(&app.org));
-    let admin = state.is_org_admin(org, &actor);
-    if !state.owner_acts_as_logged(
-        app,
-        &actor,
-        OwnerRule::logged(owner_in_org, owner_in_team),
-        org,
-    ) && !admin
-    {
-        return Err(ONLY_OWNER_OR_ADMIN_SETS_METADATA);
-    }
+    let rule = OwnerRule::logged(owner_in_org, owner_in_team);
+    check_app_metadata(state, &app_id, &metadata, &actor, rule, baked.as_ref())?;
     if let Some(app) = state.apps.get_mut(&app_id) {
         app.metadata = metadata;
     }
     Ok(Value::Null)
+}
+
+/// [`set_app_metadata`]'s rules, read-only. The organization is the one baked at
+/// propose from the app's own shard (its tenant group), else this machine's own
+/// state (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+fn check_app_metadata(
+    state: &SystemState,
+    app_id: &str,
+    metadata: &Value,
+    actor: &str,
+    rule: OwnerRule,
+    baked: Option<&Org>,
+) -> Result<(), Rejection> {
+    metadata_fits(metadata)?;
+    let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
+    let org = baked.or_else(|| state.orgs.get(&app.org));
+    if !state.owner_acts_as_logged(app, actor, rule, org) && !state.is_org_admin(org, actor) {
+        return Err(ONLY_OWNER_OR_ADMIN_SETS_METADATA);
+    }
+    Ok(())
+}
+
+/// A refusal to an account that does not reach the app: as for one that does
+/// not exist (`GET /apps/{app}` answers them so).
+const APP_NOT_FOUND: Rejection = Rejection::new(RejectionKind::NotFound, "no such app");
+
+/// What [`apply`] refuses of `cmd` for its actor's authority, judged read-only
+/// before it is proposed ([`super::prejudge`]). A refusal names the app
+/// missing to an actor who does not reach it.
+pub(super) fn prejudge(s: &SystemState, cmd: &SystemCmd) -> Result<(), Rejection> {
+    let (app_id, actor, judged) = match cmd {
+        SystemCmd::SetAppMetadata {
+            app_id,
+            metadata,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            org,
+        } => {
+            let rule = OwnerRule::logged(*owner_in_org, *owner_in_team);
+            (
+                app_id,
+                actor,
+                check_app_metadata(s, app_id, metadata, actor, rule, org.as_deref()),
+            )
+        }
+        SystemCmd::SetAccess {
+            app_id,
+            access,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            org,
+        } => {
+            let rule = OwnerRule::logged(*owner_in_org, *owner_in_team);
+            let judged = check_access(s, app_id, access.clone(), actor, rule, org.as_deref()).map(drop);
+            (app_id, actor, judged)
+        }
+        SystemCmd::DeleteApp {
+            app_id,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            members,
+        } => {
+            let rule = OwnerRule::logged(*owner_in_org, *owner_in_team);
+            let judged = check_delete(s, app_id, actor, rule, members.as_deref()).map(drop);
+            (app_id, actor, judged)
+        }
+        _ => return Ok(()),
+    };
+    judged.map_err(|why| match s.apps.get(app_id) {
+        Some(app) if s.may_reach(app, Some(actor), s.orgs.get(&app.org)) => why,
+        _ => APP_NOT_FOUND,
+    })
 }

@@ -58,6 +58,31 @@ it must be called through `/intents` with a passkey assertion. The reverse also
 holds: a method the ABI declares `#[app::view]` runs as a strong view even when
 called through `/intents`.
 
+## Usage
+
+`GET /apps/{app}/usage`, and the developer figures of `GET /orgs/{org}/usage`
+and `GET /auth/usage`, read each app's usage book (what its logged runs used,
+per UTC day; [Execution](/protocol/execution/#the-usage-book)) at the app
+group's read index, as a strong view does: the answering replica asks the
+app's leader for its applied index (`internal/app/index`) and answers once it
+has applied that far, and the leader answers from its own state once it has
+confirmed it still leads. So a usage read counts every call acknowledged
+before it arrived, whichever node takes it. A node that holds no replica asks
+one (`internal/usage`), which reads the same way. A replica that cannot apply
+the index within 2 seconds (`Config::read_wait`) asks the leader instead; when
+no replica can answer fresh (no leader, or every replica on an earlier
+release), the read goes ahead best effort on the first replica's applied
+state, as before.
+
+An organization's or account's figure sums several apps. Each app is read at
+its own group's read index, all at once, so the sum counts every call to any
+of them acknowledged before the request arrived; it is not one snapshot
+across groups (a call committed while the reads run may count in one app and
+not have reached another), which no total of separate logs could give. The
+cost is one heartbeat round per app's group, with no log entry, in parallel;
+the system group's read-index lease does not cover app groups, which have
+leaders of their own.
+
 ## Search
 
 An app names the text fields to index on a table (`#[table(search = [..])]`),
@@ -196,6 +221,15 @@ A refresh is judged by the system log, not by a stale replica: a token this repl
 whose exchange the log refuses, goes to the log as `RefreshReused`, which revokes the session if the
 token was exchanged before and is refused if it never was (then a replica that is behind answers
 503, never "unknown").
+
+### Usage at the read index
+
+`Node::app_usage` reads each app's book through `Node::usage_fresh_here`: `read_strong` on the app's
+leader, else the leader's index (`app_read_index`, `internal/app/index`) applied here within
+`Config::read_wait`. A replica that cannot asks the leader, then the other replicas
+(`internal/usage`, which answers `fresh` and reads the same way); with no fresh answer it uses the
+first applied state it has. `GET /orgs/{org}/usage` and `GET /auth/usage` sum
+`Node::developer_usage_today`, which reads each app this way, all at once.
 
 ### Declared views
 

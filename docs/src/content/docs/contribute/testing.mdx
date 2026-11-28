@@ -471,11 +471,17 @@ the latest published one, against this tree:
    from the release's tag and signed with its own tools
    (`scripts/build-release-fixtures.sh`), with a sealed file of three segments
    and a compute run finished on the job node.
+   This tree's `merod` and `meroctl` build in the background meanwhile
+   (`scripts/upgrade-path.sh`), since the seed needs only the release; the
+   roll waits for that build (and the pipeline case, which seeds from this
+   tree's package, in its own seed), and a failed build fails the job with its
+   cargo output.
 3. **Roll forward**, as mdma's rollout does it (`rollout.py`): the operator
    approves the new release (`POST /ops/releases`), three nodes on this tree's
    `merod` join one at a time (`POST /ops/nodes`, each a system-group learner),
    every app moves onto them (`POST /ops/apps/{app}/replicas`, until
-   `GET /ops/placement` shows it), and the old nodes are removed one at a time
+   `GET /ops/placement` shows it: the first alone, so the mixed checks run with
+   nothing in flight, then eight at a time, `ROLLOUT_MOVE_JOBS`), and the old nodes are removed one at a time
    while the system group has a leader and its voters (`DELETE /ops/nodes/{id}`).
    Every decision is signed with the operator key. Once the first app has moved,
    apps sit on both releases and everything is read back (**mixed**).
@@ -492,7 +498,15 @@ the latest published one, against this tree:
 What is written and checked lives in cases, `upgrade_cases/NN_*.py`, each a
 `Case` with `seed`, `mixed`, `verify` and `extend` steps (the
 [module's docstring](https://github.com/calimero-network/core/blob/master/crates/node/tests/fault/upgrade_path.py)
-says when each runs); a new kind of stored data gets a case. Run it locally, as
+says when each runs); a new kind of stored data gets a case. Within a phase the
+cases run at once (eight at a time, three in the seed while this tree builds; `UPGRADE_JOBS=1` or `--jobs 1` runs them one
+by one with live output), each group's log printed whole when it ends, so a case
+is independent of the others: an account name belongs to one case (a second case
+that claims it fails the run, naming both, and `upgrade_runner_test.py` checks
+the literal names before the build starts), a case that changes what every case
+sees (a quota, a pool, a stopped node) is `exclusive` and runs alone after the
+rest of its phase, and cases that build on one another share a `group` and run in
+file order. Run it locally, as
 CI does, with `scripts/upgrade-path.sh` (it builds this tree's `merod`,
 `meroctl` and kv, fetches the release and builds its fixture), or with the
 binaries in hand:
@@ -589,7 +603,7 @@ functionality. To add one:
    area (or a new `NN_area.py`), with a unique `name`, its `area`, `since`, and
    one-line `seeds` and `verifies` for the matrix.
 2. `populate` signs its own people up (`person(w, name)`, names no other case
-   uses) and keeps every id and expected value in the record; `check` reads them
+   uses; the run fails when two cases claim one) and keeps every id and expected value in the record; `check` reads them
    back and records access decisions with `decisions({...})`, compared with
    `same_decisions`; `exercise` writes on the new release.
 3. Edit nothing else: the matrix below is generated from the cases when the
@@ -691,7 +705,14 @@ guest and fixture in `target/app-components`, built once through
 app-build's own test builds in `target/tmp`; the SDK's compile-fail cases in
 `target/tests/trybuild`) are cached apart, saved from master, whose push runs
 `Rust tests (1/4)`; that push runs every shard (shards 2-4 stop after the restore
-when nothing is left for master to run).
+when nothing is left for master to run). That cache records its own commit
+(`target/tests/trybuild/.ci-test-apps-commit`) and the files changed since it are
+touched after the restore: it can be older than the rust-cache's commit, and a
+crate changed in between would otherwise keep the old mtime, so cargo would reuse
+a stale build (trybuild once ran `calimero-sdk-macros` from before its messages
+changed). With no commit recorded, trybuild drops the workspace crates' builds
+but keeps their dependencies' (a cold build of those runs past
+`refused_declarations`' time limit), and `target/tmp` starts fresh.
 
 A pull request and its merge-queue entry run only the tests the change can reach: `Scope`'s `test_filter`
 (`scripts/ci-scope.py`) is a nextest `rdeps(...)` filterset over the workspace
@@ -705,7 +726,9 @@ workspace). The queue's diff is the entry against its base, so two changes that
 break each other within that graph still fail there. The push to master runs every
 test the filter left out, so a test the filter missed fails there. In `.config/nextest.toml`, the
 guest builder's tests and the SDK's compile-fail cases have a high `priority`, so
-they start first rather than leave one shard running minutes after the others. (sccache on the Actions cache was tried and dropped: with this many
+they start first rather than leave one shard running minutes after the others, and
+they run alone: a build saturates the cores for minutes, and the cluster tests beside
+it ran past the 30 s kill. (sccache on the Actions cache was tried and dropped: with this many
 parallel jobs its writes hit the cache API's rate limit.) CI builds carry no debuginfo
 (`CARGO_PROFILE_DEV_DEBUG=0`): the cache restores faster and the test binaries
 link faster, and a failing test still names its file and line. The workspace

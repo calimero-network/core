@@ -56,6 +56,7 @@ from .app_invite_list import AppInviteList
 from .app_invite_made import AppInviteMade
 from .app_invite_revoke_response_200 import AppInviteRevokeResponse200
 from .app_invite_view import AppInviteView
+from .app_lineage import AppLineage
 from .app_link_body import AppLinkBody
 from .app_link_list import AppLinkList
 from .app_links import AppLinks
@@ -67,6 +68,9 @@ from .app_move_body import AppMoveBody
 from .app_moved import AppMoved
 from .app_offered import AppOffered
 from .app_open_api import AppOpenApi
+from .app_origin_add_body import AppOriginAddBody
+from .app_origin_list import AppOriginList
+from .app_origin_remove_body import AppOriginRemoveBody
 from .app_restore import AppRestore
 from .app_restore_source import AppRestoreSource
 from .app_restored import AppRestored
@@ -105,6 +109,7 @@ from .approved_releases import ApprovedReleases
 from .apps_report import AppsReport
 from .assertion import Assertion
 from .attestation_doc import AttestationDoc
+from .attestation_form import AttestationForm
 from .attestation_purpose import AttestationPurpose
 from .backup_key_answer import BackupKeyAnswer
 from .backup_key_answer_holder_type_0 import BackupKeyAnswerHolderType0
@@ -333,6 +338,7 @@ from .holder_recovered import HolderRecovered
 from .init_failed import InitFailed
 from .intent_result import IntentResult
 from .intents_body import IntentsBody
+from .interval_proof import IntervalProof
 from .invite_body import InviteBody
 from .invite_key import InviteKey
 from .invite_list import InviteList
@@ -733,6 +739,8 @@ from .update_reason_type_6 import UpdateReasonType6
 from .update_reason_type_6_code import UpdateReasonType6Code
 from .update_reason_type_7 import UpdateReasonType7
 from .update_reason_type_7_code import UpdateReasonType7Code
+from .update_reason_type_8 import UpdateReasonType8
+from .update_reason_type_8_code import UpdateReasonType8Code
 from .update_view import UpdateView
 from .update_view_approvers import UpdateViewApprovers
 from .update_view_available_type_0 import UpdateViewAvailableType0
@@ -834,6 +842,7 @@ __all__ = (
     "AppInviteView",
     "Applied",
     "AppliedStatus",
+    "AppLineage",
     "AppLinkBody",
     "AppLinkList",
     "AppLinks",
@@ -845,6 +854,9 @@ __all__ = (
     "AppMoved",
     "AppOffered",
     "AppOpenApi",
+    "AppOriginAddBody",
+    "AppOriginList",
+    "AppOriginRemoveBody",
     "AppRestore",
     "AppRestored",
     "AppRestoredBackup",
@@ -879,6 +891,7 @@ __all__ = (
     "AppWithdrawn",
     "Assertion",
     "AttestationDoc",
+    "AttestationForm",
     "AttestationPurpose",
     "BackupKeyAnswer",
     "BackupKeyAnswerHolderType0",
@@ -1083,6 +1096,7 @@ __all__ = (
     "InitFailed",
     "IntentResult",
     "IntentsBody",
+    "IntervalProof",
     "InviteBody",
     "InviteKey",
     "InviteList",
@@ -1457,6 +1471,8 @@ __all__ = (
     "UpdateReasonType6Code",
     "UpdateReasonType7",
     "UpdateReasonType7Code",
+    "UpdateReasonType8",
+    "UpdateReasonType8Code",
     "UpdateView",
     "UpdateViewApprovers",
     "UpdateViewAvailableType0",

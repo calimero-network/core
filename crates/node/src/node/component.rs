@@ -56,7 +56,9 @@ use self::files::{blobs_of, stored_of_blobs, Blob, NodeFiles, PendingBytes, Stor
 use super::{status_of, CallRequest, Node, ViewAnswer, ViewRequest};
 use crate::app::{AppMachine, Status};
 use crate::component::blobs::{grant_key, Blobs, RunBlobs, COLLECT_BATCH};
-use crate::component::xcall::{backoff_ms, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS};
+use crate::component::xcall::{
+    backoff_ms, share_budget, Outgoing, XcallFrom, DELIVER_BATCH, XCALL_WINDOW_MS,
+};
 use crate::component::{
     utc_day, Applied, CallEntry, ComponentCmd, DayUsage, Outcome, SysDirectory, TickEntry,
     UsageBook,
@@ -963,6 +965,7 @@ impl Node {
         // Whom this run serves, for the apps it calls (each call runs as them only with
         // their grant, `Node::caller_for`): its own caller when that is a person.
         let forward = forwarded(&invocation.caller);
+        let incoming_budget = extras.xcall_budget;
         let via = extras.via.clone();
         let searches = extras.searches.clone().unwrap_or_default();
         let xcalls = extras.key.and_then(|key| {
@@ -1047,6 +1050,12 @@ impl Node {
                         x.on_behalf_of.clone_from(&forward);
                     }
                 }
+                // Likewise its budget, once every replica dead-letters a spent one alike
+                // (`Feature::XcallBudget` logged).
+                if self.shares_xcall_budget() {
+                    share_budget(incoming_budget, &mut outcome.xcalls);
+                }
+                outcome.keep_queue = self.keeps_xcall_queue(&outcome);
                 Ran {
                     outcome,
                     blobs,
@@ -1568,6 +1577,7 @@ impl Node {
                                 via: None,
                                 secrets,
                                 searches: None,
+                                xcall_budget: None,
                             },
                         );
                         let outcome = ran.outcome;
@@ -1806,6 +1816,11 @@ impl Node {
                                     via: req.via.clone(),
                                     secrets,
                                     searches: None,
+                                    xcall_budget: req
+                                        .xcall
+                                        .as_ref()
+                                        .and_then(|x| x.budget)
+                                        .or(req.chain_budget),
                                 },
                             );
                             ran_for = Some(started.elapsed());
@@ -1980,28 +1995,82 @@ impl Node {
         Ok(a)
     }
 
-    /// `app`'s usage book (what it used per UTC day), from a replica: this node's if it
-    /// is one of the app's replicas, else one that is. An app recorded before components
-    /// (SDK 0.12, no longer run) has none.
+    /// `app`'s usage book (what it used per UTC day), read at the app group's read
+    /// index, so it counts every call acknowledged before the request arrived,
+    /// whichever node answers: this node's replica once it applied the index the
+    /// app's leader named ([`Self::usage_fresh_here`]), else a replica that did
+    /// (`internal/usage`), else, best effort, the first replica's applied state
+    /// (this node's first). An app recorded before components (SDK 0.12, no longer
+    /// run) has none. See
+    /// [Reads](https://calimero-network.github.io/core/protocol/reads/#usage).
     pub async fn app_usage(&self, app: &AppRecord) -> Result<UsageBook, ApiError> {
         if app.executor != Executor::Component {
             return Ok(UsageBook::default());
         }
-        if let Some(g) = self.replica_group(app) {
-            return Ok(g.read_local(|m, _| m.state.component.head.usage.clone()));
-        }
-        let body = json!({ "app": app.app_id });
-        for id in &app.replicas {
-            let Some(addr) = self.sys(|s| s.nodes.get(id).map(|n| n.addr.clone())) else {
-                continue;
-            };
-            if let Ok(v) = self.peer_forward(&addr, "internal/usage", &body).await {
-                if let Ok(book) = serde_json::from_value::<UsageBook>(v["usage"].clone()) {
-                    return Ok(book);
-                }
+        let here = self.replica_group(app);
+        let mut leader = None;
+        if let Some(g) = &here {
+            match self.usage_fresh_here(app, g).await {
+                Ok(book) => return Ok(book),
+                Err(addr) => leader = addr,
             }
         }
-        Err(ApiError::unavailable("no replica answered"))
+        let mut stale = here.map(|g| g.read_local(|m, _| m.state.component.head.usage.clone()));
+        let body = json!({ "app": app.app_id });
+        let others: Vec<String> = self.sys(|s| {
+            app.replicas
+                .iter()
+                .filter(|id| **id != self.config.node_id)
+                .filter_map(|id| s.nodes.get(id).map(|n| n.addr.clone()))
+                .collect()
+        });
+        // The leader first: it answers from its own state, with no wait to apply.
+        let others = leader
+            .iter()
+            .cloned()
+            .chain(others.into_iter().filter(|a| leader.as_ref() != Some(a)));
+        for addr in others {
+            let Ok(v) = self.peer_forward(&addr, "internal/usage", &body).await else {
+                continue;
+            };
+            let Ok(book) = serde_json::from_value::<UsageBook>(v["usage"].clone()) else {
+                continue;
+            };
+            // A peer before this release answers its applied state and no `fresh`.
+            if v["fresh"].as_bool() == Some(true) {
+                return Ok(book);
+            }
+            stale.get_or_insert(book);
+        }
+        stale.ok_or_else(|| ApiError::unavailable("no replica answered"))
+    }
+
+    /// `app`'s usage book from this node's replica `g` at the app group's read
+    /// index: read on a confirmed leader, or on a follower once it applied the
+    /// index the leader named (`internal/app/index`, as a strong view's replica
+    /// does in `Node::view_once`); one heartbeat round of the app's group, no
+    /// log entry. When this replica cannot answer fresh within `Config::read_wait`,
+    /// the error names the leader's address, if known, to ask instead.
+    pub async fn usage_fresh_here(
+        &self,
+        app: &AppRecord,
+        g: &Group<AppMachine>,
+    ) -> Result<UsageBook, Option<String>> {
+        let usage = |m: &AppMachine, _: u64| m.state.component.head.usage.clone();
+        match g.read_strong(usage).await {
+            Ok(book) => Ok(book),
+            Err(WriteError::NotLeader {
+                leader: Some((id, addr)),
+            }) if id != self.config.node_id && !addr.is_empty() => {
+                match self.app_read_index(&addr, &app.app_id).await {
+                    Some(index) if g.wait_applied(index, self.config.read_wait).await => {
+                        Ok(g.read_local(usage))
+                    }
+                    _ => Err(Some(addr)),
+                }
+            }
+            Err(_) => Err(None),
+        }
     }
 
     /// What each component app this node replicates used on `day`, by app id: what a
@@ -2158,8 +2227,9 @@ impl Node {
     /// name is `UnknownMethod`; `init` and timers are never reached this way
     /// (`WrongKind`); a `confirm` method never runs as a view (`ConfirmNotAView`)
     /// and a call to one needs a consent; only views run as views (`NotAView`);
-    /// anonymous callers reach only `public` methods (`401 UNAUTHENTICATED`) and
-    /// the System caller only `allowSystem` ones (`Forbidden`).
+    /// anonymous callers reach only `public` methods (`401 UNAUTHENTICATED`),
+    /// the System caller only `allowSystem` ones and only an action's own views and
+    /// calls (`from_action`) reach `allowAction` ones (`Forbidden`).
     ///
     /// The ABI is the one of the bundle the app group runs
     /// ([`Self::running_bundle`]), not the directory's record of it, which an
@@ -2173,9 +2243,10 @@ impl Node {
         caller: &Caller,
         view: bool,
         consented: bool,
+        from_action: bool,
     ) -> Result<(), ApiError> {
         let prepared = self.prepared_for(&self.running_bundle(app)).await?;
-        abi_check(&prepared, method, caller, view, consented, false)
+        abi_check(&prepared, method, caller, view, consented, from_action)
     }
 
     /// The bundle `app` runs: the app group's own record on this replica, else (this
@@ -2217,8 +2288,15 @@ impl Node {
         self.refuse_while_restoring(&app).await?;
         app.require_app_component()?;
         if !came_keyed {
-            self.abi_gate(&app, &req.method, &req.caller, false, req.consent.is_some())
-                .await?;
+            self.abi_gate(
+                &app,
+                &req.method,
+                &req.caller,
+                false,
+                req.consent.is_some(),
+                req.action.is_some(),
+            )
+            .await?;
         }
         let body = serde_json::to_value(req).map_err(|e| ApiError::internal(&e.to_string()))?;
         for _attempt in 0..30 {
@@ -2338,7 +2416,14 @@ impl Node {
             .read_local(|m, _| m.component_bundle())
             .ok_or_else(|| ApiError::unavailable("the app is not initialized yet"))?;
         let prepared = self.prepared_for(&bundle).await?;
-        abi_check(&prepared, &req.method, &req.caller, true, false, false)?;
+        abi_check(
+            &prepared,
+            &req.method,
+            &req.caller,
+            true,
+            false,
+            req.action.is_some(),
+        )?;
         // `Node::view` refused these already; a view that reached this replica
         // another way is held to the same limit before it runs.
         let args = args_bytes(&req.args);
@@ -2402,6 +2487,7 @@ impl Node {
                         via,
                         secrets: crate::component::InstanceSecrets::new(),
                         searches,
+                        xcall_budget: None,
                     },
                     search,
                 )
@@ -2424,7 +2510,7 @@ impl Node {
         })
     }
 
-    /// A component's blob command on its leader: `__blob { id, size, mime }` (an upload),
+    /// A component's blob command on its leader: `__blob { id, size, mime, metered }` (an upload),
     /// `__blob_forget` or `__blob_revoke` (`{ id }`, the owner's), built by the API after judging who may.
     pub(super) async fn component_blob_cmd(
         &self,
@@ -2440,6 +2526,7 @@ impl Node {
                         size: req.args["size"].as_u64().unwrap_or_default(),
                         mime: req.args["mime"].as_str().unwrap_or_default().to_owned(),
                         ts_ms: self.stamp(m),
+                        metered: req.args["metered"].as_bool().unwrap_or(false),
                     },
                     "__blob_revoke" => ComponentCmd::BlobRevoke { id: id.clone() },
                     _ => ComponentCmd::BlobForget { id: id.clone() },
@@ -2685,9 +2772,10 @@ impl Node {
         })
         .await;
         match ran {
-            Ok((out, run)) => {
+            Ok((mut out, run)) => {
                 self.usage.ran(&meter, run);
                 crate::metrics::wasm_run(InvocationKind::Action, run.wall);
+                out.keep_queue = self.keeps_xcall_queue(&out);
                 out
             }
             Err(e) => Outcome::trap(TrapKind::Fault, &e.to_string()),
@@ -2819,6 +2907,7 @@ impl Node {
             xcall: Some(XcallFrom {
                 source: source.to_owned(),
                 seq: msg.seq,
+                budget: msg.budget,
             }),
             via,
             ..CallRequest::new(
@@ -2839,7 +2928,9 @@ impl Node {
     }
 
     /// The source's `onXcallFailed`, if its ABI has one the system may call: told which
-    /// message was dead-lettered and why. Best effort, once.
+    /// message was dead-lettered and why. Best effort, once. The run takes the message's
+    /// budget, so the xcalls it sends share that chain's
+    /// ([Chain budget](https://calimero-network.github.io/core/protocol/xcall/#chain-budget)).
     async fn on_xcall_failed(
         &self,
         source: &str,
@@ -2862,6 +2953,7 @@ impl Node {
                 crate::app::NODE_KEY_PREFIX,
                 msg.seq
             )),
+            chain_budget: msg.budget,
             ..CallRequest::new(
                 source.to_owned(),
                 HANDLER.to_owned(),
@@ -2924,13 +3016,15 @@ impl Node {
     /// Switch a component app to another component, code only, on this node, the
     /// app group's leader. A named migration is refused (`MigrationsNotSupported`):
     /// a migration rebuilds the state, and this node runs code-only upgrades. Who may
-    /// upgrade was judged by the API.
+    /// upgrade was judged by the API, on the group running `judged_on`: if it has moved
+    /// since (another upgrade got there first), it is refused (`BundleMoved`).
     pub(super) async fn upgrade_component(
         &self,
         g: &Group<AppMachine>,
         bundle: &str,
         compute_bundle: Option<&str>,
         migrate: Option<&str>,
+        judged_on: Option<&JudgedOn>,
     ) -> Result<crate::app::Applied, WriteError> {
         let refuse = |code: &str, message: &str| crate::app::Applied {
             index: g.applied(),
@@ -2953,6 +3047,30 @@ impl Node {
         };
         let p = g
             .propose_led(|m, _, _| {
+                // `base_index` holds this to the state read here, so a race retries into it.
+                let runs = m.state.bundle.as_deref();
+                let runs_compute = m.state.component.head.compute_bundle.as_deref();
+                // Already there: nothing runs. A record naming other code catches up (the repair
+                // for the refusal below); a release sharing the code is an upgrade as any other.
+                if runs == Some(bundle) && runs_compute == compute_bundle {
+                    let mut done = crate::component::host_answer(m.state.last_index, true, "");
+                    if judged_on.is_some_and(|j| !j.is(Some(bundle), compute_bundle)) {
+                        done.result = json!({ "caughtUp": true });
+                    }
+                    return Proposal::Reply(crate::app::applied_bytes(done.index, &done));
+                }
+                if judged_on.is_some_and(|j| runs.is_some() && !j.is(runs, runs_compute)) {
+                    let mut refused = crate::component::host_answer(m.state.last_index, false, "");
+                    refused.error = json!({
+                        "code": "BundleMoved",
+                        "fields": {
+                            "message": "the app runs other code than the one this upgrade was judged on: upgrade it to the release that ships `runs` first",
+                            "runs": runs,
+                            "runsCompute": runs_compute,
+                        },
+                    });
+                    return Proposal::Reply(crate::app::applied_bytes(refused.index, &refused));
+                }
                 let is_result = |name: &String| {
                     target
                         .abi
@@ -2984,6 +3102,54 @@ impl Node {
         let a = to_host_applied(a);
         self.count_conflict(&a);
         Ok(a)
+    }
+}
+
+/// The code an upgrade was judged on (`__upgrade`'s `from`): the app's bundle and, where the
+/// proposer stated it, its compute part (`None`: a node that sent the bundle alone).
+pub(crate) struct JudgedOn {
+    bundle: String,
+    compute: Option<Option<String>>,
+}
+
+impl JudgedOn {
+    /// `from` as sent. With `strict` (the cluster brings lineages, so every node sends both), a
+    /// bare bundle or one without its compute part is refused.
+    ///
+    /// # Errors
+    /// The shape `strict` refuses.
+    pub(crate) fn parse(from: &Value, strict: bool) -> Result<Option<Self>, &'static str> {
+        let judged = match from {
+            Value::String(bundle) => Self {
+                bundle: bundle.clone(),
+                compute: None,
+            },
+            Value::Object(o) => {
+                let Some(bundle) = o.get("bundle").and_then(Value::as_str) else {
+                    return Ok(None);
+                };
+                Self {
+                    bundle: bundle.to_owned(),
+                    compute: o
+                        .get("computeBundle")
+                        .map(|c| c.as_str().map(str::to_owned)),
+                }
+            }
+            _ => return Ok(None),
+        };
+        if strict && judged.compute.is_none() {
+            return Err("an upgrade names the compute part it was judged on beside the bundle");
+        }
+        Ok(Some(judged))
+    }
+
+    /// Whether the group running `bundle` and `compute` is still on this code.
+    fn is(&self, bundle: Option<&str>, compute: Option<&str>) -> bool {
+        bundle == Some(self.bundle.as_str())
+            && self
+                .compute
+                .as_ref()
+                .is_none_or(|c| c.as_deref() == compute)
     }
 }
 
@@ -3054,6 +3220,7 @@ impl calimero_app_host::ActionHost for NodeAction {
             strong: true,
             min_index: 0,
             via: None,
+            action: Some(self.key.clone()),
         };
         let node = Arc::clone(&self.node);
         match self.wait(async move { node.view(&req).await }) {
@@ -3115,6 +3282,33 @@ impl Node {
             )
             .is_ok()
         })
+    }
+
+    /// Whether a run's xcalls carry their chain's budget (`share_budget`): from the logged
+    /// cluster version that brings `Feature::XcallBudget` on, so every replica dead-letters
+    /// a spent one alike.
+    fn shares_xcall_budget(&self) -> bool {
+        self.sys(|s| {
+            crate::system::cluster_version::check(
+                s.cluster_version.as_deref(),
+                &[crate::system::cluster_version::Feature::XcallBudget],
+            )
+            .is_ok()
+        })
+    }
+
+    /// Whether a run's entry marks its xcalls to keep the outbox's queue when it is full
+    /// (`Outcome::keep_queue`): for a run that sent any, from the logged cluster version that
+    /// brings `Feature::XcallKeepsQueue` on, so every replica keeps it alike.
+    fn keeps_xcall_queue(&self, outcome: &Outcome) -> bool {
+        !outcome.xcalls.is_empty()
+            && self.sys(|s| {
+                crate::system::cluster_version::check(
+                    s.cluster_version.as_deref(),
+                    &[crate::system::cluster_version::Feature::XcallKeepsQueue],
+                )
+                .is_ok()
+            })
     }
 
     /// Whom `source`'s call of `method` on `target` runs as: `person` (and `via` = `source`)
@@ -3207,6 +3401,9 @@ struct RunExtras {
     /// (its caller's), shared with the run and the views its own xcalls reach; `None` is a
     /// fresh request (`MAX_SEARCHES_PER_RUN`).
     searches: Option<calimero_app_host::SearchBudget>,
+    /// A delivered message's budget (`XcallFrom::budget`), which the run's xcalls share;
+    /// `None` starts a chain ([`share_budget`]).
+    xcall_budget: Option<u32>,
 }
 
 /// How long a call, timer or delivery waits for one outbound response: within the
@@ -3364,6 +3561,7 @@ impl NodeXcall {
             strong: true,
             min_index: 0,
             via,
+            action: None,
         };
         let (node, searches) = (Arc::clone(&self.node), self.searches.clone());
         Ok(Box::pin(async move {
@@ -3520,6 +3718,30 @@ fn print_app_logs(app: &str, kind: InvocationKind, method: &str, logs: &[String]
 }
 
 #[cfg(test)]
+mod judged_on_tests {
+    use serde_json::json;
+
+    use super::JudgedOn;
+
+    /// Below the version that brings lineages an earlier node's bare bundle, or an object
+    /// without its compute part, is read as it was; from it, only the full shape is.
+    #[test]
+    fn from_names_the_compute_part_once_lineages_are_on() {
+        let bare = json!("b1");
+        let partial = json!({ "bundle": "b1" });
+        let full = json!({ "bundle": "b1", "computeBundle": null });
+        for from in [&bare, &partial, &full] {
+            assert!(JudgedOn::parse(from, false).is_ok(), "{from}");
+        }
+        assert!(JudgedOn::parse(&bare, true).is_err());
+        assert!(JudgedOn::parse(&partial, true).is_err());
+        let judged = JudgedOn::parse(&full, true).unwrap().unwrap();
+        assert!(judged.is(Some("b1"), None));
+        assert!(!judged.is(Some("b1"), Some("c1")));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3556,6 +3778,7 @@ mod tests {
                 method: "set".into(),
                 args: Value::Null,
                 on_behalf_of: None,
+                budget: None,
             }],
             ..Outcome::default()
         };

@@ -58,6 +58,7 @@ calimero-build-utils.workspace = true
 ed25519-dalek.workspace = true
 rand_chacha.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
+shlex.workspace = true
 calimero-node.workspace = true
 
 [lints]

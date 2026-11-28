@@ -342,7 +342,7 @@ class AuthFacade internal constructor(
     /**
      * The caller's account
      *
-     * The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`).
+     * The account, its passkeys (with `addedAt` and `lastSignInAt`), organizations (`personal`: one a sign-up made before cluster version 1.0.0-rc.32, an organization like any other from that version; a sign-up makes none from then on), recovery state, and how the caller came (`via`). A session opened on an instance's own site reads the account's id and name and that instance's organization alone: `passkeys` empty, no recovery state.
      *
      * **Who:** signed in (a session or an API key).
      *
@@ -475,7 +475,7 @@ class AuthFacade internal constructor(
     /**
      * Start a sign-up
      *
-     * Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up. `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
+     * Creation options for a new passkey. `invite` is an organization or cluster sign-up invite token, which the policy may require; `403 SIGN_UP_REFUSED` when the policy would refuse the sign-up; `429 RATE_LIMITED`, with `Retry-After`, while this node has taken as many sign-ups as it takes per minute (the retry of `register/finish` spends one, invited or not). `options` are the WebAuthn options to hand to the browser as they are: free-form here, their shape is WebAuthn's.
      *
      * **Who:** anyone.
      *

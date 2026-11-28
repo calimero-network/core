@@ -7,9 +7,9 @@ One context is one independent store, running the app's single service.
 Everyone the context admits reads and writes the same entries; a separate store needs a separate context.
 
 ## Getting started
-1. Create the context (`meroctl context create --name <name> --path kv_store.wasm`, or from an installed package). The store starts empty: there is no setup call.
+1. Create the context (`meroctl instance create --name <name> --path kv_store.wasm`, or from an installed package). The store starts empty: there is no setup call.
 2. To share it, create it in an organization (`--namespace <org>`) and invite the others to the organization.
-3. Call the procedures below with `meroctl call -c <context> <method> --args <json>`; add `--view` for the reads (`get`, `getResult`, `getUnchecked`, `entries`, `len`).
+3. Call the procedures below with `meroctl call -i <instance> <method> --args <json>`; add `--view` for the reads (`get`, `getResult`, `getUnchecked`, `entries`, `len`).
 
 ## Procedures
 ### Store a value

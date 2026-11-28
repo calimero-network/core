@@ -270,6 +270,7 @@ async fn deployer_list(
 ) -> ApiResult<Json<DeployerList>> {
     if operator(&node, &headers).is_err() {
         let p = signed_in(&node, &headers).await?;
+        p.beyond_instance(&node)?;
         let account = p.account()?;
         let _caught_up = node.sys_fresh_from(p.sys_index).await;
         let owner = node.sys(|s| {
