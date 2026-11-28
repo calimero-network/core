@@ -240,11 +240,13 @@ pub fn root_diff(
             });
         }
     }
-    // API keys a command names by their id, as root holds them (or gone).
+    // API keys a command names by their id, and those of the accounts it
+    // names (an upgrade key's consent names its key inside the proof), as root
+    // holds them (or gone).
     for (hash, key) in root
         .api_keys
         .iter()
-        .filter(|(_, k)| named_accounts.contains(&k.key_id))
+        .filter(|(_, k)| named_accounts.contains(&k.key_id) || named_accounts.contains(&k.account))
     {
         if tenant
             .api_keys
@@ -533,7 +535,14 @@ pub fn named_accounts(cmd: &super::SystemCmd, root: &SystemState) -> BTreeSet<St
                 let _new = out.insert(s.clone());
             }
             serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, root, out)),
-            serde_json::Value::Object(map) => map.values().for_each(|i| walk(i, root, out)),
+            serde_json::Value::Object(map) => {
+                for (k, i) in map {
+                    if root.accounts.contains_key(k) {
+                        let _new = out.insert(k.clone());
+                    }
+                    walk(i, root, out);
+                }
+            }
             _ => {}
         }
     }

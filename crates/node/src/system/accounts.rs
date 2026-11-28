@@ -227,8 +227,11 @@ fn check_sign_up_invite(
     account: &Account,
     redemption: &SignUpRedemption,
 ) -> Result<(), Rejection> {
+    // An organization invite on its tenant group (the cutover on) is named by
+    // root's routing directory; the tenant judges it when it redeems it.
     if !state.invites.contains_key(&redemption.invite_key)
         && !state.sign_up_invites.contains_key(&redemption.invite_key)
+        && !state.invite_org.contains_key(&redemption.invite_key)
     {
         return Err(Rejection::sign_up(
             "this invite was used up, revoked or never existed",

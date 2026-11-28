@@ -156,11 +156,28 @@ async fn refuse_sign_up(node: &Node, invite: Option<&str>) -> Result<(), ApiErro
     let key = invite.map(crate::proof::invite_key);
     let now = now_secs();
     let judge = |s: &SystemState| s.admits_key(key.as_deref().map(|k| (k, now))).map(|_| ());
-    if node.sys(judge).is_ok() {
+    // An organization invite on its tenant group (the cutover on) is judged
+    // there, where its uses and expiry are: root knows only that it exists.
+    let on_tenant = |node: &Node| {
+        let org = key
+            .as_deref()
+            .and_then(|k| node.sys(|s| s.invite_org.get(k).cloned()))
+            .filter(|_| crate::system::shard::ACTIVE)?;
+        Some(node.sys_org(&org, |s| {
+            s.invites.get(key.as_deref().unwrap_or_default()).map_or(
+                Err(crate::system::Rejection::sign_up(
+                    "this invite was used up, revoked or never existed",
+                )),
+                |_| judge(s),
+            )
+        }))
+    };
+    let judged = |node: &Node| on_tenant(node).unwrap_or_else(|| node.sys(judge));
+    if judged(node).is_ok() {
         return Ok(());
     }
     let _caught_up = node.sys_fresh().await;
-    node.sys(judge).map_err(crate::node::rejected)
+    judged(node).map_err(crate::node::rejected)
 }
 
 /// Refuse an account name past [`MAX_ACCOUNT_NAME_CHARS`], `400

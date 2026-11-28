@@ -1812,10 +1812,19 @@ impl Node {
         &self,
         bytes: Vec<u8>,
     ) -> Result<(u64, Vec<u8>), calimero_log::WriteError> {
-        let shard = serde_json::from_slice::<SystemCmd>(&bytes)
+        let cmd = serde_json::from_slice::<SystemCmd>(&bytes).ok();
+        let shard = cmd
+            .as_ref()
             .map_or(crate::system::shard::ShardId::Root, |cmd| {
-                self.shard_of(&cmd)
+                self.shard_of(cmd)
             });
+        // Shards kept in step as any node's write keeps them (the replica a
+        // tenant judges by); only the API's own checks are skipped.
+        if let (crate::system::shard::ShardId::Tenant(org), Some(cmd)) = (&shard, &cmd) {
+            let named = self.sys(|s| crate::system::tenant_sync::named_accounts(cmd, s));
+            let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
+            let _through = self.sync_tenant(org, deadline, &named, true).await;
+        }
         self.system_shard(&shard).write(bytes).await
     }
 
@@ -1882,6 +1891,18 @@ impl Node {
                 return Ok(());
             }
         }
+        // The tenant judges it against its replica of root's records: bring
+        // that replica to what the command needs first (the accounts and keys
+        // it names, root as of now), and judge once this node's replica took it.
+        if let crate::system::shard::ShardId::Tenant(org) = &routed {
+            if !keeps_shards_in_step(cmd) {
+                let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
+                let named = self.sys(|s| crate::system::tenant_sync::named_accounts(cmd, s));
+                if let Some(through) = self.sync_tenant(org, deadline, &named, true).await {
+                    self.await_tenant_through(org, through).await;
+                }
+            }
+        }
         let shard = self.system_shard(&routed);
         let judge = || shard.read_local(|m, _| crate::system::prejudge(m, cmd));
         if judge().is_ok() || !self.sys_fresh().await {
@@ -1931,7 +1952,7 @@ impl Node {
             // bring that replica to the root state this request read first.
             if !keeps_shards_in_step(cmd) {
                 let named = self.sys(|s| crate::system::tenant_sync::named_accounts(cmd, s));
-                self.sync_tenant(org, deadline, &named).await;
+                let _through = self.sync_tenant(org, deadline, &named, true).await;
             }
         }
         for attempt in 0_u32.. {
@@ -3193,7 +3214,8 @@ impl Node {
                     // level when a write did not (a node that failed between).
                     self.follow_system_voters(&g).await;
                     let soon = tokio::time::Instant::now() + Duration::from_secs(1);
-                    self.sync_tenant(&org, soon, &std::collections::BTreeSet::new())
+                    let _through = self
+                        .sync_tenant(&org, soon, &std::collections::BTreeSet::new(), false)
                         .await;
                     self.mirror_tenant(&org, g.applied()).await;
                 }
@@ -3243,17 +3265,19 @@ impl Node {
         org: &str,
         deadline: tokio::time::Instant,
         named: &std::collections::BTreeSet<String>,
-    ) {
+        fresh: bool,
+    ) -> Option<u64> {
         use crate::system::tenant_sync;
-        let Some(g) = self.hosted_tenant(org) else {
-            return;
-        };
+        let g = self.hosted_tenant(org)?;
         if !self.sys(|s| s.tenant_groups.contains_key(org)) {
-            return;
+            return None;
         }
         // Root as of now: a record written through another node a moment ago
-        // (an offer, an install) is what the command may be judged by.
-        let _caught_up = self.sys_fresh().await;
+        // (an offer, an install) is what the command may be judged by. The
+        // reconcile backstop syncs what this node holds, with no read round.
+        if fresh {
+            let _caught_up = self.sys_fresh().await;
+        }
         loop {
             let (base, through, records) = g.read_local(|m, _| {
                 self.system.read_local(|root, index| {
@@ -3265,7 +3289,7 @@ impl Node {
                 })
             });
             if records.is_empty() {
-                return;
+                return None;
             }
             let mut base = base;
             let mut synced = true;
@@ -3282,8 +3306,11 @@ impl Node {
                 }
                 base = base.max(through);
             }
-            if synced || tokio::time::Instant::now() >= deadline {
-                return;
+            if synced {
+                return Some(through);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
             }
             // Stale: let this node's view of the tenant catch up, then again.
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -3408,6 +3435,21 @@ impl Node {
     pub(crate) async fn remirror(&self, org: &str) {
         if let Some(g) = self.hosted_tenant(org) {
             self.mirror_tenant(org, g.applied()).await;
+        }
+    }
+
+    /// Wait (up to `Config::read_wait`) until this node's replica of
+    /// organization `org`'s tenant reflects root through `through`: a sync
+    /// another node's leader wrote has applied here too.
+    async fn await_tenant_through(&self, org: &str, through: u64) {
+        let Some(g) = self.hosted_tenant(org) else {
+            return;
+        };
+        let deadline = tokio::time::Instant::now() + self.config.read_wait;
+        while g.read_local(|m, _| m.state.root_through) < through
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 

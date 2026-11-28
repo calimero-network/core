@@ -1077,6 +1077,9 @@ fn delete_org(state: &mut SystemState, org: &str, actor: &str) -> Result<Value, 
     // (`next_tenant_group` stays monotonic), so no new group can alias it.
     let _unbound = state.tenant_groups.remove(org);
     state.invites.retain(|_, invite| invite.org != org);
+    // Its invites' routing entries go too: a token of a deleted organization
+    // finds no tenant to redeem on.
+    state.invite_org.retain(|_, o| o != org);
     unbind_publishers(state, org);
     let apps: Vec<String> = state
         .apps
