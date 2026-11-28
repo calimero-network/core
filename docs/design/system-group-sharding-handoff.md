@@ -152,31 +152,18 @@ session shards by the **org context it is minted for**; account-level sessions
   request's org context.
 This is a subsystem change; do it last among the flips and on its own.
 
-### `Approvals` / `Deployments` / `Updates` (`Placement::Scoped`)
-Designed to split by command scope (org-scoped → tenant, cluster-wide → root),
-but **the audit found they cannot move before `Apps`**: their state is read by
-root-applied `Apps` commands (`UpgradeApp` reads update policies, first
-approvals and deployments) and by root's Raft-admission index (release
-approvals), and their own commands read root (`apps`, `deployers`,
-`governance`). See the design note, "The governance areas stay on root: the split
-organization record". What landed instead keeps them on root and correct with
-the cutover on: readers merge the organization record (`Org::with_root_fields`
-in `Node::org_of`), and each governance command carries the actor's projected
-standing (`Org::standing_of`, `Node::standing`/`deployment_standings`) that
-`apply` judges membership against. The open items in the same class are listed
-there; close the root-applied `Apps` membership checks (same standing pattern)
-before or with the `Apps` flip.
+### `Apps`, `Updates` and the org-scoped governance commands — flipped
+They moved together (design note, "The `Apps` flip: tenants authoritative, root
+mirrors"): a tenant is authoritative for its organization's whole record, its
+apps and their invites; root keeps mirrors (`MirrorTenant`) for its own
+machinery, and each tenant a replica of root's registries (`SyncTenantRoot`).
+`Deployments` stay on root (cross-organization by nature) with the actors'
+standings baked in; the operator's approvals stay on root. The open items are
+listed in the design note under "What landed".
 
-### `Apps` (`Area::Apps`)
-App records belong to an org (`CreateApp` already bakes the org). The app
-directory is read widely (gates, reports, consent page), so flipping it is mostly
-reader-routing work (step 4) plus baking the few cross-shard apply reads. No
-account-identity split, but high read breadth.
-
-**Suggested order (revised after the governance audit):** close the remaining
-root-applied `Apps` membership checks with standings → `Apps` together with the
-scoped governance areas (`Deployments`, `Updates`, `Approvals`), whose state
-`Apps` reads → `Recovery` (split) → `Accounts` (the crux).
+**Suggested order (revised again):** the open items of the `Apps` flip
+(two-phase `MoveApp`, `ImportHolder`, origins, unit upgrade runs) → the rest of
+`Recovery` (account recovery stays root) → `Accounts` (the crux).
 
 ## 5. Pitfalls this session hit (save yourself the round-trips)
 

@@ -1542,11 +1542,17 @@ impl Node {
     pub fn sys_org<R>(&self, org: &str, f: impl FnOnce(&SystemState) -> R) -> R {
         use crate::system::shard;
         if shard::ACTIVE {
-            self.system_shard(&shard::ShardId::Tenant(org.to_owned()))
-                .read_local(|m, _| f(&m.state))
-        } else {
-            self.sys(f)
+            // A tenant this node does not host, or has not seeded yet (an
+            // organization made a moment ago), is read through root's mirror of
+            // it: for a new organization, the record `CreateOrg` wrote.
+            if let Some(g) = self
+                .hosted_tenant(org)
+                .filter(|g| g.read_local(|m, _| m.state.orgs.contains_key(org)))
+            {
+                return g.read_local(|m, _| f(&m.state));
+            }
         }
+        self.sys(f)
     }
 
     /// Wait until this node hosts organization `org`'s tenant group and its
@@ -1576,16 +1582,9 @@ impl Node {
     /// the cross-shard access read the sharded control plane performs.
     #[must_use]
     pub fn org_of(&self, org: &str) -> Option<crate::types::Org> {
-        let tenant = self.sys_org(org, |s| s.orgs.get(org).cloned())?;
-        if !crate::system::shard::ACTIVE {
-            return Some(tenant);
-        }
-        // The fields the areas still on root write are root's
-        // (`types::Org::with_root_fields`).
-        Some(match self.sys(|s| s.orgs.get(org).cloned()) {
-            Some(root) => tenant.with_root_fields(&root),
-            None => tenant,
-        })
+        // The tenant group is authoritative for the whole record once the
+        // cutover is on (root mirrors it, `system::tenant_sync`).
+        self.sys_org(org, |s| s.orgs.get(org).cloned())
     }
 
     /// The standing of `accounts` in organization `org`
@@ -1784,6 +1783,22 @@ impl Node {
         }
     }
 
+    /// Test hook: whatever bytes a test forges (a raw system command, never
+    /// judged by the API), written to this node's group of the shard the
+    /// command routes to (`Node::shard_of`; root when it does not parse): a
+    /// test appends to the log as a node that skipped every check would.
+    #[cfg(feature = "testing")]
+    pub async fn write_routed(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<(u64, Vec<u8>), calimero_log::WriteError> {
+        let shard = serde_json::from_slice::<SystemCmd>(&bytes)
+            .map_or(crate::system::shard::ShardId::Root, |cmd| {
+                self.shard_of(&cmd)
+            });
+        self.system_shard(&shard).write(bytes).await
+    }
+
     /// Test hook: the tenant group's own view of its seeding — `None` when this
     /// node does not host it, else whether it holds the org record and whether
     /// `account` is projected with a usable passkey (the identity the tenant
@@ -1834,7 +1849,20 @@ impl Node {
         // Judged on the shard that will apply it: with the cutover on, an
         // organization's commands apply on its tenant group, whose membership and
         // invites root's copy does not hold.
-        let shard = self.system_shard(&self.shard_of(cmd));
+        let routed = self.shard_of(cmd);
+        // A new organization's tenant may not be seeded here yet: wait for it as
+        // the propose does, and leave a command it still cannot judge to `apply`.
+        if let crate::system::shard::ShardId::Tenant(org) = &routed {
+            let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
+            self.await_tenant_ready(org, deadline).await;
+            let ready = self
+                .hosted_tenant(org)
+                .is_some_and(|g| g.read_local(|m, _| m.state.orgs.contains_key(org)));
+            if !ready {
+                return Ok(());
+            }
+        }
+        let shard = self.system_shard(&routed);
         let judge = || shard.read_local(|m, _| crate::system::prejudge(m, cmd));
         if judge().is_ok() || !self.sys_fresh().await {
             return Ok(());
@@ -1855,8 +1883,8 @@ impl Node {
     /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     pub(crate) fn shard_of(&self, cmd: &SystemCmd) -> crate::system::shard::ShardId {
         use crate::system::shard;
-        let tenant = if shard::flipped(cmd.area()) {
-            shard::tenant_of(&cmd.scope(), |_| None)
+        let tenant = if shard::ACTIVE {
+            self.sys(|s| cmd.tenant_in(s))
         } else {
             None
         };
@@ -1879,6 +1907,11 @@ impl Node {
         // moved off root.
         if let crate::system::shard::ShardId::Tenant(org) = &shard {
             self.await_tenant_ready(org, deadline).await;
+            // The tenant applies it against its replica of root's registries:
+            // bring that replica to the root state this request read first.
+            if !keeps_shards_in_step(cmd) {
+                self.sync_tenant(org, deadline).await;
+            }
         }
         for attempt in 0_u32.. {
             let Ok(written) =
@@ -1889,7 +1922,11 @@ impl Node {
             };
             match written {
                 Ok((index, out)) => {
-                    let _ = index;
+                    if let crate::system::shard::ShardId::Tenant(org) = &shard {
+                        if !keeps_shards_in_step(cmd) {
+                            self.mirror_tenant(org, index).await;
+                        }
+                    }
                     return output(&out).map_err(|e| rejected(&e));
                 }
                 Err(WriteError::NotLeader {
@@ -1903,7 +1940,16 @@ impl Node {
                         )
                         .await
                     {
-                        Ok(v) => return Ok(v),
+                        Ok(v) => {
+                            // The leader mirrored a tenant's change to root
+                            // before answering: read it here too.
+                            if matches!(shard, crate::system::shard::ShardId::Tenant(_))
+                                && !keeps_shards_in_step(cmd)
+                            {
+                                let _caught_up = self.sys_fresh().await;
+                            }
+                            return Ok(v);
+                        }
                         Err(e) => match e.downcast::<ApiError>() {
                             Ok(api) if api.code != "UNAVAILABLE" => return Err(api),
                             _ => {}
@@ -2606,6 +2652,12 @@ impl Node {
     /// before the request: missing there, it is missing, answered at once.
     /// Only when no leader answers does it wait for one ([`Node::sys_until`]).
     pub async fn app(&self, app_id: &str) -> Result<AppRecord, ApiError> {
+        // The app's own tenant group is authoritative for its record, and is
+        // what a request read its organization from: read it there when this
+        // node hosts it, so the two reads come from one log.
+        if let Some(app) = self.tenant_app(app_id) {
+            return Ok(app);
+        }
         let find = |s: &SystemState| s.apps.get(app_id).cloned();
         let found = match self.sys(find) {
             Some(app) => Some(app),
@@ -3115,6 +3167,12 @@ impl Node {
                     if let Some(cmd) = lag {
                         self.write_tenant(&g, &org, &cmd).await;
                     }
+                    // Backstop of the write path: the replica of root's
+                    // registries and root's mirror of the tenant, each brought
+                    // level when a write did not (a node that failed between).
+                    let soon = tokio::time::Instant::now() + Duration::from_secs(1);
+                    self.sync_tenant(&org, soon).await;
+                    self.mirror_tenant(&org, g.applied()).await;
                 }
                 if !seeded && g.status().is_leader {
                     if let Some((record, members)) = self.sys(|s| {
@@ -3147,6 +3205,143 @@ impl Node {
                 }
             }
         }
+    }
+
+    /// Bring organization `org`'s tenant replica of root's registries to this
+    /// node's root state (`SyncTenantRoot`, `system::tenant_sync`), before a
+    /// command the tenant applies against it is routed there. The diff is taken
+    /// against this node's view of the tenant; one the tenant refuses as stale
+    /// (another node synced meanwhile) is taken again, until `deadline`.
+    pub(crate) async fn sync_tenant(&self, org: &str, deadline: tokio::time::Instant) {
+        use crate::system::tenant_sync;
+        let Some(g) = self.hosted_tenant(org) else {
+            return;
+        };
+        if !self.sys(|s| s.tenant_groups.contains_key(org)) {
+            return;
+        }
+        loop {
+            let (base, through, records) = g.read_local(|m, _| {
+                self.system.read_local(|root, index| {
+                    (
+                        m.state.root_through,
+                        index,
+                        tenant_sync::root_diff(&m.state, &root.state),
+                    )
+                })
+            });
+            if records.is_empty() {
+                return;
+            }
+            let mut base = base;
+            let mut synced = true;
+            for chunk in tenant_sync::chunks(records) {
+                let cmd = SystemCmd::SyncTenantRoot {
+                    org: org.to_owned(),
+                    base,
+                    through,
+                    records: chunk,
+                };
+                if Box::pin(self.sys_propose(&cmd)).await.is_err() {
+                    synced = false;
+                    break;
+                }
+                base = base.max(through);
+            }
+            if synced || tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            // Stale: let this node's view of the tenant catch up, then again.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Bring root's mirror of organization `org`'s records to its tenant group
+    /// as of tenant index `index` (`MirrorTenant`, `system::tenant_sync`), after
+    /// the tenant applied a command that may change them, so root's machinery
+    /// (app hosting, Raft admission, placement) and this node's reads see it.
+    pub(crate) async fn mirror_tenant(&self, org: &str, index: u64) {
+        use crate::system::tenant_sync;
+        let Some(g) = self.hosted_tenant(org) else {
+            return;
+        };
+        // A deleted organization's tenant is mirrored no more.
+        if !self.sys(|s| s.tenant_groups.contains_key(org)) {
+            return;
+        }
+        let _applied = g.wait_applied(index, self.config.read_wait).await;
+        let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
+        loop {
+            let (base, through, records) = g.read_local(|m, tenant_index| {
+                self.sys(|root| {
+                    (
+                        root.mirrored.get(org).copied().unwrap_or_default(),
+                        tenant_index,
+                        tenant_sync::mirror_diff(org, root, &m.state),
+                    )
+                })
+            });
+            if records.is_empty() {
+                return;
+            }
+            let mut base = base;
+            let mut mirrored = true;
+            for chunk in tenant_sync::chunks(records) {
+                let cmd = SystemCmd::MirrorTenant {
+                    org: org.to_owned(),
+                    base,
+                    through,
+                    records: chunk,
+                };
+                if Box::pin(self.sys_propose(&cmd)).await.is_err() {
+                    mirrored = false;
+                    break;
+                }
+                base = base.max(through);
+            }
+            // Read-your-writes: this node's root applies the mirror before the
+            // request that changed the tenant is answered.
+            let _caught_up = self.sys_fresh().await;
+            if mirrored || tokio::time::Instant::now() >= deadline {
+                return;
+            }
+        }
+    }
+
+    /// App `app_id`'s record from its organization's tenant group, when the
+    /// cutover is on and this node hosts that group: its organization as root's
+    /// mirror names it, else any hosted tenant holding it (an app made a moment
+    /// ago, not mirrored yet).
+    pub(crate) fn tenant_app(&self, app_id: &str) -> Option<AppRecord> {
+        if !crate::system::shard::ACTIVE {
+            return None;
+        }
+        let named = self.sys(|s| s.apps.get(app_id).map(|a| a.org.clone()));
+        if let Some(app) = named
+            .and_then(|org| self.hosted_tenant(&org))
+            .and_then(|g| g.read_local(|m, _| m.state.apps.get(app_id).cloned()))
+        {
+            return Some(app);
+        }
+        let tenants: Vec<Arc<Group<SystemMachine>>> = self
+            .tenants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        tenants
+            .iter()
+            .find_map(|g| g.read_local(|m, _| m.state.apps.get(app_id).cloned()))
+    }
+
+    /// The tenant group of organization `org`, when this node hosts it.
+    fn hosted_tenant(&self, org: &str) -> Option<Arc<Group<SystemMachine>>> {
+        self.tenants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(org)
+            .cloned()
     }
 
     /// Write a node-made command (`SeedTenant`, `SyncTenantMarks`) straight to
@@ -4926,4 +5121,16 @@ pub struct OutboundLog {
     pub entries: Vec<calimero_outbound::AuditEntry>,
     /// A replica did not answer, so some of its runs' requests may be missing.
     pub partial: bool,
+}
+
+/// Whether `cmd` is one the node writes to keep root and the tenant groups in
+/// step (`system::tenant_sync`): never synced or mirrored around itself.
+pub(crate) const fn keeps_shards_in_step(cmd: &SystemCmd) -> bool {
+    matches!(
+        cmd,
+        SystemCmd::SeedTenant { .. }
+            | SystemCmd::SyncTenantMarks { .. }
+            | SystemCmd::SyncTenantRoot { .. }
+            | SystemCmd::MirrorTenant { .. }
+    )
 }

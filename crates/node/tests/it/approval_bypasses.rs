@@ -325,14 +325,7 @@ async fn system_leader(c: &Cluster) -> usize {
 /// would (decision 7: an unapproved node may lead the system group), and read
 /// what `apply` answered.
 async fn append(c: &Cluster, cmd: &Value) -> Result<Value, String> {
-    let leader = system_leader(c).await;
-    let (_index, out) = running(c, leader)
-        .node
-        .system
-        .write(serde_json::to_vec(cmd).unwrap())
-        .await
-        .unwrap();
-    calimero_node::system::output(&out).map_err(|e| e.to_string())
+    crate::harness::append_routed(c, cmd).await
 }
 
 /// A consent as the API logs it: `pk`'s assertion over the statement.

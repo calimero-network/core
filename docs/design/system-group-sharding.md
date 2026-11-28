@@ -647,8 +647,9 @@ area moves, each field of `Org` is owned by the shard whose area writes it:
 
 Two mechanisms make that consistent:
 
-1. **Readers merge the record** (`Org::with_root_fields`, applied by
-   `Node::org_of` with the cutover on): the tenant's record with the root-written
+1. **Readers merged the record** (`Org::with_root_fields`, applied by
+   `Node::org_of` with the cutover on; removed once the `Apps` flip below made
+   the tenant authoritative for the whole record): the tenant's record with the root-written
    fields taken from root's copy. Before this, a page or gate that read the
    organization through `org_of`/`sys_org` showed the tenant's never-written
    governance fields — `GET /orgs/{org}` answered `egressOff: false` after egress
@@ -775,7 +776,7 @@ its app records (`apps` of that org), `app_invites`, `app_file_bytes`,
 `deployment_secrets`. The `Apps` area and the org-scoped commands of
 `Approvals`, `Updates` and `Deployments` route to the tenant
 (`SystemCmd::scope`); the cluster-wide commands of those areas stay on root.
-With the whole record on one shard, `Org::with_root_fields` and the standings
+With the whole record on one shard, the merge of root-written fields and the standings
 of the governance commands become unnecessary for the moved commands (they stay
 for root-applied commands that judge membership, e.g. `InstallPackage`).
 
@@ -829,6 +830,27 @@ loop if the node fails between them:
   deployment reads the offer from the owner's tenant at propose (baked); no
   write reaches the owner.
 - `DeleteOrg` (root directory) is followed by the tenant's own teardown.
+
+**What landed** (each behaviour-preserving with the cutover off):
+`SyncTenantMarks`; the tenant app-group blocks; `system/tenant_sync.rs` with
+`SyncTenantRoot` (root's registries into a tenant) and `MirrorTenant` (a
+tenant's records onto root), driven by the write path (`Node::sync_tenant`
+before a tenant write, `Node::mirror_tenant` after it, on the leader that wrote
+it) and by the reconcile loop as a backstop; the flip of `Apps`, `Updates` and
+the organization-scoped `Approvals`/`Recovery` commands
+(`SystemCmd::on_tenant`, `SystemCmd::tenant_in` resolving an app's or invite's
+organization from root's mirror where a write routes and from the tenant's own
+records where it applies); `Node::app` and `Node::sys_org` reading the
+authoritative tenant when this node hosts it (root's mirror otherwise, and for a
+tenant not seeded yet); prejudge waiting for a new organization's tenant; and
+`Node::write_routed` for tests that forge log entries. Measured at
+`ACTIVE = true` on the nine modules above: 64 of 70 pass (from 48 after the
+governance slice), then more with the read and prejudge fixes. Open: `MoveApp`
+across organizations (two-phase, it also moves root's compute slots and file
+bytes), `ImportHolder` writing apps on root, origin registration (`AddAppOrigin`,
+root) judging against the mirror, a unit upgrade run whose members stay on their
+release, and the per-tenant cap of public links (the cluster-wide
+`MAX_PUBLIC_LINKS` counts one tenant's apps).
 
 **Order of work.** (1) `SyncTenantMarks` (landed); (2) the tenant app-group
 range; (3) the root mirrors and their reconcile, with root's machinery reading

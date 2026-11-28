@@ -10,7 +10,6 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use calimero_client::{Client, Request};
 use calimero_node::system::{Deployers, Deployments, SystemCmd};
@@ -225,24 +224,7 @@ async fn ops(c: &Cluster) -> Client {
 /// Append `cmd` to the system log as the system leader's own code would,
 /// and read what `apply` answered.
 async fn append(c: &Cluster, cmd: &Value) -> Result<Value, String> {
-    for _ in 0..100 {
-        let leader = c
-            .nodes
-            .iter()
-            .flatten()
-            .find(|r| r.node.system.status().is_leader);
-        if let Some(r) = leader {
-            let (_index, out) = r
-                .node
-                .system
-                .write(serde_json::to_vec(cmd).unwrap())
-                .await
-                .unwrap();
-            return calimero_node::system::output(&out).map_err(|e| e.to_string());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    panic!("no system leader");
+    crate::harness::append_routed(c, cmd).await
 }
 
 /// The operator key's signature over `cluster / method / args` in `c`, as

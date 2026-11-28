@@ -37,7 +37,7 @@ use crate::types::{AccountId, AppId, OrgId};
 /// goes first; later slices add the rest. An area not here is read and written on
 /// root exactly as before, so the flip is incremental.
 pub(crate) const fn flipped(area: Area) -> bool {
-    matches!(area, Area::Orgs)
+    matches!(area, Area::Orgs | Area::Apps | Area::Updates)
 }
 
 /// Whether tenant sharding routes and applies by shard. This is the cutover
@@ -112,6 +112,9 @@ pub(crate) enum Scope {
     OfApp(AppId),
     /// Scoped to the organization context of the named account.
     OfAccount(AccountId),
+    /// Scoped to the organization of the app an instance invite (by its key)
+    /// is for.
+    OfAppInvite(String),
 }
 
 /// How an [`Area`]'s commands place: the structural half of the decision, before
@@ -156,7 +159,7 @@ pub(crate) fn tenant_of(
     match scope {
         Scope::Cluster => None,
         Scope::Org(org) => Some(org.clone()),
-        Scope::OfApp(_) | Scope::OfAccount(_) => resolve_org(scope),
+        Scope::OfApp(_) | Scope::OfAccount(_) | Scope::OfAppInvite(_) => resolve_org(scope),
     }
 }
 

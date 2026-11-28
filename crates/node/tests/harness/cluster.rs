@@ -333,3 +333,23 @@ pub fn typed<T: serde::Serialize + serde::de::DeserializeOwned>(body: serde_json
     );
     typed
 }
+
+/// Append a forged system command (raw JSON, never judged by the API) to the
+/// log of the shard it routes to (`Node::write_routed`): on whichever node
+/// leads that shard, as a node that skipped every check would. Its output, or
+/// the refusal `apply` answered.
+pub async fn append_routed(
+    c: &Cluster,
+    cmd: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let bytes = serde_json::to_vec(cmd).unwrap();
+    for _ in 0..100 {
+        for r in c.nodes.iter().flatten() {
+            if let Ok((_index, out)) = r.node.write_routed(bytes.clone()).await {
+                return calimero_node::system::output(&out).map_err(|e| e.to_string());
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("no node leads the command's shard");
+}

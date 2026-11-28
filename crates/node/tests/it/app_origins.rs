@@ -336,20 +336,10 @@ async fn an_instances_origin_signs_people_in_to_that_instance_only() {
             at: 0,
         },
     });
-    let leader = c
-        .nodes
-        .iter()
-        .flatten()
-        .find(|r| r.node.system.status().is_leader)
-        .unwrap();
-    let (_index, out) = leader
-        .node
-        .system
-        .write(serde_json::to_vec(&forged).unwrap())
+    let refused = crate::harness::append_routed(&c, &serde_json::to_value(&forged).unwrap())
         .await
-        .unwrap();
-    let refused = calimero_node::system::output(&out).unwrap_err();
-    assert!(refused.message().contains("manages"), "{refused}");
+        .unwrap_err();
+    assert!(refused.contains("manages"), "{refused}");
 
     // Removal ends her site session; the site may not call the node any more.
     let removed = wire(

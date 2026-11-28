@@ -38,6 +38,7 @@ mod routing;
 pub(crate) mod shard;
 mod sign_up;
 mod state_caps;
+pub(crate) mod tenant_sync;
 mod updates;
 
 pub use accounts::SessionsRevoked;
@@ -917,6 +918,14 @@ pub struct SystemState {
     /// written before sharding reads and writes as it did.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub next_tenant_group: u64,
+    /// Tenant-owned: the root index this tenant's replica of root's registries
+    /// reflects (`SyncTenantRoot`, `tenant_sync`); 0 on root and before sharding.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub root_through: u64,
+    /// Root-owned: for each organization, the index of its tenant group that
+    /// root's mirror of its records reflects (`MirrorTenant`, `tenant_sync`).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub mirrored: BTreeMap<OrgId, u64>,
     /// invite key (the token's Ed25519 public key, hex) -> invite
     pub invites: BTreeMap<String, Invite>,
     /// Root-held routing directory for organization invites: invite key -> the
@@ -6468,6 +6477,7 @@ impl SystemCmd {
             Self::DeleteOrg { .. } => Area::Orgs,
             Self::SeedTenant { .. } => Area::Orgs,
             Self::SyncTenantMarks { .. } => Area::Orgs,
+            Self::SyncTenantRoot { .. } | Self::MirrorTenant { .. } => Area::Orgs,
             Self::BindInvite { .. } => Area::Orgs,
             Self::SetOrgMetadata { .. } => Area::Orgs,
             Self::SetMemberMetadata { .. } => Area::Orgs,
@@ -6517,6 +6527,61 @@ impl SystemCmd {
     /// it) — stays on root. Nothing moves until the gate turns on and tenant
     /// groups exist (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     pub(crate) fn scope(&self) -> shard::Scope {
+        self.scope_of()
+    }
+
+    /// Whether this command applies on its organization's tenant group once the
+    /// cutover is on: every command of the areas moved there (`shard::flipped`:
+    /// the organization's structure, its apps and their updates), and the
+    /// organization-scoped commands of the governance areas that write the
+    /// organization's or its apps' records (egress, its release and outbound
+    /// approvals, its recovery key and recoveries). Root keeps everything else
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub(crate) fn on_tenant(&self) -> bool {
+        if shard::flipped(self.area()) {
+            return true;
+        }
+        matches!(
+            self,
+            Self::SetEgress { .. }
+                | Self::SetReleaseApproval {
+                    scope: ReleaseScope::Org { .. },
+                    ..
+                }
+                | Self::SetOutboundApproval {
+                    scope: ReleaseScope::Org { .. },
+                    ..
+                }
+                | Self::SetRecoveryKey { .. }
+                | Self::StartRecovery { .. }
+                | Self::CancelRecovery { .. }
+                | Self::FinishRecovery { .. }
+        )
+    }
+
+    /// The organization whose tenant group applies this command
+    /// ([`Self::on_tenant`]), an app's or an invite's read from `s`: root's
+    /// mirror where a write is routed, the tenant's own records where it
+    /// applies. `None` for a command root applies, or whose app is unknown in `s`.
+    #[must_use]
+    pub(crate) fn tenant_in(&self, s: &SystemState) -> Option<OrgId> {
+        use shard::Scope;
+        if !self.on_tenant() {
+            return None;
+        }
+        shard::tenant_of(&self.scope(), |scope| match scope {
+            Scope::OfApp(id) => s.apps.get(id).map(|a| a.org.clone()),
+            Scope::OfAppInvite(key) => s
+                .app_invites
+                .get(key)
+                .and_then(|i| s.apps.get(&i.app))
+                .map(|a| a.org.clone()),
+            _ => None,
+        })
+    }
+
+    fn scope_of(&self) -> shard::Scope {
         use shard::Scope;
         match self {
             // Org structure, teams, invites, org-scoped governance and recovery.
@@ -6548,7 +6613,11 @@ impl SystemCmd {
             | Self::FinishRecovery { org, .. } => Scope::Org(org.clone()),
             // Seeded into the organization's own tenant group.
             Self::SeedTenant { org, .. } => Scope::Org(org.org_id.clone()),
-            Self::SyncTenantMarks { org, .. } => Scope::Org(org.clone()),
+            Self::SyncTenantMarks { org, .. } | Self::SyncTenantRoot { org, .. } => {
+                Scope::Org(org.clone())
+            }
+            // Root's mirror of a tenant is root's own state.
+            Self::MirrorTenant { .. } => Scope::Cluster,
             // An invite and its redemption live in the organization's tenant
             // group: the invite carries its org directly; the redemption's org is
             // resolved from the root `invite_org` directory at propose and baked
@@ -6559,6 +6628,20 @@ impl SystemCmd {
             Self::BindInvite { .. } => Scope::Cluster,
             // A new app carries its org directly.
             Self::CreateApp { app, .. } => Scope::Org(app.org.clone()),
+            // An organization's release and outbound approvals; the operator's
+            // (`ReleaseScope::Cluster`) are root's.
+            Self::SetReleaseApproval {
+                scope: ReleaseScope::Org { org },
+                ..
+            }
+            | Self::SetOutboundApproval {
+                scope: ReleaseScope::Org { org },
+                ..
+            } => Scope::Org(org.clone()),
+            // An instance's invites and links live with the instance.
+            Self::CreateAppInvite { invite, .. } => Scope::OfApp(invite.app.clone()),
+            Self::CreatePublicLink { link, .. } => Scope::OfApp(link.app.clone()),
+            Self::RedeemAppInvite { invite_key, .. } => Scope::OfAppInvite(invite_key.clone()),
             // Commands on an existing app → the app's owning org (resolved from
             // the root directory at propose).
             Self::UpgradeApp { app_id, .. }
@@ -8332,6 +8415,32 @@ pub enum SystemCmd {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         expires_proofs: bool,
     },
+    /// Node-written, never from a client: brings organization `org`'s tenant
+    /// replica of root's cluster-wide registries (packages, bundles, the fleet,
+    /// governance, quotas, deployments) to root's records as of root index
+    /// `through`, computed against the replica as of `base` (refused unless the
+    /// replica is still there). Applied only on a tenant machine
+    /// (`tenant_sync`; <https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    SyncTenantRoot {
+        org: OrgId,
+        base: u64,
+        through: u64,
+        #[serde(default)]
+        records: Vec<tenant_sync::RootRecord>,
+    },
+    /// Node-written, never from a client: brings root's mirror of organization
+    /// `org`'s records (its organization record, its apps and their invites) to
+    /// its tenant group's as of tenant index `through`, computed against the
+    /// mirror as of `base` (refused unless the mirror is still there). Applied
+    /// only on root (`tenant_sync`;
+    /// <https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    MirrorTenant {
+        org: OrgId,
+        base: u64,
+        through: u64,
+        #[serde(default)]
+        records: Vec<tenant_sync::TenantRecord>,
+    },
     /// Record an organization invite in the root routing directory
     /// ([`SystemState::invite_org`]): `invite_key` belongs to `org`. Written to
     /// the root group alongside the `CreateInvite` that stores the invite on the
@@ -9028,14 +9137,17 @@ impl SystemMachine {
         // ([`shard::owns`]). `SeedTenant` is the node's own seed, written
         // straight to its tenant group. While the cutover is off every command
         // owns on root, so this is behaviour-preserving.
-        let tenant = if shard::flipped(cmd.area()) {
-            shard::tenant_of(&cmd.scope(), |_| None)
-        } else {
-            None
-        };
+        // On a tenant, a command for an app (or invite) it does not hold is its
+        // own still, and is refused by its own rules (`no such app`).
+        let tenant = cmd.tenant_in(&self.state).or_else(|| match &self.role {
+            shard::ShardId::Tenant(org) if cmd.on_tenant() => Some(org.clone()),
+            shard::ShardId::Tenant(_) | shard::ShardId::Root => None,
+        });
         if !matches!(
             cmd,
-            SystemCmd::SeedTenant { .. } | SystemCmd::SyncTenantMarks { .. }
+            SystemCmd::SeedTenant { .. }
+                | SystemCmd::SyncTenantMarks { .. }
+                | SystemCmd::SyncTenantRoot { .. }
         ) && !shard::owns(&self.role, tenant, shard::ACTIVE)
         {
             return Err("this command reached the wrong system shard".into());

@@ -979,9 +979,11 @@ impl SystemCmd {
             Self::RedeemInvite { .. } => Vec::new(),
             // Node-written seed and invite routing directory; hard cutover,
             // never gated.
-            Self::SeedTenant { .. } | Self::SyncTenantMarks { .. } | Self::BindInvite { .. } => {
-                Vec::new()
-            }
+            Self::SeedTenant { .. }
+            | Self::SyncTenantMarks { .. }
+            | Self::SyncTenantRoot { .. }
+            | Self::MirrorTenant { .. }
+            | Self::BindInvite { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
             }

@@ -393,9 +393,18 @@ async fn internal_system(
     let bytes = serde_json::to_vec(&cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
     // Only the leader answers; a follower refuses rather than forwarding again.
     match node.system_shard(&shard).write(bytes).await {
-        Ok((_i, out)) => crate::system::output(&out)
-            .map(Json)
-            .map_err(|e| crate::node::rejected(&e)),
+        Ok((index, out)) => {
+            // This node leads the tenant group: mirror what the command changed
+            // to root before answering, as the local propose path does.
+            if let crate::system::shard::ShardId::Tenant(org) = &shard {
+                if !crate::node::keeps_shards_in_step(&cmd) {
+                    node.mirror_tenant(org, index).await;
+                }
+            }
+            crate::system::output(&out)
+                .map(Json)
+                .map_err(|e| crate::node::rejected(&e))
+        }
         Err(e) => Err(ApiError::unavailable(&e.to_string())),
     }
 }

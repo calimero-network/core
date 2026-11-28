@@ -1710,31 +1710,6 @@ impl Org {
         }
     }
 
-    /// This organization (as its tenant group holds it) with the fields the
-    /// root group still writes taken from `root`, root's copy of it. Once the
-    /// control plane shards by tenant, one organization record is written by two
-    /// shards: the `Orgs` area (its name, members, teams, capabilities, metadata
-    /// and settings) applies on the tenant, while the areas not yet moved apply
-    /// on root and write their own fields of the record there — release and
-    /// outbound approvals and the egress switch (`Approvals`), update policies
-    /// and first approvals (`Updates`), upgrade runs (`Apps`) and recovery
-    /// (`Recovery`). A reader that wants the whole organization reads each field
-    /// from the shard that writes it, through this
-    /// ([design note](https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md)).
-    #[must_use]
-    pub fn with_root_fields(mut self, root: &Self) -> Self {
-        self.approved_releases.clone_from(&root.approved_releases);
-        self.outbound_approvals.clone_from(&root.outbound_approvals);
-        self.egress_off = root.egress_off;
-        self.upgrade_policy = root.upgrade_policy;
-        self.app_upgrade_policies
-            .clone_from(&root.app_upgrade_policies);
-        self.pending_upgrades.clone_from(&root.pending_upgrades);
-        self.upgrade_runs.clone_from(&root.upgrade_runs);
-        self.recovery.clone_from(&root.recovery);
-        self
-    }
-
     #[must_use]
     pub fn role(&self, account: &str) -> Option<OrgRole> {
         self.members.get(account).copied()

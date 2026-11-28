@@ -578,8 +578,33 @@ pub(super) fn prejudge(s: &SystemState, cmd: &SystemCmd) -> Result<(), Rejection
 /// `CreateTeam`, `SetTeamMember`, `UpdateTeam`) goes whole to its function,
 /// which takes its fields by name.
 pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
-    if let SystemCmd::SyncTenantMarks { .. } = cmd {
-        return sync_tenant_marks(m, cmd);
+    match cmd {
+        SystemCmd::SyncTenantMarks { .. } => return sync_tenant_marks(m, cmd),
+        SystemCmd::SyncTenantRoot {
+            base,
+            through,
+            records,
+            ..
+        } => {
+            if m.role == crate::system::shard::ShardId::Root {
+                return Err("root's registries are synced only into a tenant group".into());
+            }
+            super::tenant_sync::apply_sync(&mut m.state, base, through, records)?;
+            return Ok(Value::Null);
+        }
+        SystemCmd::MirrorTenant {
+            org,
+            base,
+            through,
+            records,
+        } => {
+            if m.role != crate::system::shard::ShardId::Root {
+                return Err("a tenant's records are mirrored only on root".into());
+            }
+            super::tenant_sync::apply_mirror(&mut m.state, &org, base, through, records)?;
+            return Ok(Value::Null);
+        }
+        _ => {}
     }
     let state = &mut m.state;
     match cmd {
