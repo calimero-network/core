@@ -455,8 +455,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             version,
             actor,
             at,
+            serving,
             ..
-        } => offer_app(state, deployment, app, package, version, actor, at),
+        } => offer_app(state, deployment, app, package, version, actor, at, serving),
         SystemCmd::WithdrawApp {
             deployment,
             app,
@@ -637,18 +638,25 @@ fn offer_app(
     version: String,
     actor: AccountId,
     at: u64,
+    serving: Vec<crate::types::Org>,
 ) -> Result<Value, Rejection> {
     let record = managed_deployment(state, &deployment, &actor)?;
     if !state.may_deploy(&actor, at) {
         return Err(NOT_A_DEPLOYER);
     }
     deployment_segment_fits(&app)?;
-    // A release the manager may not see is answered as missing.
+    // A release the manager may not see is answered as missing. The
+    // organizations a private release serves are baked from their own shards
+    // (their tenant groups), so the visibility check judges membership against
+    // them rather than root's copy
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let extra: std::collections::BTreeMap<crate::types::OrgId, crate::types::Org> =
+        serving.into_iter().map(|o| (o.org_id.clone(), o)).collect();
     let seen = state
         .packages
         .get(&package)
         .and_then(|recorded| recorded.versions.get(&version))
-        .is_some_and(|release| state.sees_release(release, &actor));
+        .is_some_and(|release| state.sees_release_with(release, &actor, &extra));
     if !seen {
         return Err(INSTALL_FIRST);
     }

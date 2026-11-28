@@ -697,6 +697,7 @@ async fn deployment_offer(
         body.confirm,
     )
     .await?;
+    let serving = node.release_org_view(&body.package).into_values().collect();
     Ok(Json(
         node.sys_write(&SystemCmd::OfferApp {
             deployment: id,
@@ -706,6 +707,7 @@ async fn deployment_offer(
             actor: account,
             at: now_secs(),
             consent,
+            serving,
         })
         .await?,
     ))

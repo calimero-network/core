@@ -7467,6 +7467,14 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The organizations the offered release serves, each read from its own
+        /// shard (its tenant group) at propose, so `apply` on the root group can
+        /// judge whether the manager sees the release (a member of an
+        /// organization it serves) without reading another shard. Empty with the
+        /// cutover off, then the check reads root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        serving: Vec<crate::types::Org>,
     },
     /// Remove `app` from `deployment` (`__withdraw_app / { app }`): refused
     /// while an instance created from the deployment runs its package. The

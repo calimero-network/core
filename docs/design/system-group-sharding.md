@@ -526,6 +526,51 @@ a live three-node cluster:
   `CreateApp` org-bake) is compatible with either fork; the fork only decides
   where the invite/membership **writes** go.
 
+### Progress with the cutover on (fork Y, attestation-level binding chosen)
+
+The cutover was taken down fork **Y** with the binding trusted at the
+**attestation** boundary the rest of the system already uses (per-node receipt
+keys, the leader's logged measurements, the shipped tenant seed); consent is
+always re-verified from the baked passkey. Landed and verified (each slice green
+with the cutover off, so all behaviour-preserving until the final flip):
+
+- **Invites and redemption on the tenant.** `CreateInvite` stores the invite on
+  the org's tenant group; a root `invite_org` directory (`BindInvite`) maps the
+  bearer token to its org so `RedeemInvite` routes there, carrying the redeemer's
+  account identity so the tenant registers them from the entry. The peer-forward
+  handler routes a forwarded command to its shard; the component host functions
+  (`org-role`, `in-team`, `orgs-of`) read the org from its shard.
+- **Access gates read the org from its shard.** `Node::sys_with_org` hands a gate
+  the root state and the org from its tenant together; the release-approval,
+  upgrade-policy, recovery, backup-key, egress, usage, team and app-transfer
+  gates route through it, plus the invite list/revoke readers that moved with the
+  invite records.
+- **App-management commands bake the org.** `TransferApp`, `SetAccess`,
+  `SetAppMetadata` (and `OfferApp`) carry the app's organization — or, for an
+  offer, the release's serving organizations — read from their shards at propose,
+  so `apply` on the root group re-judges membership against them.
+- **Release visibility fans out across shards.** `member_of_with` /
+  `sees_release_with` / `package_used_with` take an `extra` map of organizations
+  the node resolved from their tenant groups; the install, registry-install,
+  offer and upgrade gates build it with `Node::release_org_view`. A member can
+  see and instantiate a private release their organization serves.
+
+This cleared the large majority of the `component_cluster` failures under the
+cutover. **Remaining, and genuinely cross-tenant** (a single read spanning many
+organizations, which no one shard holds — the design's hardest shape):
+
+- **Deployment serving across customers.** Deciding which instances a changed
+  offer moves, and what update is available, reads the membership of every
+  organization the deployment serves at once. It needs a fan-out over the
+  deployment's customer organizations (each on its own tenant), in the
+  available-update gate and the move path — the same `release_org_view` shape
+  widened from one release's orgs to a deployment's customers.
+- **The legacy `sees_release` branch** (releases recorded before `visibility`)
+  still scans all organizations on root; a genesis-sharded cluster records
+  visibility on every release, so it is unreached there, but it is not sharded.
+- **The deployment customer report** (`api/deployments.rs`) aggregates member
+  counts across every customer organization — the same fan-out.
+
 ## Open questions / risks
 
 - **The gating decision: verifying a credential inside a tenant.** This blocks
