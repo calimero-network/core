@@ -388,7 +388,7 @@ A release ships compute methods or sandbox methods, not both: its one job compon
 
 Only a job node started with `--sandbox` prepares a sandbox component, and the operator puts such nodes in a pool marked `sandbox`.
 A sandbox run takes a sandbox pool only, and no other run does, so a cluster without a sandbox pool answers `RUN_NO_POOL`.
-On the job node each run gets a fresh sandbox (`calimero-sandbox`): a size-capped workspace, a cgroup capping memory, processes and CPU, and, per `exec`, new mount, PID, network, IPC, UTS and cgroup namespaces under an unprivileged init with a seccomp filter, a read-only image and no network.
+On the job node each run gets a fresh sandbox (`calimero-sandbox`): a size-capped workspace, a cgroup capping memory, processes and CPU, and, per `exec`, a new mount, PID, network, IPC, UTS and cgroup view of the system (`unshare(2)`) under an unprivileged init with a seccomp filter, a read-only image and no network.
 The node reads and writes the workspace with `openat2` resolve flags, so a planted symlink, `..` or FIFO cannot move it outside.
 `collect` seals a workspace file as one of the run's outputs, under the file limits of any output.
 The run's report counts the sandbox's CPU time and peak memory with the component's, and the sandbox, with everything left in it, is removed when the run ends.

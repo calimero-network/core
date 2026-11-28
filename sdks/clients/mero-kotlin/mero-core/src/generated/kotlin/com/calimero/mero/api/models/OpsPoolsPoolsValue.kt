@@ -33,6 +33,7 @@ import kotlinx.serialization.Contextual
  *
  * @param runsPerNode 
  * @param maxMemoryMib 
+ * @param sandbox 
  */
 @Serializable
 
@@ -42,7 +43,10 @@ data class OpsPoolsPoolsValue (
     val runsPerNode: kotlin.Long,
 
     @SerialName(value = "maxMemoryMib")
-    val maxMemoryMib: kotlin.Long
+    val maxMemoryMib: kotlin.Long,
+
+    @SerialName(value = "sandbox")
+    val sandbox: kotlin.Boolean? = null
 
 ) {
 

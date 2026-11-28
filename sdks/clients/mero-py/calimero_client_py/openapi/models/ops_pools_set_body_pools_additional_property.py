@@ -6,6 +6,9 @@ from attrs import field as _attrs_field
 
 from ..types import UNSET, Unset
 
+from ..types import UNSET, Unset
+from typing import Union
+
 T = TypeVar("T", bound="OpsPoolsSetBodyPoolsAdditionalProperty")
 
 
@@ -15,16 +18,20 @@ class OpsPoolsSetBodyPoolsAdditionalProperty:
     Attributes:
         runs_per_node (int):
         max_memory_mib (int):
+        sandbox (Union[Unset, bool]):
     """
 
     runs_per_node: int
     max_memory_mib: int
+    sandbox: Union[Unset, bool] = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         runs_per_node = self.runs_per_node
 
         max_memory_mib = self.max_memory_mib
+
+        sandbox = self.sandbox
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -34,6 +41,8 @@ class OpsPoolsSetBodyPoolsAdditionalProperty:
                 "maxMemoryMib": max_memory_mib,
             }
         )
+        if sandbox is not UNSET:
+            field_dict["sandbox"] = sandbox
 
         return field_dict
 
@@ -44,9 +53,12 @@ class OpsPoolsSetBodyPoolsAdditionalProperty:
 
         max_memory_mib = d.pop("maxMemoryMib")
 
+        sandbox = d.pop("sandbox", UNSET)
+
         ops_pools_set_body_pools_additional_property = cls(
             runs_per_node=runs_per_node,
             max_memory_mib=max_memory_mib,
+            sandbox=sandbox,
         )
 
         ops_pools_set_body_pools_additional_property.additional_properties = d
