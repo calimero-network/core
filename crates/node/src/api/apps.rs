@@ -102,7 +102,9 @@ pub(crate) async fn offered_bundle(
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
                     // An offer serves only while its owner's side may still use the release.
-                    let r = s.offered_release(o).filter(|r| s.offer_serves_with(d, r, &serve))?;
+                    let r = s
+                        .offered_release(o)
+                        .filter(|r| s.offer_serves_with(d, r, &serve))?;
                     Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();
@@ -911,9 +913,7 @@ pub(crate) async fn unit_members(
                     p.versions
                         .iter()
                         .filter(|(_, v)| {
-                            same_signer
-                                || s.sees_release_with(v, creator, &used_orgs)
-                                || serves(v)
+                            same_signer || s.sees_release_with(v, creator, &used_orgs) || serves(v)
                         })
                         .map(|(k, _)| k.clone())
                         .collect()

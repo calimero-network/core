@@ -605,10 +605,7 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
             if let Some(redeemer) = redeemer {
                 if redeemer.account_id == account {
-                    let _kept = state
-                        .accounts
-                        .entry(account.clone())
-                        .or_insert(*redeemer);
+                    let _kept = state.accounts.entry(account.clone()).or_insert(*redeemer);
                 }
             }
             check_known_account(state, &account)?;

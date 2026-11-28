@@ -5570,7 +5570,9 @@ impl SystemState {
         if grants.len() > crate::types::MAX_GRANTS {
             return Err(Rejection::quota("an instance holds at most 1018 grants"));
         }
-        let o = baked.or_else(|| self.orgs.get(org)).ok_or("no such organization")?;
+        let o = baked
+            .or_else(|| self.orgs.get(org))
+            .ok_or("no such organization")?;
         let mut named: BTreeSet<&str> = BTreeSet::new();
         let mut teams: BTreeSet<&str> = BTreeSet::new();
         let (mut whole, mut anyone) = (false, false);

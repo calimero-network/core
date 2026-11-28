@@ -1909,7 +1909,8 @@ pub(crate) async fn update_view(
                 .values()
                 .filter(|o| {
                     o.package == r.package
-                        && s.offered_release(o).is_some_and(|v| s.offer_serves_with(d, v, &serve))
+                        && s.offered_release(o)
+                            .is_some_and(|v| s.offer_serves_with(d, v, &serve))
                 })
                 .map(|o| o.version.as_str())
                 .max_by(|a, b| crate::system::compare_versions(a, b))?;
