@@ -887,6 +887,25 @@ governance commands — route, bake, route readers; (5) the two-phase `MoveApp`;
 (7) `Accounts` (sessions by org context; the access gate's two-shard read);
 then S7 and S8.
 
+### Measured with the cutover on, after the sweep fixes
+
+Swept module by module at `ACTIVE = true`, isolated (`--test-threads 1`):
+`cluster`, `component_cluster`, `consent_page`, `component_files`,
+`component_packages`, `component_compute`, `deployments`, `deployers`,
+`move_app`, `app_origins`, `approval_bypasses`, `access_gate`,
+`org_app_teams`, `org_member_security`, `org_recovery`, `recovery`, `guests`,
+`sign_up`, `upgrade_keys`, `sessions`, `refresh`, `public_links`, `lineage`,
+`restore`, `key_follow_ups`, `instance_orgs`, `egress`, `org_rename`,
+`tenant_shards` and `tenant_governance` — every test that failed in a sweep was
+fixed and passes when run again. What the sweep fixed beyond the flip itself:
+tenant groups following the system voters; a deleted organization reading as
+gone and its invites redeeming nowhere; the replica carrying the accounts and
+API keys a command names and syncing before prejudge; sign-up with an
+organization invite redeemed on the tenant; a publisher's run spanning
+organizations (`StartUpgradeRun { published }`, `NoteRunOutcome`); an outbound
+approval carrying the release its approver reads; the consent page reading
+invites and a deletion's count on the tenant.
+
 ## The `Accounts` flip: sessions by organization context (designed, not built)
 
 The last area, and the one the throughput goal is about: the session family

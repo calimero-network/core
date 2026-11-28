@@ -161,9 +161,13 @@ machinery, and each tenant a replica of root's registries (`SyncTenantRoot`).
 standings baked in; the operator's approvals stay on root. The open items are
 listed in the design note under "What landed".
 
-**Suggested order (revised again):** the open items of the `Apps` flip
-(two-phase `MoveApp`, `ImportHolder`, origins, unit upgrade runs) → the rest of
-`Recovery` (account recovery stays root) → `Accounts` (the crux).
+**Where it stands:** `Orgs`, `Apps`, `Updates` and the org-scoped
+`Approvals`/`Recovery` commands are on tenants, with root mirroring them and
+each tenant replicating root's registries; the swept modules pass with the
+cutover on (design note, "Measured with the cutover on, after the sweep
+fixes"). Left: `Accounts` (designed in the design note, "The `Accounts`
+flip"), the S8 cutover itself (flip `ACTIVE` on, delete the single-group path,
+declare the hard cutover), and the real multi-node validation before it.
 
 ## 5. Pitfalls this session hit (save yourself the round-trips)
 
