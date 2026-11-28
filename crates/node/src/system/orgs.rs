@@ -614,10 +614,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             org,
             members,
             app_groups_from,
+            apps,
         } => {
             // The tenant's app groups count up from its own block; a re-seed
             // never moves the counter back.
             state.next_group = state.next_group.max(app_groups_from);
+            if !state.orgs.contains_key(&org.org_id) {
+                for app in apps.into_iter().filter(|a| a.org == org.org_id) {
+                    let _kept = state.apps.entry(app.app_id.clone()).or_insert(app);
+                }
+            }
             seed_tenant(state, *org, members)
         }
         SystemCmd::BindInvite { invite_key, org } => {

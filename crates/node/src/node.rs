@@ -3185,10 +3185,13 @@ impl Node {
                             (o.clone(), members)
                         })
                     }) {
+                        let apps: Vec<crate::types::AppRecord> = self
+                            .sys(|s| s.apps.values().filter(|a| a.org == org).cloned().collect());
                         let cmd = SystemCmd::SeedTenant {
                             org: Box::new(record),
                             members,
                             app_groups_from: crate::system::shard::tenant_app_groups(group),
+                            apps,
                         };
                         match serde_json::to_vec(&cmd) {
                             Ok(bytes) => {
@@ -3268,8 +3271,12 @@ impl Node {
         let Some(g) = self.hosted_tenant(org) else {
             return;
         };
-        // A deleted organization's tenant is mirrored no more.
-        if !self.sys(|s| s.tenant_groups.contains_key(org)) {
+        // A deleted organization's tenant is mirrored no more, and one not yet
+        // seeded holds nothing to mirror (its empty state would read as the
+        // organization gone).
+        if !self.sys(|s| s.tenant_groups.contains_key(org))
+            || !g.read_local(|m, _| m.state.orgs.contains_key(org))
+        {
             return;
         }
         let _applied = g.wait_applied(index, self.config.read_wait).await;

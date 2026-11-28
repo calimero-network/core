@@ -8508,6 +8508,11 @@ pub enum SystemCmd {
         /// (`shard::tenant_app_groups`): its `next_group` counts up from here.
         #[serde(default, skip_serializing_if = "is_zero")]
         app_groups_from: u64,
+        /// The organization's apps root holds when the tenant forms (an
+        /// organization imported with its apps, `ImportHolder`): the tenant is
+        /// authoritative for them from here on.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        apps: Vec<crate::types::AppRecord>,
     },
     /// Node-written, never from a client: brings an organization's tenant group
     /// to the cluster-wide marks its root group logged — the cluster version and

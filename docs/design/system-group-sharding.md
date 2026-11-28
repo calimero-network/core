@@ -886,6 +886,28 @@ governance commands — route, bake, route readers; (5) the two-phase `MoveApp`;
 (7) `Accounts` (sessions by org context; the access gate's two-shard read);
 then S7 and S8.
 
+## S7 under the mirror design: snapshots, backup, recovery
+
+The `Apps` flip changes what S7 needs. **No snapshot format change**: a tenant
+group snapshots and restores as any group does (`calimero-log`'s in-memory
+checkpoint per group), and its machine's role is not in the snapshot — the node
+builds a tenant machine with its role from root's `tenant_groups` when it hosts
+the group (`Node::ensure_tenant_group`), so `SNAPSHOT_FORMAT` stays. `merod
+inspect` already lists every group in the store, tenant groups included.
+
+**Backups and the recovery disk read root, which mirrors every tenant.** The
+system backup (a snapshot of group 1) and the recovery disk's `system` and
+`holder` files are root's state, and root holds `MirrorTenant`'s copy of every
+organization's record and apps. A cluster founded again from them re-forms each
+tenant group and seeds it from root (`SeedTenant` carries the organization,
+its members' accounts and its apps), so an organization and its apps come back
+whole. What a tenant holds that root does not mirror is lost on such a restore:
+the organization's **invites** (redeemable tokens; their makers make new ones)
+and the **proofs the tenant marked used**, so a consent consumed on a tenant
+shortly before the backup could be logged again within its own expiry. Closing
+the second means mirroring a tenant's used proofs to root (or carrying them in
+the seed); it is open.
+
 ## Open questions / risks
 
 - **The gating decision: verifying a credential inside a tenant.** This blocks
