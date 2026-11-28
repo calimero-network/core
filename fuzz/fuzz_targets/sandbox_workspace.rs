@@ -85,9 +85,13 @@ fn outside_untouched(outside: &Path) {
     );
 }
 
+fn contains_secret(bytes: &[u8]) -> bool {
+    bytes.windows(SECRET.len()).any(|w| w == SECRET)
+}
+
 fn never_the_secret(bytes: &[u8]) {
     assert!(
-        !bytes.windows(SECRET.len()).any(|w| w == SECRET),
+        !contains_secret(bytes),
         "the node read the secret for the sandbox"
     );
 }
@@ -130,7 +134,11 @@ fuzz_target!(|data: &[u8]| {
                 let Some(path) = input.path() else { break };
                 let len = usize::from(input.byte().unwrap_or(0));
                 let bytes = input.take(len).to_vec();
-                let _ = ws.write(&path, &bytes);
+                // The input never writes the secret itself, so a read that returns it read the
+                // file outside (the fuzzer learns the secret from the comparison below).
+                if !contains_secret(&bytes) {
+                    let _ = ws.write(&path, &bytes);
+                }
             }
             4 => {
                 let Some(path) = input.path() else { break };
