@@ -1976,7 +1976,8 @@ pub(super) fn prejudge(s: &SystemState, cmd: &SystemCmd) -> Result<(), Rejection
             org,
         } => {
             let rule = OwnerRule::logged(*owner_in_org, *owner_in_team);
-            let judged = check_access(s, app_id, access.clone(), actor, rule, org.as_deref()).map(drop);
+            let judged =
+                check_access(s, app_id, access.clone(), actor, rule, org.as_deref()).map(drop);
             (app_id, actor, judged)
         }
         SystemCmd::DeleteApp {
