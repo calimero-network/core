@@ -1,0 +1,28 @@
+[package]
+name = "calimero-sandbox"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "The job node's Linux sandbox: one run's namespaces, cgroups, seccomp and workspace"
+publish = false
+
+[features]
+# Turns off one isolation layer on request, so the escape suite can prove it goes red
+# without it. Never enabled outside `cargo test -p calimero-sandbox --features controls`.
+controls = []
+
+[dependencies]
+libc.workspace = true
+thiserror.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+seccompiler.workspace = true
+
+[[test]]
+name = "escape"
+harness = false
+
+[lints]
+workspace = true

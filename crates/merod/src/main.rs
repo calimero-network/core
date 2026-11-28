@@ -646,8 +646,17 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
+fn main() -> eyre::Result<()> {
+    // A sandbox run's `exec` re-runs this binary as the sandbox's init, which forks: it must
+    // take over before the runtime starts any thread, and before clap sees its arguments.
+    calimero_sandbox::init_if_requested();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(node_main())
+}
+
+async fn node_main() -> eyre::Result<()> {
     let cli = Cli::parse();
     // A local cluster's nodes start one after another, so openraft reports the
     // ones not up yet; that is noise for a developer (RUST_LOG still overrides).

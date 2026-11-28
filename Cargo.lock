@@ -413,7 +413,7 @@ dependencies = [
  "bitflags 2.13.2",
  "cexpr",
  "clang-sys",
- "itertools 0.10.5",
+ "itertools 0.13.0",
  "log",
  "prettyplease 0.2.37",
  "proc-macro2",
@@ -1025,6 +1025,15 @@ dependencies = [
  "sha2 0.11.1",
  "thiserror 2.0.21",
  "url",
+]
+
+[[package]]
+name = "calimero-sandbox"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "seccompiler",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -3836,6 +3845,7 @@ dependencies = [
  "calimero-log",
  "calimero-node",
  "calimero-outbound",
+ "calimero-sandbox",
  "calimero-utils-fs",
  "clap",
  "dirs",
@@ -5752,6 +5762,15 @@ dependencies = [
  "pkcs8 0.10.2",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "seccompiler"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4ae55de56877481d112a559bbc12667635fdaf5e005712fd4e2b2fa50ffc884"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
