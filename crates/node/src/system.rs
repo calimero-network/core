@@ -34,6 +34,8 @@ mod prejudge;
 mod recovery;
 mod rejection;
 mod routing;
+/// The tenant-shard placement seam: see the module's own documentation.
+pub(crate) mod shard;
 mod sign_up;
 mod state_caps;
 mod updates;

@@ -596,6 +596,12 @@ pub struct Node {
     pub config: Config,
     pub engine: Arc<Engine>,
     pub system: Arc<Group<SystemMachine>>,
+    /// Per-organization system shards: an organization's control-plane state
+    /// lives in its own Raft group once tenant sharding creates one. Empty today
+    /// — every shard resolves to [`Node::system`] (the root group) through
+    /// [`Node::system_shard`] — so this is the backbone later slices fill, not
+    /// yet a behaviour change.
+    tenants: RwLock<HashMap<crate::types::OrgId, Arc<Group<SystemMachine>>>>,
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
     /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
     /// engine for all of them); compiled artifacts cached under
@@ -1194,6 +1200,7 @@ impl Node {
             config,
             engine: Arc::clone(&engine),
             system,
+            tenants: RwLock::new(HashMap::new()),
             apps: RwLock::new(HashMap::new()),
             wasm,
             compute_wasm,
@@ -1510,13 +1517,37 @@ impl Node {
 
     /// Read the system state as applied here.
     pub fn sys<R>(&self, f: impl FnOnce(&SystemState) -> R) -> R {
-        self.system.read_local(|m, _| f(&m.state))
+        self.system_shard(&crate::system::shard::ShardId::Root)
+            .read_local(|m, _| f(&m.state))
     }
 
     /// [`Node::sys`] with the machine, for what it derives from the state
     /// (`SystemMachine::app_of_group`, `apps_on`, `group_may_hold`).
     pub fn sys_machine<R>(&self, f: impl FnOnce(&SystemMachine) -> R) -> R {
-        self.system.read_local(|m, _| f(m))
+        self.system_shard(&crate::system::shard::ShardId::Root)
+            .read_local(|m, _| f(m))
+    }
+
+    /// The system Raft group that serves a shard ([`crate::system::shard`]): the
+    /// root group for [`ShardId::Root`] (today also the single system group), or
+    /// an organization's tenant group once one exists. Until tenant groups are
+    /// created the map is empty and every shard resolves to the root group, so
+    /// routing through this is behaviour-preserving; it is the tenant-sharding
+    /// backbone (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn system_shard(
+        &self,
+        shard: &crate::system::shard::ShardId,
+    ) -> Arc<Group<SystemMachine>> {
+        use crate::system::shard::ShardId;
+        match shard {
+            ShardId::Root => Arc::clone(&self.system),
+            ShardId::Tenant(org) => self
+                .tenants
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(org)
+                .map_or_else(|| Arc::clone(&self.system), Arc::clone),
+        }
     }
 
     /// Commit a system command through the system group's leader; `409
@@ -1561,8 +1592,12 @@ impl Node {
         // (`a_system_write_waits_for_a_leader_until_its_deadline`).
         let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
         for attempt in 0_u32.. {
-            let Ok(written) =
-                tokio::time::timeout_at(deadline, self.system.write(bytes.clone())).await
+            let Ok(written) = tokio::time::timeout_at(
+                deadline,
+                self.system_shard(&crate::system::shard::ShardId::Root)
+                    .write(bytes.clone()),
+            )
+            .await
             else {
                 return Err(self.system_stalled());
             };
