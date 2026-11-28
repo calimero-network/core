@@ -2538,6 +2538,26 @@ impl SystemState {
         (frontend && v.visibility.is_none()) || self.sees_release(v, who)
     }
 
+    // Cross-shard organization reads come in three shapes, by convention, because
+    // an organization's membership lives in its own tenant group once the control
+    // plane is sharded while this state is the root group's
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>):
+    //
+    //   * a plain method (`member_of`, `sees_release`, `acts_for`, `offer_serves`,
+    //     `approves_releases`, `team_apps`, …) reads the organization from **this**
+    //     machine's own state — the common case, and the only one `apply` may use;
+    //   * its `_with` twin (for a read that spans many organizations, e.g. a
+    //     release's serving orgs) takes an `extra: &BTreeMap<OrgId, Org>` of
+    //     organizations resolved from their tenant shards, preferring it over this
+    //     state (`org_for`); its `_at` twin (for a single organization already
+    //     resolved) takes that `Option<&Org>` directly;
+    //   * the leader fans the organizations out and fills `extra` (or the one
+    //     `Option<&Org>`) before it proposes or answers, in `Node`'s `*_fresh` /
+    //     `*_view` helpers (`node.rs`), so `apply` and the twin never read a peer.
+    //
+    // A gate on a sharded read calls the `_with`/`_at` form through one of those
+    // `Node` helpers; a local read calls the plain method.
+
     /// Whether `who` is a member (or above) of `org`.
     #[must_use]
     pub fn member_of(&self, org: &str, who: &str) -> bool {
