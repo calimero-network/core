@@ -3011,7 +3011,10 @@ impl Node {
                 let g = match self.ensure_tenant_group(&org, group).await {
                     Ok(g) => g,
                     Err(e) => {
-                        warn!(org = %org, group, error = %format!("{e:#}"), "could not host tenant group");
+                        // The error's words can quote what it failed on, so name
+                        // it by kind at this always-on level (`log_safe`).
+                        let error_kind = crate::log_safe::kind(e.as_ref());
+                        warn!(org = %org, group, error_kind = %error_kind, "could not host tenant group");
                         continue;
                     }
                 };
@@ -3043,7 +3046,8 @@ impl Node {
                                 }
                             }
                             Err(e) => {
-                                warn!(org = %org, error = %e, "a tenant seed does not serialize");
+                                let error_kind = crate::log_safe::serde(&e);
+                                warn!(org = %org, error_kind = %error_kind, "a tenant seed does not serialize");
                             }
                         }
                     }
