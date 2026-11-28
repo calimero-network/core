@@ -1738,6 +1738,7 @@ fn an_upgrade_run_covers_what_its_consent_covers_and_moves_each_app_once() {
             consent: c,
             by_release: false,
             owner_approves: false,
+            published: None,
         }
     };
     let upgrade = |app: &str, bundle: &str, version: &str| SystemCmd::UpgradeApp {
@@ -1835,6 +1836,7 @@ fn a_run_moves_an_app_only_to_a_release_its_owner_may_use() {
             consent: c,
             by_release: false,
             owner_approves: false,
+            published: None,
         })
         .unwrap();
     let release = m
@@ -1929,6 +1931,7 @@ fn a_publishers_run_covers_the_instances_that_run_its_package() {
                 consent: c,
                 by_release,
                 owner_approves: false,
+                published: None,
             })
             .unwrap();
         let mut apps = m.state.orgs["org"].upgrade_runs[run_id].apps.clone();
@@ -16261,6 +16264,7 @@ fn only_a_units_run_keeps_member_targets() {
             consent: c,
             by_release: false,
             owner_approves: false,
+            published: None,
         })
         .unwrap();
     let upgrade = |app: &str| {

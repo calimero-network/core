@@ -1369,6 +1369,7 @@ mod tests {
                 consent: Value::Null,
                 by_release: true,
                 owner_approves: false,
+                published: None,
             },
             Feature::AppTeamJoin => SystemCmd::ScopeApps {
                 org: "org".into(),

@@ -633,14 +633,15 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             consent,
             by_release,
             owner_approves,
+            published,
         } => start_upgrade_run(
             state,
             index,
             org,
             *run,
             &consent,
-            by_release,
-            owner_approves,
+            (by_release, owner_approves),
+            published.as_deref(),
         ),
         SystemCmd::FinishUpgradeRun { org, run_id } => {
             let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
@@ -1338,8 +1339,8 @@ fn start_upgrade_run(
     org: OrgId,
     mut run: crate::types::UpgradeRun,
     consent: &Value,
-    by_release: bool,
-    owner_approves: bool,
+    (by_release, owner_approves): (bool, bool),
+    published: Option<&[AppId]>,
 ) -> Result<Value, Rejection> {
     let owner_approves = state.owner_approves(owner_approves);
     // Only an owner or admin of the organization starts a run there; a
@@ -1372,7 +1373,13 @@ fn start_upgrade_run(
         {
             return Err(RUN_EXISTS);
         }
-        run.apps = state.upgrade_run_apps(&org, &run, consent, by_release, owner_approves);
+        run.apps = state.upgrade_run_apps_with(
+            &org,
+            &run,
+            consent,
+            (by_release, owner_approves),
+            published,
+        );
         run.done.clear();
         run.failed.clear();
         run.finished = false;

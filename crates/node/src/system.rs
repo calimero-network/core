@@ -3133,13 +3133,26 @@ impl SystemState {
     /// consent names: a publisher's run every instance of its package the
     /// starter may upgrade, a retry the apps the run it repeats failed on,
     /// any other the organization's apps in its scope ([`Self::org_run_apps`]).
-    fn upgrade_run_apps(
+    pub(crate) fn upgrade_run_apps(
         &self,
         org: &str,
         run: &crate::types::UpgradeRun,
         consent: &Value,
         by_release: bool,
         owner_approves: bool,
+    ) -> Vec<AppId> {
+        self.upgrade_run_apps_with(org, run, consent, (by_release, owner_approves), None)
+    }
+
+    /// [`Self::upgrade_run_apps`], a publisher's run covering `published` when
+    /// given (the apps root's mirror found, `SystemCmd::StartUpgradeRun`).
+    pub(crate) fn upgrade_run_apps_with(
+        &self,
+        org: &str,
+        run: &crate::types::UpgradeRun,
+        consent: &Value,
+        (by_release, owner_approves): (bool, bool),
+        published: Option<&[AppId]>,
     ) -> Vec<AppId> {
         let st = serde_json::from_value::<crate::proof::Statement>(consent.clone()).ok();
         match st.as_ref().map(|st| st.method.as_str()) {
@@ -3165,9 +3178,10 @@ impl SystemState {
                     Some(apps)
                 })
                 .unwrap_or_default(),
-            Some("__upgrade_published") => {
-                self.published_run_apps(&run.package, &run.by, by_release, owner_approves)
-            }
+            Some("__upgrade_published") => published.map_or_else(
+                || self.published_run_apps(&run.package, &run.by, by_release, owner_approves),
+                <[AppId]>::to_vec,
+            ),
             Some("__upgrade_org_retry") => st
                 .and_then(|st| {
                     let prev = st.args()["run"].as_str().map(str::to_owned)?;
@@ -8688,6 +8702,14 @@ pub enum SystemCmd {
         /// cluster version brings the rule ([`SystemState::cluster_brings`]).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         owner_approves: bool,
+        /// A publisher's run covers instances in many organizations, which
+        /// the publisher's tenant group (where the run applies, the cutover on)
+        /// does not hold: the apps it covers, as root's mirror finds them at
+        /// propose ([`SystemState::published_run_apps`]). Absent with the
+        /// cutover off, when one group holds them all
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        published: Option<Vec<AppId>>,
     },
     FinishUpgradeRun {
         org: OrgId,

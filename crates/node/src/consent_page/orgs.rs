@@ -436,6 +436,12 @@ pub(super) async fn request(
         _ => &[],
     };
     node.require_features(features).await?;
+    // An organization's invites live on its tenant group (with the cutover on):
+    // a revocation is judged where they are.
+    if let OrgAsk::RevokeInvite(sub) = ask {
+        let org = sub.org.clone();
+        return node.sys_org(&org, |s| revoke(s, account, sub));
+    }
     node.sys(|s| match ask {
         OrgAsk::Leave(sub) => leave(s, account, sub),
         OrgAsk::RemoveMember(sub) => remove(s, account, sub),

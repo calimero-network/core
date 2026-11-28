@@ -1022,6 +1022,11 @@ async fn start_run_with(
         finished: false,
         targets,
     };
+    // A publisher's run spans organizations its own tenant does not hold: the
+    // apps root's mirror finds go with the entry.
+    let published = crate::system::shard::ACTIVE.then(|| {
+        node.sys(|s| s.upgrade_run_apps(&org, &run, &who.consent, by_release, who.owner_approves))
+    });
     let stored = node
         .sys_write(&SystemCmd::StartUpgradeRun {
             org: org.clone(),
@@ -1029,6 +1034,7 @@ async fn start_run_with(
             consent: who.consent.clone(),
             by_release,
             owner_approves: who.owner_approves,
+            published,
         })
         .await?;
     // The run as it applied: its apps are the state's (`SystemState::upgrade_run_apps`).

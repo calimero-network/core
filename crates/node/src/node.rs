@@ -1541,7 +1541,9 @@ impl Node {
     /// (`Node::system_shard`) until forwarding lands.
     pub fn sys_org<R>(&self, org: &str, f: impl FnOnce(&SystemState) -> R) -> R {
         use crate::system::shard;
-        if shard::ACTIVE {
+        // An organization root no longer has (deleted) is read from root, where
+        // it is gone, whatever its tenant group still holds.
+        if shard::ACTIVE && self.sys(|s| s.tenant_groups.contains_key(org)) {
             // A tenant this node does not host, or has not seeded yet (an
             // organization made a moment ago), is read through root's mirror of
             // it: for a new organization, the record `CreateOrg` wrote.
@@ -3189,6 +3191,7 @@ impl Node {
                     // Backstop of the write path: the replica of root's
                     // registries and root's mirror of the tenant, each brought
                     // level when a write did not (a node that failed between).
+                    self.follow_system_voters(&g).await;
                     let soon = tokio::time::Instant::now() + Duration::from_secs(1);
                     self.sync_tenant(&org, soon, &std::collections::BTreeSet::new())
                         .await;
@@ -3368,6 +3371,35 @@ impl Node {
         tenants
             .iter()
             .find_map(|g| g.read_local(|m, _| m.state.apps.get(app_id).cloned()))
+    }
+
+    /// Keep tenant group `g`'s voters the system group's: a tenant group is
+    /// placed on the system voters (and admitted by that list, `admit_raft`), so
+    /// as nodes join or leave the system group its leader adds them (as
+    /// learners first, caught up) and drops the ones gone, else a tenant formed
+    /// on a one-node cluster dies with that node.
+    async fn follow_system_voters(&self, g: &Group<SystemMachine>) {
+        let want: std::collections::BTreeSet<NodeId> =
+            self.system.status().voters.into_iter().collect();
+        let st = g.status();
+        let have: std::collections::BTreeSet<NodeId> = st.voters.iter().copied().collect();
+        if want.is_empty() || want == have {
+            return;
+        }
+        for id in want.difference(&have) {
+            if st.learners.contains(id) {
+                continue;
+            }
+            let Some(addr) = self.sys(|s| s.nodes.get(id).map(|n| n.addr.clone())) else {
+                return;
+            };
+            if g.add_learner(*id, addr).await.is_err() {
+                return;
+            }
+        }
+        if let Err(e) = g.change_voters(want).await {
+            debug!(error = %e, "tenant group voters not yet changed");
+        }
     }
 
     /// Mirror organization `org`'s tenant to root again as it stands here

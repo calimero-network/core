@@ -2972,14 +2972,20 @@ fn accept_invite_request(
             model,
         ));
     }
-    let (invite, org_name, current) = node
-        .sys(|s| {
-            let inv = s.invites.get(&key)?;
-            let o = s.orgs.get(&inv.org)?;
-            Some((inv.clone(), o.name.clone(), o.role(account)))
-        })
-        .filter(|(inv, _, _)| inv.expires_at > now && inv.uses_left > 0)
-        .ok_or_else(|| ApiError::not_found("no such invite, or it expired or was used up"))?;
+    // The invite lives on its organization's tenant group once the control
+    // plane is sharded: found there through root's routing directory.
+    let invite_org = node.sys(|s| s.invite_org.get(&key).cloned());
+    let read = |s: &crate::system::SystemState| {
+        let inv = s.invites.get(&key)?;
+        let o = s.orgs.get(&inv.org)?;
+        Some((inv.clone(), o.name.clone(), o.role(account)))
+    };
+    let (invite, org_name, current) = match &invite_org {
+        Some(org) => node.sys_org(org, read),
+        None => node.sys(read),
+    }
+    .filter(|(inv, _, _)| inv.expires_at > now && inv.uses_left > 0)
+    .ok_or_else(|| ApiError::not_found("no such invite, or it expired or was used up"))?;
     let teams = team_names(node, &invite.org, None, &invite.teams);
     let role_text = role_words(invite.role);
     let joins = if teams.is_empty() {

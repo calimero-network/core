@@ -76,6 +76,12 @@ pub enum RootRecord {
         id: crate::types::AccountId,
         record: Option<Box<crate::types::Account>>,
     },
+    /// An API key a command names (an upgrade key's consent), as root holds
+    /// it under its hash: whether it still stands is judged where it applies.
+    ApiKey {
+        hash: String,
+        record: Option<Box<crate::types::ApiKeyRecord>>,
+    },
     /// Root's small cluster-wide records, whole.
     Cluster(Box<ClusterRecords>),
 }
@@ -214,7 +220,11 @@ pub fn root_diff(
         .get(own)
         .into_iter()
         .flat_map(|o| o.members.keys())
-        .chain(named_accounts.iter())
+        .chain(
+            named_accounts
+                .iter()
+                .filter(|s| root.accounts.contains_key(*s)),
+        )
         .collect();
     for id in accounts {
         let (held, source) = (tenant.accounts.get(id), root.accounts.get(id));
@@ -229,6 +239,33 @@ pub fn root_diff(
                 record: source.cloned().map(Box::new),
             });
         }
+    }
+    // API keys a command names by their id, as root holds them (or gone).
+    for (hash, key) in root
+        .api_keys
+        .iter()
+        .filter(|(_, k)| named_accounts.contains(&k.key_id))
+    {
+        if tenant
+            .api_keys
+            .get(hash)
+            .is_none_or(|held| !same(held, key))
+        {
+            out.push(RootRecord::ApiKey {
+                hash: hash.clone(),
+                record: Some(Box::new(key.clone())),
+            });
+        }
+    }
+    for hash in tenant
+        .api_keys
+        .keys()
+        .filter(|h| !root.api_keys.contains_key(*h))
+    {
+        out.push(RootRecord::ApiKey {
+            hash: hash.clone(),
+            record: None,
+        });
     }
     out.extend(
         diff_map(&tenant.packages, &root.packages)
@@ -311,6 +348,7 @@ pub fn apply_sync(
                 }
             }
             RootRecord::Account { id, record } => put(&mut s.accounts, id, record.map(|a| *a)),
+            RootRecord::ApiKey { hash, record } => put(&mut s.api_keys, hash, record.map(|k| *k)),
             RootRecord::Cluster(c) => c.put(s),
         }
     }
@@ -481,14 +519,17 @@ pub fn apply_mirror(
     Ok(())
 }
 
-/// The accounts of root's directory a command names anywhere in it (its
-/// actor, a guest it grants, an account it hands an app to): what a tenant
-/// must hold to judge it.
+/// The ids of root's records a command names anywhere in it — accounts (its
+/// actor, a guest it grants, an account it hands an app to) and API keys (an
+/// upgrade key's consent): what a tenant must hold to judge it.
 #[must_use]
 pub fn named_accounts(cmd: &super::SystemCmd, root: &SystemState) -> BTreeSet<String> {
     fn walk(v: &serde_json::Value, root: &SystemState, out: &mut BTreeSet<String>) {
         match v {
-            serde_json::Value::String(s) if root.accounts.contains_key(s) => {
+            serde_json::Value::String(s)
+                if root.accounts.contains_key(s)
+                    || root.api_keys.values().any(|k| k.key_id == *s) =>
+            {
                 let _new = out.insert(s.clone());
             }
             serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, root, out)),
