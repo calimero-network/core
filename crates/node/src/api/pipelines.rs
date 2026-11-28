@@ -3,7 +3,7 @@
 //! run of the release the app runs. Those who may handle the app's files start, cancel and
 //! retry; who may reach it reads. A start is judged against the pinned pipeline first.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -534,6 +534,13 @@ async fn start_launch(
         retry_of: launch.retry_of,
         limits: launch.limits,
         key: key.clone(),
+        secret_params: launch
+            .pipeline
+            .params
+            .iter()
+            .filter(|(_, p)| p.secret)
+            .map(|(name, _)| name.clone())
+            .collect(),
         ts_ms: 0,
     };
     let a = node
@@ -592,7 +599,7 @@ async fn started_before(
         .view(&crate::node::ViewRequest {
             app_id: app.app_id.clone(),
             method: PIPELINE_VIEW.to_owned(),
-            args: json!({ "key": key, "files": false, "items": false }),
+            args: json!({ "key": key, "files": false, "items": false, "secrets": true }),
             caller: caller.clone(),
             strong: true,
             min_index: 0,
@@ -708,7 +715,7 @@ pub(super) async fn retry(
         .view(&crate::node::ViewRequest {
             app_id,
             method: PIPELINE_VIEW.to_owned(),
-            args: json!({ "run": run, "files": false, "items": false }),
+            args: json!({ "run": run, "files": false, "items": false, "secrets": true }),
             caller: p.caller.clone(),
             strong: true,
             min_index: 0,
@@ -917,6 +924,9 @@ pub(crate) struct PipelineRunView {
     retry_of: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     limits: BTreeMap<String, Limits>,
+    /// The params declared `secret`: each shown in `params` as `{ hmacSha256 }`, never its value.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    secret_params: BTreeSet<String>,
 }
 
 /// The cost cap of a [`PipelineRunView`], its figures decimal strings.

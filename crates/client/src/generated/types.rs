@@ -1469,7 +1469,7 @@ pub struct PipelineRunViewLimitsValue {
     pub extra: Map<String, Value>,
 }
 
-/// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). `costSoFar` is a decimal string, under a cost cap.
+/// A pipeline run as the app's leader shows it: its stored record (`PipelineRun`), keyed by `id`, reshaped for the reader (results and file hashes only to those who handle the app's files). A param named in `secretParams` is declared `secret`: `params` shows it as `{ hmacSha256 }`, never its value. `costSoFar` is a decimal string, under a cost cap.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PipelineRunView {
     pub id: String,
@@ -1510,6 +1510,9 @@ pub struct PipelineRunView {
     pub retry_of: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limits: Option<BTreeMap<String, PipelineRunViewLimitsValue>>,
+    #[serde(rename = "secretParams")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_params: Option<Vec<String>>,
     /// The fields this client does not name, as the node sent them.
     #[serde(flatten)]
     pub extra: Map<String, Value>,

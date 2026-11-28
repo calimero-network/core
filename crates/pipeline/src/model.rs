@@ -104,6 +104,9 @@ pub struct Param {
     pub max: Option<f64>,
     #[serde(default, rename = "enum")]
     pub values: Option<Vec<Value>>,
+    /// The job gets the value; a run's view, events and receipt show only a keyed hash of it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secret: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

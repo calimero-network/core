@@ -39,6 +39,7 @@ fn start_entry(id: &str, steps: &[&str]) -> PipelineStartEntry {
         retry_of: None,
         limits: BTreeMap::new(),
         key: None,
+        secret_params: BTreeSet::new(),
         ts_ms: 5,
     }
 }
@@ -1515,7 +1516,8 @@ fn a_receipt_still_lists_every_run_after_the_run_records_were_dropped() {
         run: pipeline(&w, PIPE),
         jobs: BTreeMap::new(),
     };
-    let receipt = crate::api::pipeline_receipt::build_receipt(1, &"cc".repeat(32), "app", &source);
+    let receipt =
+        crate::api::pipeline_receipt::build_receipt(1, &"cc".repeat(32), "app", &source, &[0; 32]);
     assert_eq!(receipt.steps["a"].runs.len(), total);
     assert_eq!(receipt.modules["self"], "compute-v1");
     assert_eq!(receipt.inputs["in"].len(), 1);
@@ -1551,7 +1553,8 @@ fn a_receipt_marks_cached_runs_with_their_key_and_keeps_index_order() {
             .collect(),
         jobs: BTreeMap::new(),
     };
-    let receipt = crate::api::pipeline_receipt::build_receipt(1, &"cc".repeat(32), "app", &source);
+    let receipt =
+        crate::api::pipeline_receipt::build_receipt(1, &"cc".repeat(32), "app", &source, &[0; 32]);
     let runs = &receipt.steps["a"].runs;
     assert!(
         matches!(&runs[0], RunEntry::Cached(c) if c.index == 0 && c.cache_key == "k1"),

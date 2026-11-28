@@ -288,6 +288,39 @@ fn canonical_json_is_stable_json_with_sorted_keys() {
     assert_eq!(bytes, canonical_json(&p));
 }
 
+/// `secret` marks a param; leaving it out keeps the canonical JSON, and so the hash, of a
+/// pipeline written before it.
+#[test]
+fn a_param_may_be_secret_and_the_flag_is_left_out_when_false() {
+    let src = |flag: &str| {
+        doc(&format!(
+            "params:\n  salt: {{ type: string{flag} }}\nsteps:\n  a: {{ method: r, args: {{ s: params.salt }} }}\n"
+        ))
+    };
+    let secret = compile(&src(", secret: true")).unwrap();
+    assert!(secret.params["salt"].secret);
+    let plain = compile(&src("")).unwrap();
+    assert!(!plain.params["salt"].secret);
+    assert_eq!(
+        canonical_json(&compile(&src(", secret: false")).unwrap()),
+        canonical_json(&plain)
+    );
+    assert!(!String::from_utf8(canonical_json(&plain))
+        .unwrap()
+        .contains("secret"));
+    assert_error(&src(", secret: yes"), "INVALID_TYPE", "params.salt.secret");
+    assert_error(
+        &src(", secret: true, default: x"),
+        "BAD_PARAM",
+        "params.salt.secret",
+    );
+    assert_error(
+        &src(", secret: true, enum: [x, y]"),
+        "BAD_PARAM",
+        "params.salt.secret",
+    );
+}
+
 fn has_cycle(n: usize, edge: &[bool]) -> bool {
     let mut indeg: Vec<usize> = (0..n)
         .map(|i| (0..n).filter(|&j| edge[i * n + j]).count())

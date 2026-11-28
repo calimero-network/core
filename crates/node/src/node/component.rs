@@ -26,9 +26,9 @@ pub use self::compute::ComputeLimits;
 pub(super) use self::compute::ComputeLimits;
 pub(super) use self::compute::ComputeState;
 pub use self::compute::JOB_POLL;
+pub(crate) use self::compute::{secret_params_key, shown_params, PIPELINE_VIEW, RUN_VIEW};
 #[cfg(test)]
 pub(crate) use self::compute::{RunFileView, RunList, RunView};
-pub(crate) use self::compute::{PIPELINE_VIEW, RUN_VIEW};
 #[cfg(feature = "testing")]
 pub(super) use self::files::Probes;
 pub(crate) use self::files::{valid_uploader, Uploaded};
