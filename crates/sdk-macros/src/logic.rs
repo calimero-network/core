@@ -19,9 +19,11 @@ use crate::types::{
 };
 
 /// The world the app component's ABI names.
-const WORLD: &str = "calimero:app@0.5.7";
+const WORLD: &str = "calimero:app@0.5.8";
 /// The world the compute component's ABI names.
-const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.7";
+const COMPUTE_WORLD: &str = "calimero:app/compute@0.5.8";
+/// The world the sandbox component's ABI names.
+const SANDBOX_WORLD: &str = "calimero:app/sandbox-run@0.5.8";
 /// The ABI version this SDK writes; a field nodes must enforce raises it.
 const ABI_VERSION: u64 = 1;
 
@@ -41,6 +43,16 @@ struct ComputeAttr {
     memory_mib: Option<u32>,
     wall_secs: Option<u32>,
     result: String,
+    /// Set by `#[app::sandbox(..)]`: a compute method that also drives a Linux sandbox.
+    sandbox: Option<SandboxAttr>,
+}
+
+/// The Linux sandbox a `#[app::sandbox(..)]` method's commands run in.
+struct SandboxAttr {
+    vcpus: u32,
+    memory_mib: u32,
+    workspace_mib: u32,
+    image: String,
 }
 
 #[derive(Default)]
@@ -150,11 +162,33 @@ fn valid_every(text: &str) -> bool {
     matches!(unit, 's' | 'm' | 'h') && text[..text.len() - 1].parse::<u64>().is_ok_and(|n| n > 0)
 }
 
-fn compute_attr(attr: &Attribute) -> syn::Result<ComputeAttr> {
+/// `#[app::compute(..)]`, or with `sandbox` `#[app::sandbox(..)]`, which also takes `vcpus`,
+/// `sandbox_memory_mib`, `workspace_mib` and `image`.
+fn compute_attr(attr: &Attribute, sandbox: bool) -> syn::Result<ComputeAttr> {
     let (mut fuel, mut memory_mib, mut wall_secs, mut result) = (None, None, None, None);
+    let (mut vcpus, mut sandbox_memory_mib, mut workspace_mib, mut image) =
+        (None, None, None, None);
+    let int = |meta: &syn::meta::ParseNestedMeta<'_>| -> syn::Result<u32> {
+        meta.value()?.parse::<syn::LitInt>()?.base10_parse()
+    };
     attr.parse_nested_meta(|meta| {
         let key = meta.path.get_ident().map(ToString::to_string);
         match key.as_deref() {
+            Some("vcpus") if sandbox => vcpus = Some(int(&meta)?),
+            Some("sandbox_memory_mib") if sandbox => sandbox_memory_mib = Some(int(&meta)?),
+            Some("workspace_mib") if sandbox => workspace_mib = Some(int(&meta)?),
+            Some("image") if sandbox => image = Some(meta.value()?.parse::<LitStr>()?.value()),
+            _ if sandbox
+                && !matches!(
+                    key.as_deref(),
+                    Some("fuel" | "memory_mib" | "wall_secs" | "result")
+                ) =>
+            {
+                return Err(meta.error(
+                    "expected `fuel`, `memory_mib`, `wall_secs`, `result`, `vcpus`, \
+                     `sandbox_memory_mib`, `workspace_mib` or `image`",
+                ))
+            }
             Some("fuel") => fuel = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?),
             Some("memory_mib") => {
                 memory_mib = Some(meta.value()?.parse::<syn::LitInt>()?.base10_parse()?);
@@ -167,12 +201,24 @@ fn compute_attr(attr: &Attribute) -> syn::Result<ComputeAttr> {
         }
         Ok(())
     })?;
-    let missing = |what: &str| syn::Error::new_spanned(attr, format!("`compute` needs `{what}`"));
+    let name = if sandbox { "sandbox" } else { "compute" };
+    let missing = |what: &str| syn::Error::new_spanned(attr, format!("`{name}` needs `{what}`"));
+    let sandbox = if sandbox {
+        Some(SandboxAttr {
+            vcpus: vcpus.ok_or_else(|| missing("vcpus = N"))?,
+            memory_mib: sandbox_memory_mib.ok_or_else(|| missing("sandbox_memory_mib = N"))?,
+            workspace_mib: workspace_mib.ok_or_else(|| missing("workspace_mib = N"))?,
+            image: image.ok_or_else(|| missing("image = \"name\""))?,
+        })
+    } else {
+        None
+    };
     Ok(ComputeAttr {
         fuel: fuel.ok_or_else(|| missing("fuel = N"))?,
         memory_mib,
         wall_secs,
         result: result.ok_or_else(|| missing("result = \"method\""))?,
+        sandbox,
     })
 }
 
@@ -221,7 +267,14 @@ fn parse_attrs(f: &mut ImplItemFn) -> syn::Result<Attrs> {
                 // A timer's caller is always `System`, so `every` implies `allow(system)`.
                 attrs.allow_system = true;
             }
-            "compute" => attrs.compute = Some(compute_attr(&attr)?),
+            "compute" | "sandbox" if attrs.compute.is_some() => {
+                return Err(syn::Error::new_spanned(
+                    &attr,
+                    "`compute` and `sandbox` exclude each other",
+                ))
+            }
+            "compute" => attrs.compute = Some(compute_attr(&attr, false)?),
+            "sandbox" => attrs.compute = Some(compute_attr(&attr, true)?),
             "compute_result" => {
                 attrs.compute_result = true;
                 // The node runs it as the system caller (a compute run's outcome).
@@ -410,6 +463,14 @@ fn abi_entry(m: &Method) -> Value {
         Kind::View => "view",
         Kind::Timer => "timer",
         Kind::Action => "action",
+        Kind::Compute
+            if m.attrs
+                .compute
+                .as_ref()
+                .is_some_and(|c| c.sandbox.is_some()) =>
+        {
+            "sandbox"
+        }
         Kind::Compute => "compute",
     };
     let params: Vec<Value> = m
@@ -443,6 +504,14 @@ fn abi_entry(m: &Method) -> Value {
         }
         let _ = caps.insert("result".into(), camel(&compute.result).into());
         let _ = entry.insert("compute".into(), Value::Object(caps));
+        if let Some(sandbox) = &compute.sandbox {
+            let mut caps = Map::new();
+            let _ = caps.insert("image".into(), sandbox.image.clone().into());
+            let _ = caps.insert("memoryMib".into(), sandbox.memory_mib.into());
+            let _ = caps.insert("vcpus".into(), sandbox.vcpus.into());
+            let _ = caps.insert("workspaceMib".into(), sandbox.workspace_mib.into());
+            let _ = entry.insert("sandbox".into(), Value::Object(caps));
+        }
     }
     if m.attrs.compute_result {
         let _ = entry.insert("computeResult".into(), true.into());
@@ -611,12 +680,20 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             ));
         }
     }
-    let (compute, app): (Vec<&Method>, Vec<&Method>) =
+    let (jobs, app): (Vec<&Method>, Vec<&Method>) =
         methods.iter().partition(|m| m.kind == Kind::Compute);
+    let (sandbox, compute): (Vec<&Method>, Vec<&Method>) = jobs.into_iter().partition(|m| {
+        m.attrs
+            .compute
+            .as_ref()
+            .is_some_and(|c| c.sandbox.is_some())
+    });
     let app_abi = abi_parts(&state, &methods.iter().collect::<Vec<_>>(), WORLD);
     let compute_abi = abi_parts(&state, &compute, COMPUTE_WORLD);
+    let sandbox_abi = abi_parts(&state, &sandbox, SANDBOX_WORLD);
     let app_dispatch = dispatch(&state, &app);
     let compute_dispatch = dispatch(&state, &compute);
+    let sandbox_dispatch = dispatch(&state, &sandbox);
     let export = syn::Ident::new("__CalimeroExport", Span::call_site());
     item.attrs.push(syn::parse_quote!(#[allow(dead_code)]));
 
@@ -628,6 +705,7 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
 
         #sdk::__calimero_app_only! { #app_dispatch }
         #sdk::__calimero_compute_only! { #compute_dispatch }
+        #sdk::__calimero_sandbox_only! { #sandbox_dispatch }
 
         #[allow(unused_imports)]
         use #sdk::__private::abi_defaults::*;
@@ -638,6 +716,9 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
             }
             #sdk::__calimero_compute_only! {
                 const __PARTS: &[&str] = &[#(#compute_abi),*];
+            }
+            #sdk::__calimero_sandbox_only! {
+                const __PARTS: &[&str] = &[#(#sandbox_abi),*];
             }
             const __LEN: usize = #sdk::__private::abi_len(__PARTS);
 
@@ -655,6 +736,12 @@ pub fn expand(mut item: ItemImpl) -> syn::Result<TokenStream> {
                 );
             }
             #sdk::__calimero_compute_only! {
+                #[cfg(target_arch = "wasm32")]
+                #sdk::__private::bindings::__calimero_export_run!(
+                    #export with_types_in #sdk::__private::bindings
+                );
+            }
+            #sdk::__calimero_sandbox_only! {
                 #[cfg(target_arch = "wasm32")]
                 #sdk::__private::bindings::__calimero_export_run!(
                     #export with_types_in #sdk::__private::bindings
@@ -1001,14 +1088,67 @@ mod tests {
         assert!(out.contains(&compute_methods), "{out}");
         assert!(
             out.contains(
-                r#",\"world\":\"calimero:app/compute@0.5.7\"}"#.replace(r#"\""#, "\"").as_str()
+                r#",\"world\":\"calimero:app/compute@0.5.8\"}"#.replace(r#"\""#, "\"").as_str()
             ),
             "{out}"
         );
         assert!(
-            out.contains(r#",\"world\":\"calimero:app@0.5.7\"}"#.replace(r#"\""#, "\"").as_str()),
+            out.contains(r#",\"world\":\"calimero:app@0.5.8\"}"#.replace(r#"\""#, "\"").as_str()),
             "{out}"
         );
+    }
+
+    #[test]
+    fn sandbox_methods_reach_the_app_abi_and_the_sandbox_world_alone() {
+        let item: ItemImpl = parse_quote! {
+            impl S {
+                #[app::sandbox(fuel = 100, result = "on_done", vcpus = 2, sandbox_memory_mib = 512, workspace_mib = 64, image = "host")]
+                pub fn build(x: u32) -> Result<()> { Ok(()) }
+                #[app::compute(fuel = 100, result = "on_done")]
+                pub fn digest(x: u32) -> Result<()> { Ok(()) }
+                #[app::compute_result]
+                pub fn on_done(&mut self) -> Result<()> { Ok(()) }
+            }
+        };
+        let out = expand(item).unwrap().to_string().replace(r#"\""#, "\"");
+        let build = r#""build":{"allowSystem":false,"compute":{"fuel":100,"result":"onDone"},"confirm":false,"kind":"sandbox","params":[["x","u32"]],"public":false,"returns":null,"sandbox":{"image":"host","memoryMib":512,"vcpus":2,"workspaceMib":64}}"#;
+        assert!(out.contains(build), "{out}");
+        // The sandbox component's ABI holds `build` alone; the compute one `digest` alone.
+        let sandbox_methods = format!(",\"methods\":{{{build}}},\"state\":");
+        assert!(out.contains(&sandbox_methods), "{out}");
+        assert!(
+            out.contains(r#","world":"calimero:app/sandbox-run@0.5.8"}"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#",\"methods\":{"digest":"#.replace(r#"\""#, "\"").as_str()),
+            "{out}"
+        );
+        assert!(out.contains("__calimero_sandbox_only"), "{out}");
+    }
+
+    #[test]
+    fn bad_sandbox_declarations_are_refused() {
+        let msg = refused(parse_quote! {
+            impl S { #[app::sandbox(fuel = 1, result = "r", vcpus = 1, sandbox_memory_mib = 1, workspace_mib = 1)] pub fn m() -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("image"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::sandbox(fuel = 1, result = "r", image = "host", sandbox_memory_mib = 1, workspace_mib = 1)] pub fn m() -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("vcpus"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S { #[app::compute(fuel = 1, result = "r", image = "host")] pub fn m() -> Result<()> { Ok(()) } }
+        });
+        assert!(msg.contains("expected"), "{msg}");
+        let msg = refused(parse_quote! {
+            impl S {
+                #[app::compute(fuel = 1, result = "r")]
+                #[app::sandbox(fuel = 1, result = "r", vcpus = 1, sandbox_memory_mib = 1, workspace_mib = 1, image = "host")]
+                pub fn m() -> Result<()> { Ok(()) }
+            }
+        });
+        assert!(msg.contains("exclude"), "{msg}");
     }
 
     #[test]

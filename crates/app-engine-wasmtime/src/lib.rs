@@ -26,7 +26,9 @@ use calimero_app_host::{
     Abi, Budget, Engine, HostCore, Outcome, PrepareError, Prepared, Status, TimerCtx, TrapKind,
     Usage, DEFAULT_MEMORY_PAGES,
 };
-use calimero_app_wit::{allowed_imports, compute_allowed_imports, stubbed_imports};
+use calimero_app_wit::{
+    allowed_imports, compute_allowed_imports, sandbox_allowed_imports, stubbed_imports,
+};
 use eyre::Result as EyreResult;
 use wasmparser::Parser;
 use wasmparser::Payload;
@@ -55,6 +57,7 @@ mod errors;
 mod fuel;
 mod http;
 mod run;
+mod sandbox;
 mod wasi;
 
 use bindings::AppPre;
@@ -62,6 +65,7 @@ use cache::Cache;
 pub use cache::{CacheSweep, CACHE_SWEEP_GRACE};
 use compute::ComputePre;
 use errors::{classify, Cancelled, GrowFailed, GrowRefused, HostPanic, Phase};
+use sandbox::SandboxRunPre;
 
 pub use errors::{CANCELLED, WALL_CLOCK_EXCEEDED};
 pub use run::{ending_of, measure, ComputeRun, Ending, Measured, Reason, THREAD_CPU};
@@ -142,6 +146,18 @@ const PATCHED: [(&str, &str); 2] = [("wasi:", "0.2."), ("calimero:app/", "0.5.")
 enum World {
     App,
     Compute,
+    /// A sandbox job node's: the compute world plus the Linux sandbox.
+    Sandbox,
+}
+
+impl World {
+    fn name(self) -> &'static str {
+        match self {
+            Self::App => "app",
+            Self::Compute => "compute",
+            Self::Sandbox => "sandbox-run",
+        }
+    }
 }
 
 /// Runs `calimero:app` components on wasmtime.
@@ -190,6 +206,22 @@ impl WasmtimeEngine {
         let engine = wasmtime::Engine::new(&config).map_err(report)?;
         Self::finish(
             World::Compute,
+            engine,
+            None,
+            COMPUTE_MAX_MEMORY_BYTES,
+            SLOT_RESERVATION_BYTES,
+        )
+    }
+
+    /// The engine of a sandbox job node: [`Self::for_compute`]'s, running sandbox components
+    /// (world `calimero:app/sandbox-run`) only. A run gets its sandbox with
+    /// `HostCore::with_sandbox`.
+    pub fn for_sandbox() -> EyreResult<Self> {
+        let mut config = Self::config();
+        let _ = config.cranelift_nan_canonicalization(true);
+        let engine = wasmtime::Engine::new(&config).map_err(report)?;
+        Self::finish(
+            World::Sandbox,
             engine,
             None,
             COMPUTE_MAX_MEMORY_BYTES,
@@ -284,6 +316,7 @@ impl WasmtimeEngine {
         match world {
             World::App => bindings::add_to_linker(&mut linker).map_err(report)?,
             World::Compute => compute::add_to_linker(&mut linker).map_err(report)?,
+            World::Sandbox => sandbox::add_to_linker(&mut linker).map_err(report)?,
         }
         wasi::add_to_linker(&mut linker).map_err(report)?;
         // Every host call that does work pays its fuel where it happens (`fuel.rs`): the
@@ -341,6 +374,7 @@ impl Engine for WasmtimeEngine {
         let inner: Arc<dyn std::any::Any + Send + Sync> = match self.world {
             World::App => Arc::new(AppPre::new(pre).map_err(compile)?),
             World::Compute => Arc::new(ComputePre::new(pre).map_err(compile)?),
+            World::Sandbox => Arc::new(SandboxRunPre::new(pre).map_err(compile)?),
         };
         Ok(Prepared {
             hash: bundle_hash.to_owned(),
@@ -367,22 +401,19 @@ impl WasmtimeEngine {
         let abi = calimero_app_build::abi_of(component)
             .map_err(|e| PrepareError::BadAbi(e.to_string()))?
             .ok_or(PrepareError::NoAbi)?;
-        let names_compute_world = abi["world"]
-            .as_str()
-            .is_some_and(calimero_app_wit::names_compute_world);
-        if names_compute_world != (self.world == World::Compute) {
+        let named = abi["world"].as_str().unwrap_or_default();
+        let abi_world = if calimero_app_wit::names_compute_world(named) {
+            World::Compute
+        } else if calimero_app_wit::names_sandbox_world(named) {
+            World::Sandbox
+        } else {
+            World::App
+        };
+        if abi_world != self.world {
             return Err(PrepareError::BadAbi(format!(
                 "the ABI is for the {} world, this engine runs the {} world",
-                if names_compute_world {
-                    "compute"
-                } else {
-                    "app"
-                },
-                if self.world == World::Compute {
-                    "compute"
-                } else {
-                    "app"
-                },
+                abi_world.name(),
+                self.world.name(),
             )));
         }
         let abi = Abi::from_json(&abi)?;
@@ -439,6 +470,9 @@ impl WasmtimeEngine {
             World::Compute => (*app.inner)
                 .downcast_ref::<ComputePre<StoreData>>()
                 .map(Pre::Compute),
+            World::Sandbox => (*app.inner)
+                .downcast_ref::<SandboxRunPre<StoreData>>()
+                .map(Pre::Sandbox),
         };
         let Some(pre) = pre else {
             let status = trap(TrapKind::Fault, "not prepared by this engine");
@@ -498,6 +532,11 @@ impl WasmtimeEngine {
                     phase = Phase::Call;
                     instance.call_run(&mut store, &method, &args)
                 }
+                Pre::Sandbox(pre) => {
+                    let instance = pre.instantiate(&mut store)?;
+                    phase = Phase::Call;
+                    instance.call_run(&mut store, &method, &args)
+                }
             }))
             .unwrap_or_else(|_| Err(wasmtime::Error::new(HostPanic)))
         });
@@ -547,10 +586,11 @@ fn compile(error: wasmtime::Error) -> PrepareError {
     PrepareError::Compile(error.to_string())
 }
 
-/// A prepared component of either world.
+/// A prepared component of one of the worlds.
 enum Pre<'a> {
     App(&'a AppPre<StoreData>),
     Compute(&'a ComputePre<StoreData>),
+    Sandbox(&'a SandboxRunPre<StoreData>),
 }
 
 /// `wasmtime::Error` is not a `std::error::Error`, so `?` can't lift it into eyre.
@@ -572,6 +612,7 @@ fn import_allowed(world: World, import: &str) -> bool {
     let world_imports = match world {
         World::App => allowed_imports(),
         World::Compute => compute_allowed_imports(),
+        World::Sandbox => sandbox_allowed_imports(),
     };
     let listed = || world_imports.iter().chain(stubbed_imports());
     if listed().any(|l| *l == import) {
@@ -734,36 +775,36 @@ mod tests {
     fn files_at_0_5_0_is_accepted_though_that_interface_first_shipped_at_0_5_1() {
         assert!(import_allowed(World::App, "calimero:app/files@0.5.0"));
         assert!(import_allowed(World::App, "calimero:app/files@0.5.1"));
-        assert!(import_allowed(World::App, "calimero:app/files@0.5.7"));
-        assert!(!import_allowed(World::App, "calimero:app/files@0.5.8"));
+        assert!(import_allowed(World::App, "calimero:app/files@0.5.8"));
+        assert!(!import_allowed(World::App, "calimero:app/files@0.5.9"));
     }
 
     #[test]
     fn the_compute_world_allows_job_files_and_wasi_but_no_state_or_http() {
-        assert!(import_allowed(World::Compute, "calimero:app/job@0.5.7"));
-        assert!(import_allowed(World::Compute, "calimero:app/files@0.5.7"));
+        assert!(import_allowed(World::Compute, "calimero:app/job@0.5.8"));
+        assert!(import_allowed(World::Compute, "calimero:app/files@0.5.8"));
         assert!(import_allowed(World::Compute, "wasi:random/random@0.2.12"));
         assert!(import_allowed(World::Compute, "wasi:cli/stdin@0.2.9"));
         for import in [
-            "calimero:app/storage@0.5.7",
-            "calimero:app/xcall@0.5.7",
-            "calimero:app/context@0.5.7",
-            "calimero:app/runs@0.5.7",
+            "calimero:app/storage@0.5.8",
+            "calimero:app/xcall@0.5.8",
+            "calimero:app/context@0.5.8",
+            "calimero:app/runs@0.5.8",
             "wasi:http/outgoing-handler@0.2.12",
             "wasi:http/types@0.2.12",
         ] {
             assert!(!import_allowed(World::Compute, import), "{import}");
         }
-        assert!(!import_allowed(World::App, "calimero:app/job@0.5.7"));
-        assert!(import_allowed(World::App, "calimero:app/runs@0.5.7"));
+        assert!(!import_allowed(World::App, "calimero:app/job@0.5.8"));
+        assert!(import_allowed(World::App, "calimero:app/runs@0.5.8"));
     }
 
     #[test]
     fn imports_match_the_lists_with_older_patches_only() {
-        assert!(import_allowed(World::App, "calimero:app/storage@0.5.7"));
+        assert!(import_allowed(World::App, "calimero:app/storage@0.5.8"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.1"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.0"));
-        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.8"));
+        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.9"));
         assert!(!import_allowed(World::App, "calimero:app/storage@0.6.0"));
         assert!(!import_allowed(World::App, "calimero:app/nothing@0.5.0"));
         assert!(import_allowed(World::App, "wasi:cli/stdin@0.2.12"));

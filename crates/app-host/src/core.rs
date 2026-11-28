@@ -43,6 +43,7 @@ use crate::types::{
 };
 
 mod file_ops;
+mod sandbox_ops;
 
 pub use file_ops::{ReaderId, WriterId};
 
@@ -246,6 +247,10 @@ pub struct HostCore {
     deadline: Option<Instant>,
     /// Whether a host call met the deadline: `finish` answers `Timeout`.
     timed_out: bool,
+    /// A sandbox run's Linux sandbox (`with_sandbox`); none for any other run.
+    sandbox: Option<Arc<dyn crate::sandbox::SandboxHost>>,
+    /// The sandbox could not serve a call: `finish` answers `Unavailable`.
+    sandbox_unavailable: bool,
 }
 
 impl HostCore {
@@ -312,6 +317,8 @@ impl HostCore {
             host_fuel: Cell::new(0),
             searches: SearchBudget::default(),
             deadline: None,
+            sandbox: None,
+            sandbox_unavailable: false,
             timed_out: false,
         })
     }
@@ -395,6 +402,14 @@ impl HostCore {
     #[must_use]
     pub fn with_progress(mut self, progress: Progress) -> Self {
         self.progress = Some(progress);
+        self
+    }
+
+    /// Gives a compute run the Linux sandbox of a sandbox method; every `sandbox` call of any
+    /// other run is `HostDenied`.
+    #[must_use]
+    pub fn with_sandbox(mut self, sandbox: Arc<dyn crate::sandbox::SandboxHost>) -> Self {
+        self.sandbox = Some(sandbox);
         self
     }
 
@@ -1509,6 +1524,11 @@ impl HostCore {
             Status::Trap {
                 kind: TrapKind::Unavailable,
                 detail: FILE_UNAVAILABLE.to_owned(),
+            }
+        } else if self.sandbox_unavailable {
+            Status::Trap {
+                kind: TrapKind::Unavailable,
+                detail: crate::sandbox::SANDBOX_UNAVAILABLE.to_owned(),
             }
         } else {
             status

@@ -371,6 +371,7 @@ impl Cluster {
             tee_profile: from.tee_profile.clone(),
             cluster_identity: self.nodes[0].as_ref().unwrap().node.cluster_identity(),
             slots: calimero_node::RUNS_PER_JOB_NODE,
+            sandbox: None,
         };
         configure(&mut config);
         let url = format!("http://127.0.0.1:{}/", config.listen.port());
@@ -515,6 +516,7 @@ fn mpk_build(
         wasm: wasm.map(|w| artifact("app.wasm", w)),
         abi: None,
         compute: compute.map(|c| artifact("compute.wasm", c)),
+        sandbox: None,
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),
@@ -538,6 +540,7 @@ fn mpk_build(
             wasm: manifest.wasm.take().unwrap(),
             abi: None,
             compute: manifest.compute.take(),
+            sandbox: None,
             pipelines: std::mem::take(&mut manifest.pipelines),
         }]);
     }

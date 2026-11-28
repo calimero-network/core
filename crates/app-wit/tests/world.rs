@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use calimero_app_wit::{
-    allowed_imports, compute_allowed_imports, stubbed_imports, COMPUTE_WORLD, WIT_DIR, WORLD,
+    allowed_imports, compute_allowed_imports, names_compute_world, names_sandbox_world,
+    sandbox_allowed_imports, stubbed_imports, COMPUTE_WORLD, SANDBOX_WORLD, WIT_DIR, WORLD,
 };
 use wit_parser::{Resolve, WorldItem};
 
@@ -30,7 +31,7 @@ fn world_parses_and_imports_exactly_the_spec_set() {
         .select_world(&[pkg], Some("app"))
         .expect("world app exists");
     let world = &resolve.worlds[world_id];
-    assert_eq!(WORLD, "calimero:app/app@0.5.7");
+    assert_eq!(WORLD, "calimero:app/app@0.5.8");
 
     let mut imports = BTreeSet::new();
     for item in world.imports.values() {
@@ -74,7 +75,7 @@ fn imports_of_world(name: &str) -> BTreeSet<String> {
 
 #[test]
 fn compute_world_imports_exactly_its_allow_list_and_exports_only_run() {
-    assert_eq!(COMPUTE_WORLD, "calimero:app/compute@0.5.7");
+    assert_eq!(COMPUTE_WORLD, "calimero:app/compute@0.5.8");
     let expected: BTreeSet<String> = compute_allowed_imports()
         .iter()
         .map(|s| s.to_string())
@@ -99,17 +100,53 @@ fn compute_world_has_no_state_xcall_or_http() {
         "storage", "xcall", "context", "events", "action", "search", "runs",
     ] {
         assert!(
-            !imports.contains(&format!("calimero:app/{name}@0.5.7")),
+            !imports.contains(&format!("calimero:app/{name}@0.5.8")),
             "{name}"
         );
     }
     assert!(imports.iter().all(|i| !i.starts_with("wasi:http/")));
-    assert!(imports.contains("calimero:app/job@0.5.7"));
+    assert!(imports.contains("calimero:app/job@0.5.8"));
+}
+
+#[test]
+fn sandbox_world_is_the_compute_world_plus_sandbox_and_exports_only_run() {
+    assert_eq!(SANDBOX_WORLD, "calimero:app/sandbox-run@0.5.8");
+    let expected: BTreeSet<String> = sandbox_allowed_imports()
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(imports_of_world("sandbox-run"), expected);
+    let mut compute_plus = imports_of_world("compute");
+    compute_plus.insert("calimero:app/sandbox@0.5.8".to_owned());
+    assert_eq!(imports_of_world("sandbox-run"), compute_plus);
+
+    let mut resolve = Resolve::default();
+    let (pkg, _) = resolve.push_dir(WIT_DIR).expect("wit dir parses");
+    let world = &resolve.worlds[resolve.select_world(&[pkg], Some("sandbox-run")).unwrap()];
+    let exports: Vec<_> = world.exports.values().collect();
+    assert_eq!(exports.len(), 1);
+    match exports[0] {
+        WorldItem::Function(f) => assert_eq!(f.name, "run"),
+        other => panic!("export is not a function: {other:?}"),
+    }
+    assert!(names_sandbox_world(SANDBOX_WORLD));
+    assert!(!names_compute_world(SANDBOX_WORLD));
+    assert!(!names_sandbox_world(COMPUTE_WORLD));
+}
+
+#[test]
+fn only_the_sandbox_world_imports_sandbox() {
+    for world in ["app", "compute"] {
+        assert!(
+            !imports_of_world(world).contains("calimero:app/sandbox@0.5.8"),
+            "{world}"
+        );
+    }
 }
 
 #[test]
 fn app_world_does_not_import_job() {
-    assert!(!imports_of_world("app").contains("calimero:app/job@0.5.7"));
+    assert!(!imports_of_world("app").contains("calimero:app/job@0.5.8"));
 }
 
 #[test]

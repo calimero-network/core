@@ -1,0 +1,16 @@
+[package]
+name = "fixture-sandbox"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Cluster-test fixture on the component SDK: a sandbox method"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+calimero-sdk = { path = "../../crates/sdk" }
+serde_json = "1"
+
+# Standalone, like the SDK's sample guest: the test builds this crate for wasm32-wasip2.
+[workspace]

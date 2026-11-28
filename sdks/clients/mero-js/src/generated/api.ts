@@ -4972,6 +4972,7 @@ export interface components {
                     runsPerNode: number;
                     /** Format: int64 */
                     maxMemoryMib: number;
+                    sandbox?: boolean;
                 };
             };
             capacity: {
@@ -18120,6 +18121,7 @@ export interface operations {
                             runsPerNode: number;
                             /** Format: int64 */
                             maxMemoryMib: number;
+                            sandbox?: boolean;
                         };
                     };
                     operatorProof?: components["schemas"]["OperatorProof"];

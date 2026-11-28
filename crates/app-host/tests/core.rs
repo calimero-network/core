@@ -561,7 +561,7 @@ fn context_comes_from_the_invocation_and_directory() {
 fn abi_reads_method_attributes() {
     let abi = Abi::from_json(&json!({
         "abiVersion": 1,
-        "world": "calimero:app@0.5.7",
+        "world": "calimero:app@0.5.8",
         "methods": {
             "init": { "kind": "init", "params": [], "returns": null },
             "book": { "kind": "call", "params": [["roomId", "string"]], "returns": "string" },

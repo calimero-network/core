@@ -79,6 +79,10 @@ jobs:
               - "crates/log/src/**"
               - "fuzz/fuzz_targets/system_apply.rs"
               - "fuzz/seeds/system_apply/**"
+            sandbox_workspace:
+              - *shared
+              - "crates/sandbox/src/workspace.rs"
+              - "fuzz/fuzz_targets/sandbox_workspace.rs"
 
   smoke:
     name: Smoke (${{ matrix.target }})
@@ -118,6 +122,7 @@ jobs:
           - session_token
           - quote_parse
           - system_apply
+          - sandbox_workspace
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

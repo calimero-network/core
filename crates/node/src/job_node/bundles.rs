@@ -101,12 +101,18 @@ pub(super) async fn put_bundle(
         .acquire()
         .await
         .map_err(|e| ApiError::internal(&e.to_string()))?;
-    let engine = Arc::clone(&job.engine);
+    let (compute, sandbox) = (Arc::clone(&job.engine), job.sandbox_engine.clone());
     let named = hash.clone();
-    let prepared = tokio::task::spawn_blocking(move || engine.prepare(&named, &body))
-        .await
-        .map_err(|e| ApiError::internal(&e.to_string()))?
-        .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
+    // A sandbox job node prepares a sandbox component on its sandbox engine; every other
+    // component, and every component on a plain job node, on the compute engine, which refuses
+    // a sandbox component's `sandbox` import.
+    let prepared = tokio::task::spawn_blocking(move || match sandbox {
+        Some(sandbox) if sandbox.abi_of(&body).is_ok() => sandbox.prepare(&named, &body),
+        _ => compute.prepare(&named, &body),
+    })
+    .await
+    .map_err(|e| ApiError::internal(&e.to_string()))?
+    .map_err(|e| ApiError::bad_request("BAD_BUNDLE", &e.to_string()))?;
     job.bundles.insert(Arc::new(prepared));
     info!(%hash, "job node prepared a component");
     Ok(Json(json!({ "hash": hash })))

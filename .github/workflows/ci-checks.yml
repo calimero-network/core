@@ -173,7 +173,7 @@ jobs:
   rust:
     name: Rust
     if: ${{ !cancelled() }}
-    needs: [scope, rust-quick, rust-lint, rust-doc, rust-test, rust-apps, rust-compute-tools, rust-features, rust-supply-chain, compat, app-lockfiles, upgrade-path]
+    needs: [scope, rust-quick, rust-lint, rust-doc, rust-test, rust-apps, rust-compute-tools, sandbox-escape, rust-features, rust-supply-chain, compat, app-lockfiles, upgrade-path]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -182,7 +182,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
           # job -> the `scope` output that decides whether it runs
-          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-doc":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
+          GATES: '{"rust-quick":"rust","rust-lint":"rust","rust-doc":"rust","rust-test":"rust","rust-apps":"standalone_apps","rust-compute-tools":"rust","sandbox-escape":"rust","rust-features":"rust","rust-supply-chain":"rust","compat":"rust","app-lockfiles":"rust","upgrade-path":"upgrade_path"}'
         run: |
           # A push to master runs the tests the queue left out and the jobs that save
           # caches (the queue ran the other jobs on this tree), so there a gated job may
@@ -670,6 +670,38 @@ jobs:
             echo "an email, card or phone number survived" >&2
             exit 1
           fi
+
+  # The sandbox runs' escape suite, as root: every attack must fail, and with one isolation
+  # layer turned off (the `controls` feature) the suite must go red, so a missing layer fails
+  # the build. Runs on cgroup v2, as a job node does.
+  sandbox-escape:
+    name: Sandbox escape suite
+    needs: [scope, rust-quick]
+    if: needs.scope.outputs.rust != 'false' && github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Setup Rust CI
+        uses: ./.github/actions/setup-rust-ci
+        with:
+          shared-key: ci-checks
+          save-if: false
+
+      - name: Build the escape suite
+        run: |
+          set -euo pipefail
+          bin=$(cargo test --locked -p calimero-sandbox --features controls --test escape --no-run \
+            --message-format=json | jq -r 'select(.profile.test == true and .target.name == "escape") | .executable')
+          echo "ESCAPE_BIN=$bin" >> "$GITHUB_ENV"
+
+      - name: Run it as root
+        run: sudo env CALIMERO_SANDBOX_PRIVILEGED=1 "$ESCAPE_BIN"
 
   rust-features:
     name: Rust feature-gated tests

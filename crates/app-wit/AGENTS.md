@@ -8,7 +8,7 @@
 
 ## What This Crate Does
 
-Holds the `calimero:app@0.5.7` world: 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3), `xcall.batch` (0.5.4), `context.unit-of` (0.5.5), `context.visitor` and `context.grant-scope` (0.5.6) and `storage.put-checked`, `delete-checked` and `add-checked` (0.5.7), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine WASI interfaces accepted at install and served by stubs that refuse). Anything in neither list is refused.
+Holds the `calimero:app@0.5.8` world: 0.5.0 plus `search`, below, plus the additive `files`, `runs` and `job` interfaces (0.5.1), `context.via` (0.5.2), `context.linked` (0.5.3), `xcall.batch` (0.5.4), `context.unit-of` (0.5.5), `context.visitor` and `context.grant-scope` (0.5.6) and `storage.put-checked`, `delete-checked` and `add-checked` (0.5.7), and the `sandbox` interface with `world sandbox-run` (0.5.8), and exposes `WIT_DIR`, `WORLD`, `COMPUTE_WORLD`, `SANDBOX_WORLD` (`names_sandbox_world`), `sandbox_allowed_imports()`, `allowed_imports()` (what the app world imports), `compute_allowed_imports()` (what the compute world imports) and `stubbed_imports()` (the nine WASI interfaces accepted at install and served by stubs that refuse). Anything in neither list is refused.
 
 ## The compute world
 
@@ -18,6 +18,10 @@ Holds the `calimero:app@0.5.7` world: 0.5.0 plus `search`, below, plus the addit
 The app world imports `runs` (`start`, `cancel`: logged writes only) and not `job`, so it has 23 imports.
 It cannot be named `compute`, which is the world's name; the compute world does not import `runs`, so a run cannot start runs.
 The compute world imports no state, xcall, context, events, blobs, search, action or `wasi:http`, so a compute component cannot even ask for them: the install-time import check is the enforcement.
+
+## The sandbox world
+
+`world sandbox-run` (0.5.8) is `include compute; import sandbox;`: the component of an app's sandbox methods, run only on sandbox job nodes. `interface sandbox` has `exec(exec-request) -> result<exec-result, string>` (one command in fresh namespaces over the run's `/workspace`), `write`, `read` and `collect(path) -> result<blob-id, string>` (the workspace file as one of the run's sealed outputs). The world cannot be named `sandbox`, the interface's name. Neither the app nor the compute world imports `sandbox` (`only_the_sandbox_world_imports_sandbox`).
 
 ## Interfaces the first world design did not have
 

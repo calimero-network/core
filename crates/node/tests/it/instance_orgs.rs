@@ -55,6 +55,7 @@ fn release(package: &str, mode: Option<calimero_bundle::InstanceOrg>) -> Vec<u8>
         interfaces: None,
         wasm: Some(artifact("app.wasm", wasm.as_slice())),
         compute: None,
+        sandbox: None,
         abi: None,
         links: None,
         frontend: None,

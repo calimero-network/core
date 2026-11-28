@@ -1094,6 +1094,7 @@ fn undo_release(version: &str, wasm: &[u8]) -> Vec<u8> {
         }),
         abi: None,
         compute: None,
+        sandbox: None,
         links: None,
         frontend: None,
         frontend_aliases: Vec::new(),

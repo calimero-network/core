@@ -35,6 +35,7 @@ pub fn target_dir(dir: &Path) -> PathBuf {
         .map_or_else(|| dir.join("target"), PathBuf::from)
 }
 const COMPUTE_FILE: &str = "compute.component.wasm";
+const SANDBOX_FILE: &str = "sandbox.component.wasm";
 const WASM_MAGIC: &[u8] = b"\0asm\x0d\0\x01\0"; // a component; a core module is an SDK 0.12 app
 const DEFAULT_MIN_RUNTIME: &str = "0.1.0";
 /// The longest service name `pack` writes: the name `instance create --service`
@@ -71,6 +72,10 @@ pub struct BuildArgs {
     /// `compute.component.wasm` beside `--out`).
     #[arg(long)]
     pub compute_out: Option<PathBuf>,
+    /// The sandbox component, when the app has sandbox methods (default:
+    /// `sandbox.component.wasm` beside `--out`).
+    #[arg(long)]
+    pub sandbox_out: Option<PathBuf>,
     /// Cargo's target directory (default: `CARGO_TARGET_DIR`, else `<dir>/target`).
     #[arg(long)]
     pub target_dir: Option<PathBuf>,
@@ -161,6 +166,9 @@ pub struct PackArgs {
     /// The compute component of the same build, packed as `compute.wasm`.
     #[arg(long)]
     pub compute: Option<PathBuf>,
+    /// The sandbox component of the same build, packed as `sandbox.wasm`.
+    #[arg(long)]
+    pub sandbox: Option<PathBuf>,
     /// A pipeline YAML file to ship (repeatable).
     #[arg(long = "pipeline")]
     pub pipelines: Vec<PathBuf>,
@@ -327,6 +335,7 @@ impl ReleaseArgs {
         let named = pack.dir.is_some()
             || pack.wasm.is_some()
             || pack.compute.is_some()
+            || pack.sandbox.is_some()
             || !pack.services.is_empty();
         if !named {
             pack.dir = Some(PathBuf::from("."));
@@ -383,7 +392,7 @@ pub fn new(a: &NewArgs) -> eyre::Result<Value> {
     crate::dev::new(&a.dir, &a.template, &a.git_ref, &a.repo, !a.no_git)
 }
 
-/// `app build`: the app component (and the compute component when there is one).
+/// `app build`: the app component (and the compute and sandbox components when there are any).
 pub fn build(a: &BuildArgs) -> eyre::Result<Value> {
     let out = a.out.clone().unwrap_or_else(|| a.dir.join(APP_FILE));
     let target = a.target_dir.clone().unwrap_or_else(|| target_dir(&a.dir));
@@ -399,6 +408,17 @@ pub fn build(a: &BuildArgs) -> eyre::Result<Value> {
             answer["compute"] = json!(path);
         }
         (None, Some(_)) => bail!("{} has no compute methods", a.dir.display()),
+        (None, None) => {}
+    }
+    match (&built.sandbox, &a.sandbox_out) {
+        (Some(sandbox), path) => {
+            let path = path
+                .clone()
+                .unwrap_or_else(|| out.with_file_name(SANDBOX_FILE));
+            write_file(&path, &sandbox.component)?;
+            answer["sandbox"] = json!(path);
+        }
+        (None, Some(_)) => bail!("{} has no sandbox methods", a.dir.display()),
         (None, None) => {}
     }
     Ok(answer)
@@ -942,6 +962,9 @@ fn pack_services(
             eprintln!("building service {name} from {}", path.display());
             let target = shared_target.clone().unwrap_or_else(|| target_dir(path));
             let built = calimero_app_build::build_components(path, &target)?;
+            if built.sandbox.is_some() {
+                bail!("service {name}: a package of services does not ship sandbox methods yet; pack the app on its own");
+            }
             (built.app.component, built.compute.map(|c| c.component))
         } else {
             (
@@ -1030,15 +1053,17 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         if !a.service_compute.is_empty() || !a.service_pipelines.is_empty() {
             bail!("--service-compute and --service-pipeline belong to a --service: name the services too");
         }
-        let (mut wasm, mut compute) = (
+        let (mut wasm, mut compute, mut sandbox) = (
             a.wasm.as_deref().map(component).transpose()?,
             a.compute.as_deref().map(component).transpose()?,
+            a.sandbox.as_deref().map(component).transpose()?,
         );
-        if let (Some(dir), None, None) = (&a.dir, &wasm, &compute) {
+        if let (Some(dir), None, None, None) = (&a.dir, &wasm, &compute, &sandbox) {
             eprintln!("building {}", dir.display());
             let built = calimero_app_build::build_components(dir, &target_dir(dir))?;
             wasm = Some(built.app.component);
             compute = built.compute.map(|c| c.component);
+            sandbox = built.sandbox.map(|c| c.component);
         }
         if wasm.is_none() && compute.is_none() {
             bail!("give --wasm, --compute or both, or the app's crate DIR");
@@ -1047,6 +1072,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         for (key, name, data) in [
             ("wasm", "app.wasm", wasm),
             ("compute", "compute.wasm", compute),
+            ("sandbox", "sandbox.wasm", sandbox),
         ] {
             if let Some(data) = data {
                 fields.push((key, serde_json::to_value(artifact(name, &data))?));
@@ -1064,6 +1090,7 @@ pub fn pack(a: &PackArgs) -> eyre::Result<Value> {
         for (flag, given) in [
             ("--wasm", a.wasm.is_some()),
             ("--compute", a.compute.is_some()),
+            ("--sandbox", a.sandbox.is_some()),
             ("--pipeline", !a.pipelines.is_empty()),
         ] {
             if given {

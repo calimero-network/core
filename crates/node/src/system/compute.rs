@@ -32,7 +32,19 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             fuel,
             memory_mib,
             pool: named_pool,
-        } => acquire_run(state, app, run, payer, fuel, memory_mib, named_pool),
+            sandbox,
+        } => acquire_run(
+            state,
+            app,
+            run,
+            payer,
+            fuel,
+            Placement {
+                memory_mib,
+                named_pool,
+                sandbox,
+            },
+        ),
         SystemCmd::ReleaseRun { app, run } => release_run(state, &app, run),
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
@@ -66,6 +78,14 @@ fn charge_file_bytes(
     Ok(json!({ "fileBytes": now }))
 }
 
+/// What picks a run's pool: its memory cap, a pipeline step's named pool, and whether it is a
+/// sandbox run.
+struct Placement {
+    memory_mib: u32,
+    named_pool: Option<String>,
+    sandbox: bool,
+}
+
 /// Queue a compute run (once: a known run is answered as it stands) and run
 /// the grant pass; answer whether it is granted, queued or refused.
 fn acquire_run(
@@ -74,8 +94,11 @@ fn acquire_run(
     run: String,
     payer: String,
     fuel: u64,
-    memory_mib: u32,
-    named_pool: Option<String>,
+    Placement {
+        memory_mib,
+        named_pool,
+        sandbox,
+    }: Placement,
 ) -> Result<Value, Rejection> {
     let Some(record) = state.apps.get(&app) else {
         return Ok(acquire_refused(RUN_NO_SUCH_APP, false));
@@ -83,7 +106,7 @@ fn acquire_run(
     if state.run_slot(&app, &run).is_none() {
         let pool = match named_pool {
             Some(name) => state.named_pool_for(name, memory_mib),
-            None => state.pool_for(memory_mib),
+            None => state.pool_for(memory_mib, sandbox),
         };
         let app_payer = crate::usage::payer(record);
         let refusal = acquire_refusal(state, &app, &run, &app_payer, &payer, fuel, pool.is_some());

@@ -44,6 +44,7 @@ wasmparser.workspace = true
 calimero-app-abi.workspace = true
 calimero-app-downloader.workspace = true
 calimero-app-engine-wasmtime.workspace = true
+calimero-sandbox.workspace = true
 calimero-app-host.workspace = true
 calimero-bundle.workspace = true
 calimero-client.workspace = true

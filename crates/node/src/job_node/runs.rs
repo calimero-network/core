@@ -38,6 +38,7 @@ pub const MAX_ASSIGNMENT_BYTES: usize = 8 * 1024 * 1024; // the most a request t
 pub const TOKEN_HEADER: &str = "x-run-token"; // the header carrying a run's capability token
 pub const UNKNOWN_RUN: &str = "UNKNOWN_RUN"; // the code of an answer about a run this node does not hold
 pub const NEED_BUNDLE: &str = "NEED_BUNDLE"; // the code of an assignment whose component this node does not hold
+pub const NOT_SANDBOX_NODE: &str = "NOT_SANDBOX_NODE"; // the code of a sandbox method assigned to a job node without `--sandbox`
 
 /// A run's secrets, unwrapped at admission and taken by the thread that runs it.
 pub(super) struct Keys {
@@ -483,15 +484,24 @@ fn admit_run(
             "this node does not hold the bundle: PUT it first",
         )
     })?;
-    let compute = prepared
+    let caps = prepared
         .abi
         .methods
         .get(&a.method)
-        .is_some_and(|m| matches!(m.kind, MethodKind::Compute(_)));
-    if !compute {
+        .and_then(|m| match &m.kind {
+            MethodKind::Compute(caps) => Some(caps),
+            _ => None,
+        });
+    let Some(caps) = caps else {
         return Err(ApiError::bad_request(
             "NOT_COMPUTE",
             "the bundle has no such compute method",
+        ));
+    };
+    if caps.is_sandbox() && job.config.sandbox.is_none() {
+        return Err(ApiError::bad_request(
+            NOT_SANDBOX_NODE,
+            "a sandbox method runs on a sandbox job node only",
         ));
     }
     let keys = unwrap_keys(job, &a)?;

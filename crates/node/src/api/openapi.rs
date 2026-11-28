@@ -980,7 +980,7 @@ fn components() -> Vec<Component> {
         component(
             "OpsPools",
             "`GET /ops/pools`: the pools, and the runs each takes at once.",
-            "{ pools: { [string]: { runsPerNode: uint, maxMemoryMib: uint } }, capacity: { [string]: uint } }",
+            "{ pools: { [string]: { runsPerNode: uint, maxMemoryMib: uint, sandbox?: bool } }, capacity: { [string]: uint } }",
         )
         .of::<super::ops::OpsPools>(),
         component(
@@ -3369,7 +3369,7 @@ fn operations() -> Vec<Op> {
             .ok("#OpsPools"),
         post("/ops/pools", "ops_pools_set", Ops, "Set the compute pools")
             .about("Signed over `cluster / __set_pools / { pools }`; `POOL_IN_USE` when a pool to remove still has job nodes or runs.")
-            .json::<super::PoolsBody>("{ pools: { [string]: { runsPerNode: uint, maxMemoryMib: uint } }, operatorProof?: #OperatorProof }")
+            .json::<super::PoolsBody>("{ pools: { [string]: { runsPerNode: uint, maxMemoryMib: uint, sandbox?: bool } }, operatorProof?: #OperatorProof }")
             .ok("{}")
             .operator()
             .errors(&[(409, "POOL_IN_USE"), (409, "UPGRADE_PENDING")]),

@@ -604,6 +604,8 @@ pub struct Node {
     wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepares a release's compute components at install; no run ever goes through it.
     compute_wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
+    /// Prepares a release's sandbox components at install; no run ever goes through it.
+    sandbox_wasm: Arc<calimero_app_engine_wasmtime::WasmtimeEngine>,
     /// Prepared components per bundle hash.
     prepared: Mutex<HashMap<String, calimero_app_host::Prepared>>,
     /// One lock per bundle being prepared, so concurrent first uses wait for one
@@ -1171,6 +1173,7 @@ impl Node {
             &component::component_cache_key(&cluster_key),
         )?);
         let compute_wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::for_compute()?);
+        let sandbox_wasm = Arc::new(calimero_app_engine_wasmtime::WasmtimeEngine::for_sandbox()?);
         let clock = Clock::new(config.clock_offset_ms);
         let quoter = crate::attest::Quoter::new(config.attestation);
         let http_timeout = SHARED_HTTP_TIMEOUT;
@@ -1197,6 +1200,7 @@ impl Node {
             apps: RwLock::new(HashMap::new()),
             wasm,
             compute_wasm,
+            sandbox_wasm,
             prepared: Mutex::new(HashMap::new()),
             preparing: Mutex::new(HashMap::new()),
             #[cfg(feature = "testing")]

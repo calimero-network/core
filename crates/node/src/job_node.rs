@@ -5,6 +5,7 @@ mod admission;
 mod bundles;
 mod exec;
 mod runs;
+mod sandbox;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -61,6 +62,9 @@ pub struct JobConfig {
     pub cluster_identity: [u8; 32],
     /// How many compute runs this node takes at once.
     pub slots: usize,
+    /// Set on a sandbox job node (`merod run --sandbox`): it also runs sandbox components, each
+    /// run in a Linux sandbox laid out here. `None`: it runs compute components only.
+    pub sandbox: Option<calimero_sandbox::Config>,
 }
 
 impl JobConfig {
@@ -81,6 +85,8 @@ struct JobNode {
     job_key: ed25519_dalek::SigningKey,
     /// Compiles and runs compute only; holds no key.
     engine: Arc<WasmtimeEngine>,
+    /// Compiles and runs sandbox components, on a sandbox job node only.
+    sandbox_engine: Option<Arc<WasmtimeEngine>>,
     bundles: bundles::Bundles,
     runs: runs::Runs,
     scratch: PathBuf,
@@ -265,11 +271,16 @@ pub async fn run_job(config: JobConfig) -> eyre::Result<RunningJob> {
     let public = job_key.verifying_key().to_bytes();
     let node_id = config.node_id;
     let quoter = Quoter::new(config.attestation);
+    let config_sandbox = config.sandbox.clone();
     let job = Arc::new(JobNode {
         config,
         transport: Arc::clone(&transport),
         job_key,
         engine: Arc::new(WasmtimeEngine::for_compute()?),
+        sandbox_engine: match &config_sandbox {
+            Some(_) => Some(Arc::new(WasmtimeEngine::for_sandbox()?)),
+            None => None,
+        },
         bundles: bundles::Bundles::new(),
         runs: runs::Runs::default(),
         scratch,

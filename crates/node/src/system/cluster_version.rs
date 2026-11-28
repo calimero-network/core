@@ -292,10 +292,15 @@ pub enum Feature {
     /// release ignores the field and would skip every queued message. An app's entry, not a
     /// system one: the leader writes the field from the logged version.
     XcallKeepsQueue,
+    /// `release.sandbox` on `InstallPackage`: the release's job components are sandbox
+    /// components, which only sandbox job nodes run
+    /// ([Compute actions](https://calimero-network.github.io/core/protocol/compute-actions/)).
+    /// An earlier release drops the flag and would record them as compute components.
+    SandboxRuns,
 }
 
 /// Every feature, oldest first.
-pub const FEATURES: [Feature; 63] = [
+pub const FEATURES: [Feature; 64] = [
     Feature::MoveApp,
     Feature::AppTeamJoin,
     Feature::OrgQuotas,
@@ -359,6 +364,7 @@ pub const FEATURES: [Feature; 63] = [
     Feature::PinnedLineage,
     Feature::AppOrigins,
     Feature::XcallKeepsQueue,
+    Feature::SandboxRuns,
 ];
 
 impl Feature {
@@ -429,6 +435,7 @@ impl Feature {
             Self::PinnedLineage => "pinnedLineage",
             Self::AppOrigins => "appOrigins",
             Self::XcallKeepsQueue => "xcallKeepsQueue",
+            Self::SandboxRuns => "sandboxRuns",
         }
     }
 
@@ -517,7 +524,8 @@ impl Feature {
             | Self::XcallBudget
             | Self::PinnedLineage
             | Self::AppOrigins
-            | Self::XcallKeepsQueue => "1.0.0-rc.39",
+            | Self::XcallKeepsQueue
+            | Self::SandboxRuns => "1.0.0-rc.39",
         }
     }
 }
@@ -908,7 +916,13 @@ impl SystemCmd {
             Self::SetDeploymentSecret { .. } | Self::ClearDeploymentSecret { .. } => {
                 vec![Feature::DeploymentSecrets]
             }
-            Self::SetPools { .. } => vec![Feature::ComputePools],
+            Self::SetPools { pools, .. } => {
+                let mut f = vec![Feature::ComputePools];
+                if pools.values().any(|p| p.sandbox) {
+                    f.push(Feature::SandboxRuns);
+                }
+                f
+            }
             Self::CreateDeployment {
                 deployment_needs_recovery: true,
                 ..
@@ -1007,6 +1021,9 @@ impl SystemCmd {
                 if !release.lineage.is_free() {
                     f.push(Feature::PinnedLineage);
                 }
+                if release.sandbox {
+                    f.push(Feature::SandboxRuns);
+                }
                 f
             }
             Self::CreateApp {
@@ -1035,7 +1052,18 @@ impl SystemCmd {
             Self::DeleteApp {
                 members: Some(_), ..
             } => vec![Feature::WholeUnits],
-            Self::AcquireRun { pool: Some(_), .. } => vec![Feature::NamedPool],
+            Self::AcquireRun {
+                pool: Some(_),
+                sandbox,
+                ..
+            } => {
+                let mut f = vec![Feature::NamedPool];
+                if *sandbox {
+                    f.push(Feature::SandboxRuns);
+                }
+                f
+            }
+            Self::AcquireRun { sandbox: true, .. } => vec![Feature::SandboxRuns],
             Self::CreateOrg {
                 app_team,
                 capabilities,
@@ -1451,6 +1479,7 @@ mod tests {
                 "connectorGib": 1, "storageGibMonth": 1, "egressGib": 1,
             } })),
             Feature::ComputeOnly => install(json!({ "components": "computeOnly" })),
+            Feature::SandboxRuns => install(json!({ "compute": { "": "h" }, "sandbox": true })),
             Feature::UnitUpgrade => entry(json!({ "op": "startUpgradeRun", "org": "org",
                 "run": { "runId": "r", "package": "p", "version": "2.0.0", "by": "a",
                     "startedAt": 1, "apps": [], "done": [], "failed": {}, "finished": false,
@@ -2196,14 +2225,16 @@ mod tests {
         for &feature in &rc38 {
             propose(&mut nodes, &uses(feature)).unwrap();
         }
-        // rc.39's (holder-bound sessions, pinning releases, instance origins) wait past rc.38:
-        // an rc.38 node drops the holder and the lineage, and cannot read the origin ops.
+        // rc.39's (holder-bound sessions, pinning releases, instance origins, sandbox releases)
+        // wait past rc.38: an rc.38 node drops the holder, the lineage and the sandbox flag, and
+        // cannot read the origin ops.
         assert_eq!(
             rc39,
             [
                 Feature::SessionHolders,
                 Feature::PinnedLineage,
-                Feature::AppOrigins
+                Feature::AppOrigins,
+                Feature::SandboxRuns
             ]
         );
         for &feature in &rc39 {

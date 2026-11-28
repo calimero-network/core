@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use calimero_app_host::{
     Budget, Caller, ComputeCaps, ComputeCtx, Directory, Files, HostCore, Invocation,
-    InvocationKind, OrgRole, Outcome, Prepared, Progress, Status, TrapKind,
+    InvocationKind, OrgRole, Outcome, Prepared, Progress, SandboxHost, Status, TrapKind,
 };
 
 use crate::WasmtimeEngine;
@@ -32,6 +32,8 @@ pub struct ComputeRun {
     /// Keep the module's log lines on the outcome (`HostCore::with_logs`): a local run
     /// (`meroctl local compute run`) does; a job node never does, as they may hold user data.
     pub keep_logs: bool,
+    /// A sandbox run's Linux sandbox (`HostCore::with_sandbox`); `None` for a compute run.
+    pub sandbox: Option<Arc<dyn SandboxHost>>,
 }
 
 /// Why a run failed, by what happened and never by its text.
@@ -157,6 +159,10 @@ impl WasmtimeEngine {
         .with_files(files)
         .with_progress(progress)
         .with_logs(run.keep_logs);
+        let host = match run.sandbox {
+            Some(sandbox) => host.with_sandbox(sandbox),
+            None => host,
+        };
         let budget = Budget::compute(&run.caps);
         Ok(measure(|| {
             self.invoke_cancellable(prepared, host, budget, cancel)

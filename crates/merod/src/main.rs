@@ -500,6 +500,7 @@ async fn start_job(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
     if args.job_slots == Some(0) {
         eyre::bail!("--job-slots must be at least 1");
     }
+    let sandbox_dir = data_dir.join("sandbox");
     let config = calimero_node::JobConfig {
         node_id,
         listen: args.listen.unwrap_or_else(|| ([0, 0, 0, 0], 2528).into()),
@@ -512,6 +513,15 @@ async fn start_job(home: Option<PathBuf>, args: NodeArgs) -> eyre::Result<()> {
         tee_profile: args.tee_profile.clone(),
         cluster_identity: NodeArgs::parse_cluster_identity(identity)?,
         slots: args.job_slots.unwrap_or(calimero_node::RUNS_PER_JOB_NODE),
+        // Each run's workspace lives under the node's own data directory.
+        sandbox: args
+            .sandbox
+            .unwrap_or(false)
+            .then(|| calimero_sandbox::Config {
+                base_dir: sandbox_dir.clone(),
+                cgroup_name: format!("calimero-sandbox-{node_id}"),
+                ..calimero_sandbox::Config::default()
+            }),
     };
     let running = run_job(config).await?;
     tokio::signal::ctrl_c().await?;
@@ -528,6 +538,9 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     }
     if args.job_slots.is_some() {
         eyre::bail!("--job-slots is for --job-node only");
+    }
+    if args.sandbox.is_some() {
+        eyre::bail!("--sandbox is for --job-node only");
     }
     args.check_ops_token()?;
     let node_id = args.node_id.ok_or_else(|| {
@@ -646,8 +659,17 @@ async fn start(home: Option<PathBuf>, args: NodeArgs, accept_rollback: bool) -> 
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> eyre::Result<()> {
+fn main() -> eyre::Result<()> {
+    // A sandbox run's `exec` re-runs this binary as the sandbox's init, which forks: it must
+    // take over before the runtime starts any thread, and before clap sees its arguments.
+    calimero_sandbox::init_if_requested();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(node_main())
+}
+
+async fn node_main() -> eyre::Result<()> {
     let cli = Cli::parse();
     // A local cluster's nodes start one after another, so openraft reports the
     // ones not up yet; that is noise for a developer (RUST_LOG still overrides).

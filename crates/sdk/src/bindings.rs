@@ -1,5 +1,6 @@
-//! Guest bindings for the imports of the `calimero:app` world, or of the `compute` world in a
-//! build with `--cfg calimero_compute`.
+//! Guest bindings for the imports of the `calimero:app` world, of the `compute` world in a
+//! build with `--cfg calimero_compute`, or of the `sandbox-run` world with `calimero_sandbox`
+//! as well.
 //!
 //! The `handle` (or `run`) export is declared here but exported only by the code
 //! `#[app::logic]` generates, through `__calimero_export_handle!` (`__calimero_export_run!`;
@@ -15,9 +16,19 @@ wit_bindgen::generate!({
     default_bindings_module: "::calimero_sdk::__private::bindings",
 });
 
-#[cfg(calimero_compute)]
+#[cfg(all(calimero_compute, not(calimero_sandbox)))]
 wit_bindgen::generate!({
     world: "compute",
+    path: "../app-wit/wit",
+    generate_all,
+    pub_export_macro: true,
+    export_macro_name: "__calimero_export_run",
+    default_bindings_module: "::calimero_sdk::__private::bindings",
+});
+
+#[cfg(calimero_sandbox)]
+wit_bindgen::generate!({
+    world: "sandbox-run",
     path: "../app-wit/wit",
     generate_all,
     pub_export_macro: true,

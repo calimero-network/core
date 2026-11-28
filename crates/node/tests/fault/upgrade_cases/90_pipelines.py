@@ -173,3 +173,11 @@ class Pipelines(DeepCase):
 not_covered("Pipelines", "Live pipeline events (`meroctl cloud compute pipeline watch`)",
             "the stream is many lines and the suite's meroctl runner reads one JSON answer; a stranger's refusal "
             "is covered, the stream itself by the cluster tests")
+
+not_covered("Compute", ("Sandbox runs: a release with a `sandbox` component (`release.sandbox`), a `sandbox` pool "
+                        "(`PoolConfig.sandbox`) and a sandbox run on a `merod run --job-node --sandbox` node"),
+            "the sandbox needs root on Linux (namespaces, mounts, cgroups) and the upgrade path runs unprivileged; "
+            "what it stores is a flag on a release and on a pool and a field of `AcquireRun`, each absent when false, "
+            "so data an earlier release wrote reads as before. `sandbox_e2e.py` runs it end to end as root, "
+            "`a_sandbox_run_takes_a_sandbox_pool_and_no_other_run_does` (`queue_tests.rs`) covers the routing and "
+            "CI's `Sandbox escape suite` the isolation")

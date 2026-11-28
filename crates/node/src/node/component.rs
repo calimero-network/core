@@ -783,6 +783,11 @@ impl Node {
         Arc::clone(&self.compute_wasm)
     }
 
+    /// [`Self::compute_engine`]'s for sandbox components, to move onto another thread.
+    pub(crate) fn sandbox_engine_arc(&self) -> Arc<calimero_app_engine_wasmtime::WasmtimeEngine> {
+        Arc::clone(&self.sandbox_wasm)
+    }
+
     /// The engine a release's compute components are prepared on.
     #[must_use]
     pub fn compute_engine(&self) -> &calimero_app_engine_wasmtime::WasmtimeEngine {

@@ -188,14 +188,20 @@ fn limits_of(
     )
 }
 
-/// The pool a run of `memory_mib` goes to: "" with no pools, else the smallest that fits.
-fn pool_for(pools: &BTreeMap<String, PoolConfig>, memory_mib: u32) -> Option<String> {
+/// The pool a run of `memory_mib` goes to: "" with no pools, else the smallest that fits. A
+/// sandbox run goes to a sandbox pool only, and any other run never does, so a cluster without
+/// a sandbox pool runs no sandbox run.
+fn pool_for(
+    pools: &BTreeMap<String, PoolConfig>,
+    memory_mib: u32,
+    sandbox: bool,
+) -> Option<String> {
     if pools.is_empty() {
-        return Some(String::new());
+        return (!sandbox).then(String::new);
     }
     pools
         .iter()
-        .filter(|(_, p)| p.max_memory_mib >= memory_mib)
+        .filter(|(_, p)| p.sandbox == sandbox && p.max_memory_mib >= memory_mib)
         .min_by_key(|(name, p)| (p.max_memory_mib, name.as_str()))
         .map(|(name, _)| name.clone())
 }
@@ -206,7 +212,8 @@ fn named_pool_for(
     name: String,
     memory_mib: u32,
 ) -> Option<String> {
-    let fits = pools.get(&name)?.max_memory_mib >= memory_mib;
+    let pool = pools.get(&name)?;
+    let fits = !pool.sandbox && pool.max_memory_mib >= memory_mib;
     fits.then_some(name)
 }
 
@@ -263,7 +270,7 @@ impl QueueRoom {
     fn pool(&self, memory_mib: u32, pool: Option<&str>) -> Option<String> {
         match pool {
             Some(name) => named_pool_for(&self.pools, name.to_owned(), memory_mib),
-            None => pool_for(&self.pools, memory_mib),
+            None => pool_for(&self.pools, memory_mib, false),
         }
     }
 }
@@ -393,6 +400,11 @@ type WaitingRun = (u64, String, String, u64, String); // seq, app, run, fuel, po
 pub struct PoolConfig {
     pub runs_per_node: u32,
     pub max_memory_mib: u32,
+    /// A pool of sandbox job nodes (`merod run --job-node --sandbox`): it takes sandbox runs
+    /// only. Set only once every node keeps it (`Feature::SandboxRuns`); left out when false,
+    /// so every other pool reads and writes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sandbox: bool,
 }
 
 /// A compute run waiting for, or holding, a place on a job node.
@@ -583,6 +595,12 @@ pub struct PackageVersion {
     /// Never a service: no app runs it, and only job nodes do.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub compute: BTreeMap<String, String>,
+    /// Whether the components in `compute` are sandbox components (world
+    /// `calimero:app/sandbox-run`), which only sandbox job nodes run. Recorded only once every
+    /// node keeps it (`Feature::SandboxRuns`); left out when false, so every other release
+    /// reads and writes as it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sandbox: bool,
     /// Each part's WASM size by bundle hash, which is what it counts against the bundle quota.
     /// Absent in releases from before: every part then counts the whole `.mpk`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2022,8 +2040,19 @@ impl SystemState {
 
     /// The pool a run of `memory_mib` goes to: "" with no pools, else the smallest that fits.
     #[must_use]
-    pub fn pool_for(&self, memory_mib: u32) -> Option<String> {
-        pool_for(&self.pools, memory_mib)
+    pub fn pool_for(&self, memory_mib: u32, sandbox: bool) -> Option<String> {
+        pool_for(&self.pools, memory_mib, sandbox)
+    }
+
+    /// Whether `bundle` is a sandbox component: the job component of a release that ships
+    /// sandbox methods, which only sandbox job nodes run.
+    #[must_use]
+    pub fn is_sandbox_bundle(&self, bundle: &str) -> bool {
+        self.packages.values().any(|p| {
+            p.versions
+                .values()
+                .any(|v| v.sandbox && v.compute.values().any(|h| h == bundle))
+        })
     }
 
     /// `name` when the cluster defines that pool and a run of `memory_mib` fits it.
@@ -6829,6 +6858,10 @@ pub enum SystemCmd {
         /// of by memory.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pool: Option<String>,
+        /// A sandbox run: it goes to a sandbox pool only (`Feature::SandboxRuns`). Left out
+        /// when false.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sandbox: bool,
     },
     /// Frees a run's place (finished, or never to run) and grants the next waiting runs.
     ReleaseRun {

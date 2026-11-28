@@ -1262,6 +1262,7 @@ fn a_started_run_of_the_host_becomes_the_nodes_start() {
             memory_mib: 64,
             wall_secs: 7,
             result: "onDone".into(),
+            sandbox: None,
         },
     };
     let start = ComputeStart::from(run);

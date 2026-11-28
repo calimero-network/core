@@ -20,6 +20,7 @@ list with more detail: [crate guide](../docs/src/content/docs/contribute/crate-g
 - [client](client/AGENTS.md) (`calimero-client`) - the Rust client; `attest::verify` is the one quote check clients and peers share; its route layer is generated from the node's OpenAPI document (`crates/client/gen`).
 - [kms-client](kms-client/AGENTS.md) (`calimero-kms-client`) - the mero-kms client: release policy, key release, `kms disk-key`.
 - [outbound](outbound/AGENTS.md) (`calimero-outbound`) - the gated outbound HTTPS client and secrets for runs.
+- [sandbox](sandbox/AGENTS.md) (`calimero-sandbox`) - the job node's Linux sandbox for sandbox runs: namespaces, cgroups, seccomp, a workspace the node reads and writes with `openat2`; `merod` calls `init_if_requested` first.
 - [search](search/AGENTS.md) (`calimero-search`) - per-app full-text search (tantivy), derived in memory.
 
 ## Attestation and releases

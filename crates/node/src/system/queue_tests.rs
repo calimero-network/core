@@ -67,6 +67,7 @@ fn acquire(app: &str, run: &str, fuel: u64) -> SystemCmd {
         fuel,
         memory_mib: 0,
         pool: None,
+        sandbox: false,
     }
 }
 
@@ -85,6 +86,7 @@ fn acquire_mem(app: &str, run: &str, memory_mib: u32) -> SystemCmd {
             fuel,
             memory_mib,
             pool: None,
+            sandbox: false,
         },
         other => other,
     }
@@ -110,6 +112,7 @@ fn pools(list: &[(&str, u32, u32)]) -> BTreeMap<String, PoolConfig> {
                 PoolConfig {
                     runs_per_node: *runs,
                     max_memory_mib: *mem,
+                    sandbox: false,
                 },
             )
         })
@@ -304,6 +307,7 @@ fn a_run_is_refused_with_a_code_for_an_unknown_app_a_foreign_payer_or_too_much_f
         fuel: 1,
         memory_mib: 0,
         pool: None,
+        sandbox: false,
     });
     assert_eq!(refusal(foreign), ("NOT_PAYER".into(), true));
     let heavy = m.run(acquire("a1", "r", calimero_app_host::MAX_COMPUTE_FUEL + 1));
@@ -610,7 +614,7 @@ const TWO_POOLS: [(&str, u32, u32); 2] = [("standard", 2, 4096), ("highmem", 1, 
 fn no_pools_is_the_legacy_single_pool() {
     let mut m = machine();
     job_node(&mut m, 5);
-    assert_eq!(m.state.pool_for(1_000_000), Some(String::new()));
+    assert_eq!(m.state.pool_for(1_000_000, false), Some(String::new()));
     assert_eq!(m.state.pool_capacity(""), RUNS_PER_JOB_NODE);
     for (app, run) in [("a1", "r1"), ("b1", "r2"), ("p", "r3")] {
         m.run(acquire_mem(app, run, 999_999)).unwrap();
@@ -682,6 +686,7 @@ fn acquire_in(app: &str, run: &str, memory_mib: u32, pool: &str) -> SystemCmd {
             fuel,
             memory_mib,
             pool: Some(pool.into()),
+            sandbox: false,
         },
         other => other,
     }
@@ -1189,4 +1194,81 @@ fn queue_room_counts_each_pool_apart_and_a_pool_with_no_job_node_has_none() {
         1,
         "a run taken in standard leaves highmem"
     );
+}
+
+/// `acquire_mem` for a sandbox run.
+fn acquire_sandbox(app: &str, run: &str, memory_mib: u32) -> SystemCmd {
+    match acquire_mem(app, run, memory_mib) {
+        SystemCmd::AcquireRun {
+            app,
+            run,
+            payer,
+            fuel,
+            memory_mib,
+            ..
+        } => SystemCmd::AcquireRun {
+            app,
+            run,
+            payer,
+            fuel,
+            memory_mib,
+            pool: None,
+            sandbox: true,
+        },
+        other => other,
+    }
+}
+
+/// `TWO_POOLS` plus `sandbox`, a pool of sandbox job nodes with the most memory.
+fn set_pools_with_sandbox(m: &mut SystemMachine) {
+    let mut list = pools(&TWO_POOLS);
+    let _prev = list.insert(
+        "sandbox".to_owned(),
+        PoolConfig {
+            runs_per_node: 1,
+            max_memory_mib: 131_072,
+            sandbox: true,
+        },
+    );
+    m.run_authorized(SystemCmd::SetPools {
+        pools: list,
+        proof: serde_json::Value::Null,
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_sandbox_run_takes_a_sandbox_pool_and_no_other_run_does() {
+    let mut m = machine();
+    set_pools_with_sandbox(&mut m);
+    pool_node(&mut m, 5, "standard");
+    pool_node(&mut m, 6, "highmem");
+    pool_node(&mut m, 7, "sandbox");
+    m.run(acquire_sandbox("a1", "box", 512)).unwrap();
+    m.run(acquire_mem("a1", "plain", 512)).unwrap();
+    // Even the run that only the sandbox pool's memory would fit stays out of it.
+    let huge = m.run(acquire_mem("a1", "huge", 100_000));
+    assert_eq!(refusal(huge), ("RUN_NO_POOL".into(), false));
+    assert_eq!(slot_pool(&m, "a1", "box"), "sandbox");
+    assert_eq!(slot_pool(&m, "a1", "plain"), "standard");
+    assert_eq!(
+        m.state.dispatch_pool("a1", "box").as_deref(),
+        Some("sandbox")
+    );
+    // A pipeline step cannot name the sandbox pool for a compute run.
+    let named = m.run(acquire_in("a1", "named", 512, "sandbox"));
+    assert_eq!(refusal(named), ("RUN_NO_POOL".into(), false));
+}
+
+#[test]
+fn a_sandbox_run_without_a_sandbox_pool_is_refused() {
+    let mut m = machine();
+    job_node(&mut m, 5);
+    // No pools at all: every job node is in the one default pool, which runs no sandbox.
+    let none = m.run(acquire_sandbox("a1", "r1", 512));
+    assert_eq!(refusal(none), ("RUN_NO_POOL".into(), false));
+    set_pools(&mut m, &TWO_POOLS).unwrap();
+    let no_sandbox_pool = m.run(acquire_sandbox("a1", "r2", 512));
+    assert_eq!(refusal(no_sandbox_pool), ("RUN_NO_POOL".into(), false));
+    assert!(m.state.compute.is_empty());
 }
