@@ -896,8 +896,17 @@ Swept module by module at `ACTIVE = true`, isolated (`--test-threads 1`):
 `org_app_teams`, `org_member_security`, `org_recovery`, `recovery`, `guests`,
 `sign_up`, `upgrade_keys`, `sessions`, `refresh`, `public_links`, `lineage`,
 `restore`, `key_follow_ups`, `instance_orgs`, `egress`, `org_rename`,
-`tenant_shards` and `tenant_governance` — every test that failed in a sweep was
-fixed and passes when run again. What the sweep fixed beyond the flip itself:
+`tenant_shards` and `tenant_governance`, then every remaining module
+(`compute_runs`, `pipeline_runs`, `job_nodes`, `job_runs`, `recovery_disk`,
+`rollback`, `rooms`, `state_caps` and the rest) — every test passes, the ones
+that failed in a sweep after their fix, **except
+`upgrade_replay::a_release_data_directory_replays_to_the_answers_that_release_gave`**,
+which replays an earlier release's data directory (every app on the one
+system group) and finds its apps on no tenant. That is the hard cutover this
+migration declares (genesis starts empty, no data migrated), not a logic gap:
+the S8 slice that turns the cutover on must either retire that case for the
+sharded build or carry a migration that seeds each organization's tenant from
+the old root state (`SeedTenant` already carries an organization's apps). What the sweep fixed beyond the flip itself:
 tenant groups following the system voters; a deleted organization reading as
 gone and its invites redeeming nowhere; the replica carrying the accounts and
 API keys a command names and syncing before prejudge; sign-up with an
