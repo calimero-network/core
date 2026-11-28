@@ -555,21 +555,57 @@ with the cutover off, so all behaviour-preserving until the final flip):
   offer and upgrade gates build it with `Node::release_org_view`. A member can
   see and instantiate a private release their organization serves.
 
-This cleared the large majority of the `component_cluster` failures under the
-cutover. **Remaining, and genuinely cross-tenant** (a single read spanning many
-organizations, which no one shard holds — the design's hardest shape):
+This cleared the `component_cluster` failures under the cutover. The
+**deployment-serve fan-out** then landed, closing the last genuinely
+cross-tenant read on the hot paths:
 
-- **Deployment serving across customers.** Deciding which instances a changed
-  offer moves, and what update is available, reads the membership of every
-  organization the deployment serves at once. It needs a fan-out over the
-  deployment's customer organizations (each on its own tenant), in the
-  available-update gate and the move path — the same `release_org_view` shape
-  widened from one release's orgs to a deployment's customers.
+- **Deployment serving across customers (landed).** The read-path serve gates —
+  the offered-bundle resolver (`api/packages.rs`), the unit-member view
+  (`api/apps.rs`) and the available-update gate (`api/upgrades.rs`) — fan out
+  over a deployment's customer organizations with `Node::deployment_serve_view`
+  (the owner org plus every serving org of its offered releases, each read from
+  its tenant) and judge the serve with `SystemState::offer_serves_with` /
+  `acts_for_with`, the `release_org_view` shape widened from one release's orgs
+  to a deployment's customers. The apply-side serve check (`within_deployment`,
+  run on the root group for `UpgradeApp`) needs only the deployment **owner**
+  org's owner/admins, which the root copy carries from `CreateOrg`, so it stays
+  single-shard and correct.
+- **The org record is split by field.** An org's membership and teams live on
+  its tenant (the `Orgs` area is flipped); its upgrade runs and pending upgrades
+  live on root (the `Updates` area is not). The org upgrade-run reads
+  (`org_upgrade_status`, `org_upgrade_retry`, `run_may_move`) take membership
+  from the tenant and the run record from root accordingly.
+
+### Measured under the cutover (in-process `it` cluster)
+
+With `shard::ACTIVE = true` the whole `it` suite is **green run isolated**
+(every area — `component_packages`, `consent_page`, `org_app_teams`,
+`component_files`, `deployments`, the apply-side upgrade/move and
+release-authority tests — passes at `--test-threads 1`). The failures seen in a
+4-way-parallel full run are **load-induced**, not logic: each test now forms an
+extra per-org tenant Raft group, so the added CPU and memory tip timing-bounded
+tests (attestation, restore, peer-TLS, rooms) over their budgets under
+contention. The cutover default stays `false` so CI (which runs the suite
+parallel) is unaffected; turning it on fleet-wide is the S8 slice, which needs
+the tenant-group overhead folded into the test harness's parallelism and the
+remaining areas (`Apps`, `Accounts`, `Recovery`, `Deployments`, `Updates`)
+flipped — only `Orgs` is flipped today (`shard::flipped`).
+
+**Remaining, narrow and not reached by the current suite:**
+
+- **A post-creation admin managing a deployment.** Apply-side `within_deployment`
+  reads the deployment owner org from the **root** copy, which holds the owner
+  and the creation-time members but not members added later on the tenant. A
+  deployment whose serve decision turns on an admin added **after** org creation,
+  where the owner itself lacks the release's visibility, would be judged on a
+  partial member set. The clean fix is a continuous root→tenant membership
+  projection (or baking the serve flag into `UpgradeApp`, the `owner_in_org`
+  pattern); it is an edge the suite does not exercise and is noted for review.
 - **The legacy `sees_release` branch** (releases recorded before `visibility`)
   still scans all organizations on root; a genesis-sharded cluster records
   visibility on every release, so it is unreached there, but it is not sharded.
 - **The deployment customer report** (`api/deployments.rs`) aggregates member
-  counts across every customer organization — the same fan-out.
+  counts across every customer organization — the same fan-out, read-only.
 
 ## Open questions / risks
 
