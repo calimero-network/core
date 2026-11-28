@@ -586,10 +586,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             records,
             ..
         } => {
-            if m.role == crate::system::shard::ShardId::Root {
+            let crate::system::shard::ShardId::Tenant(own) = m.role.clone() else {
                 return Err("root's registries are synced only into a tenant group".into());
-            }
-            super::tenant_sync::apply_sync(&mut m.state, base, through, records)?;
+            };
+            super::tenant_sync::apply_sync(&mut m.state, &own, base, through, records)?;
             return Ok(Value::Null);
         }
         SystemCmd::MirrorTenant {

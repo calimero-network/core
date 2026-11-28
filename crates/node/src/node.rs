@@ -3220,13 +3220,16 @@ impl Node {
         if !self.sys(|s| s.tenant_groups.contains_key(org)) {
             return;
         }
+        // Root as of now: a record written through another node a moment ago
+        // (an offer, an install) is what the command may be judged by.
+        let _caught_up = self.sys_fresh().await;
         loop {
             let (base, through, records) = g.read_local(|m, _| {
                 self.system.read_local(|root, index| {
                     (
                         m.state.root_through,
                         index,
-                        tenant_sync::root_diff(&m.state, &root.state),
+                        tenant_sync::root_diff(&m.state, &root.state, org),
                     )
                 })
             });
@@ -3333,6 +3336,15 @@ impl Node {
         tenants
             .iter()
             .find_map(|g| g.read_local(|m, _| m.state.apps.get(app_id).cloned()))
+    }
+
+    /// Mirror organization `org`'s tenant to root again as it stands here
+    /// (`Node::mirror_tenant`): after a step that changed what root lets it
+    /// mirror (a move's source let the app go).
+    pub(crate) async fn remirror(&self, org: &str) {
+        if let Some(g) = self.hosted_tenant(org) {
+            self.mirror_tenant(org, g.applied()).await;
+        }
     }
 
     /// The tenant group of organization `org`, when this node hosts it.

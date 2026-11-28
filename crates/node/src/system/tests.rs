@@ -6287,6 +6287,10 @@ fn move_app(app: &str, to: &str, actor: &str, bring: bool, consent: Value) -> Sy
         all_apps_rows: true,
         accounts_in_app_team: true,
         org_quotas: true,
+        app: None,
+        source: None,
+        accounts: Vec::new(),
+        payer: None,
     }
 }
 

@@ -267,6 +267,13 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             consent,
             bring_members,
             ..
+        }
+        | SystemCmd::ReleaseApp {
+            app_id,
+            to_org,
+            actor,
+            consent,
+            bring_members,
         } => {
             let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
             let args = move_app_args(to_org, *bring_members);
@@ -570,6 +577,39 @@ fn authorize_replicas(
     Err(CONSENT_FOR_ANOTHER_CHANGE)
 }
 
+/// Load what a `MoveApp` carries for the target's tenant group to judge it:
+/// the app and its source organization where this state lacks them, and the
+/// source's members' accounts. `None` for a move that carries nothing (the
+/// cutover off); else whether the app was loaded, and the source loaded.
+fn moved_in(
+    state: &mut SystemState,
+    app_id: &str,
+    app: Option<Box<AppRecord>>,
+    source: Option<Box<Org>>,
+    accounts: Vec<Account>,
+) -> Option<(bool, Option<OrgId>)> {
+    let (app, source) = (app?, source?);
+    if app.app_id != app_id || app.org != source.org_id {
+        return None;
+    }
+    let app_loaded = !state.apps.contains_key(app_id);
+    if app_loaded {
+        let _prev = state.apps.insert(app_id.to_owned(), *app);
+    }
+    let source_loaded = (!state.orgs.contains_key(&source.org_id)).then(|| {
+        let id = source.org_id.clone();
+        let _prev = state.orgs.insert(id.clone(), *source);
+        id
+    });
+    for account in accounts {
+        let _kept = state
+            .accounts
+            .entry(account.account_id.clone())
+            .or_insert(account);
+    }
+    Some((app_loaded, source_loaded))
+}
+
 /// Apply a command of this area by its own rules, its proof already
 /// judged ([`SystemMachine::run_authorized`]).
 ///
@@ -642,19 +682,53 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             all_apps_rows,
             accounts_in_app_team,
             org_quotas,
+            app,
+            source,
+            accounts,
+            payer,
             ..
-        } => state.move_app(
-            &app_id,
-            &to_org,
-            bring_members,
-            &nonce,
-            &actor,
-            MoveRows {
+        } => {
+            // Root's accounting, loaded for the judgment and put back after.
+            let held = payer.map(|p| {
+                let p = *p;
+                (
+                    std::mem::replace(&mut state.app_file_bytes, p.app_file_bytes),
+                    std::mem::replace(&mut state.payer_file_bytes, p.payer_file_bytes),
+                    std::mem::replace(&mut state.compute, p.compute),
+                )
+            });
+            let rows = MoveRows {
                 all_apps_rows,
                 accounts_in_app_team,
                 org_quotas,
-            },
-        ),
+            };
+            // On the target's tenant group, judged against the app and its source
+            // as their own tenant held them at propose: loaded for the judgment,
+            // the source dropped after (its own tenant lets the app go,
+            // `ReleaseApp`), the app kept where the move put it.
+            let scratch = moved_in(state, &app_id, app, source, accounts);
+            let moved = state.move_app(&app_id, &to_org, bring_members, &nonce, &actor, rows);
+            if let Some((app_loaded, source_loaded)) = scratch {
+                if let Some(org) = source_loaded {
+                    let _gone = state.orgs.remove(&org);
+                }
+                if app_loaded && moved.is_err() {
+                    let _gone = state.apps.remove(&app_id);
+                }
+            }
+            if let Some((files, payers, compute)) = held {
+                state.app_file_bytes = files;
+                state.payer_file_bytes = payers;
+                state.compute = compute;
+            }
+            moved
+        }
+        SystemCmd::ReleaseApp {
+            app_id,
+            to_org,
+            actor,
+            ..
+        } => state.release_moved_app(&app_id, &to_org, &actor),
         SystemCmd::DeleteApp {
             app_id,
             actor,

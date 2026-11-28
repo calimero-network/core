@@ -1565,20 +1565,93 @@ async fn app_move(
     .await?;
     let args = crate::system::move_app_args(&body.to_org, body.bring_members);
     let consent = consent(&node, &p, &app_id, "__move", &args, body.confirm).await?;
-    Ok(Json(
-        node.sys_write(&SystemCmd::MoveApp {
-            app_id,
-            to_org: body.to_org,
-            actor,
-            consent,
+    // With the cutover on the move applies on the target's tenant group, judged
+    // against the app and its source as the source's tenant holds them; then the
+    // source lets the app go, under the same consent.
+    let sharded = crate::system::shard::ACTIVE;
+    let (baked_app, source, accounts) = if sharded {
+        let source = node.org_of(&app.org);
+        let accounts = source
+            .as_ref()
+            .map(|o| {
+                node.sys(|s| {
+                    o.members
+                        .keys()
+                        .filter_map(|a| s.accounts.get(a).cloned())
+                        .collect()
+                })
+            })
+            .unwrap_or_default();
+        (Some(Box::new(app.clone())), source.map(Box::new), accounts)
+    } else {
+        (None, None, Vec::new())
+    };
+    // Root's accounting the target judges the move's quotas by.
+    let payer = sharded.then(|| {
+        node.sys(|s| {
+            let payer_of = |id: &str| s.apps.get(id).map(crate::usage::payer);
+            let from = payer_of(&app_id);
+            Box::new(crate::system::MovePayer {
+                app_file_bytes: s
+                    .app_file_bytes
+                    .iter()
+                    .filter(|(id, _)| {
+                        **id == app_id || payer_of(id).as_deref() == Some(body.to_org.as_str())
+                    })
+                    .map(|(id, n)| (id.clone(), *n))
+                    .collect(),
+                payer_file_bytes: s
+                    .payer_file_bytes
+                    .iter()
+                    .filter(|(p, _)| **p == body.to_org || from.as_deref() == Some(p.as_str()))
+                    .map(|(p, n)| (p.clone(), *n))
+                    .collect(),
+                compute: s
+                    .compute
+                    .iter()
+                    .filter(|(id, slots)| {
+                        **id == app_id || slots.values().any(|slot| slot.payer == body.to_org)
+                    })
+                    .map(|(id, slots)| (id.clone(), slots.clone()))
+                    .collect(),
+            })
+        })
+    });
+    let moved = node
+        .sys_write(&SystemCmd::MoveApp {
+            app_id: app_id.clone(),
+            to_org: body.to_org.clone(),
+            actor: actor.clone(),
+            consent: consent.clone(),
             bring_members: body.bring_members,
             nonce: b64url(&random::<16>()),
             all_apps_rows: true,
             accounts_in_app_team: true,
             org_quotas: true,
+            app: baked_app,
+            source,
+            accounts,
+            payer,
         })
-        .await?,
-    ))
+        .await?;
+    let mut moved = moved;
+    if sharded {
+        let released = node
+            .sys_write(&SystemCmd::ReleaseApp {
+                app_id,
+                to_org: body.to_org.clone(),
+                actor,
+                consent,
+                bring_members: body.bring_members,
+            })
+            .await?;
+        // The source revoked its own invites the app's team no longer needs.
+        moved["revokedInvites"] = released["revokedInvites"].clone();
+        // The target's mirror could not take the app while root's named the
+        // source; now it can.
+        node.remirror(&body.to_org).await;
+    }
+    Ok(Json(moved))
 }
 
 async fn app_metadata(

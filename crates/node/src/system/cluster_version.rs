@@ -983,6 +983,7 @@ impl SystemCmd {
             | Self::SyncTenantMarks { .. }
             | Self::SyncTenantRoot { .. }
             | Self::MirrorTenant { .. }
+            | Self::ReleaseApp { .. }
             | Self::BindInvite { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
@@ -1321,6 +1322,10 @@ mod tests {
                 accounts_in_app_team: false,
                 all_apps_rows: false,
                 org_quotas: false,
+                app: None,
+                source: None,
+                accounts: Vec::new(),
+                payer: None,
             },
             Feature::MoveAccountsAppTeam => SystemCmd::MoveApp {
                 app_id: "app".into(),
@@ -1332,6 +1337,10 @@ mod tests {
                 accounts_in_app_team: true,
                 all_apps_rows: false,
                 org_quotas: false,
+                app: None,
+                source: None,
+                accounts: Vec::new(),
+                payer: None,
             },
             Feature::MoveOrgQuotas => SystemCmd::MoveApp {
                 app_id: "app".into(),
@@ -1343,6 +1352,10 @@ mod tests {
                 accounts_in_app_team: false,
                 all_apps_rows: false,
                 org_quotas: true,
+                app: None,
+                source: None,
+                accounts: Vec::new(),
+                payer: None,
             },
             Feature::PublishedRunByRelease => SystemCmd::StartUpgradeRun {
                 org: "org".into(),

@@ -845,12 +845,37 @@ authoritative tenant when this node hosts it (root's mirror otherwise, and for a
 tenant not seeded yet); prejudge waiting for a new organization's tenant; and
 `Node::write_routed` for tests that forge log entries. Measured at
 `ACTIVE = true` on the nine modules above: 64 of 70 pass (from 48 after the
-governance slice), then more with the read and prejudge fixes. Open: `MoveApp`
-across organizations (two-phase, it also moves root's compute slots and file
-bytes), `ImportHolder` writing apps on root, origin registration (`AddAppOrigin`,
-root) judging against the mirror, a unit upgrade run whose members stay on their
-release, and the per-tenant cap of public links (the cluster-wide
-`MAX_PUBLIC_LINKS` counts one tenant's apps).
+governance slice), then more with the read and prejudge fixes. Then:
+
+- **Two-phase `MoveApp`.** The move applies on the **target's** tenant, carrying
+  the app's record, the source organization's record and its members' accounts
+  (read from the source's tenant at propose) and root's accounting the quotas
+  are judged by (`MovePayer`: file bytes and compute runs, loaded for the
+  judgment and put back). The source's tenant then applies `ReleaseApp`, which
+  re-judges the same consent against its own records (the actor manages the
+  app there), drops the app and what the move dropped at the source, and marks
+  it `moved_out`; its mirror tells root, which **re-homes** the app (its file
+  bytes and compute runs to the target as payer, its origins forgotten) rather
+  than deleting it, and the target's mirror then brings the record.
+- **Root's per-app records follow the mirror.** An app deleted on its tenant is
+  removed on root with root's own records of it (file bytes, delegations,
+  released runs); one handed on or deleted loses its origins; one moved to
+  another package loses that package's.
+- **Other organizations a tenant's rules read** come with the replica
+  (`RootRecord::Org`): deployment owners and the organizations releases serve,
+  as root mirrors them — never the tenant's own record. A customer's tenant so
+  judges whether a deployment still serves its offer.
+- **The replica is read fresh**: `Node::sync_tenant` takes a root read index
+  first, so a record written through another node a moment before (an offer)
+  is the one judged.
+
+Measured at `ACTIVE = true`: `deployments`, `move_app`, `deployers`,
+`app_origins` and `approval_bypasses` all pass. Still open: `ImportHolder`
+writing apps on root, a `ReleaseApp` the source refuses after the target moved
+the app (the app then sits in both until a person acts; the reconcile loop does
+not yet complete or undo a half-done move), app invites of a moved app (dropped
+at the source, not carried), and the per-tenant cap of public links (the
+cluster-wide `MAX_PUBLIC_LINKS` counts one tenant's apps).
 
 **Order of work.** (1) `SyncTenantMarks` (landed); (2) the tenant app-group
 range; (3) the root mirrors and their reconcile, with root's machinery reading

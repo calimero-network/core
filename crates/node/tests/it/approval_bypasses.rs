@@ -523,7 +523,7 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
     assert!(
         running(&c, 0)
             .node
-            .sys(|s| s.invites.contains_key(&invite_key)),
+            .sys_org(&org, |s| s.invites.contains_key(&invite_key)),
         "the log keeps the token's public key"
     );
     let before = credentials_and_members(&c, &alice, &org).await;

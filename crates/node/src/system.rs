@@ -926,6 +926,11 @@ pub struct SystemState {
     /// root's mirror of its records reflects (`MirrorTenant`, `tenant_sync`).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub mirrored: BTreeMap<OrgId, u64>,
+    /// Tenant-owned: apps this tenant let go to another organization
+    /// (`ReleaseApp`), with that organization, so root's mirror re-homes them
+    /// rather than deleting them (`tenant_sync`). Kept until the next one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub moved_out: BTreeMap<AppId, OrgId>,
     /// invite key (the token's Ed25519 public key, hex) -> invite
     pub invites: BTreeMap<String, Invite>,
     /// Root-held routing directory for organization invites: invite key -> the
@@ -5678,6 +5683,66 @@ impl SystemState {
         }))
     }
 
+    /// [`SystemCmd::ReleaseApp`]: the source organization's tenant group lets
+    /// app `app_id` go to `to_org` after the target applied the move — its
+    /// manager's, as the move was; what the move dropped at the source goes
+    /// (the app's update policy and first approval, its invites, the source's
+    /// invites naming the team it left once no app of it is on that team), and
+    /// root's mirror re-homes the app rather than deleting it (`moved_out`).
+    pub(crate) fn release_moved_app(
+        &mut self,
+        app_id: &str,
+        to_org: &str,
+        actor: &str,
+    ) -> Result<Value, Rejection> {
+        let app = self.apps.get(app_id).ok_or("no such app")?;
+        if app.org == to_org {
+            return Err("the app is in that organization already".into());
+        }
+        if !self.manages_app_self(app, actor) {
+            return Err(ONLY_MANAGERS_MOVE.into());
+        }
+        let from = app.org.clone();
+        let package = self.package_of(app).map(str::to_owned);
+        let left_team = app
+            .access
+            .teams()
+            .first()
+            .map(|t| (*t).clone())
+            .or_else(|| {
+                package
+                    .as_deref()
+                    .and_then(|p| self.orgs.get(&from)?.app_team(p))
+                    .map(|t| t.team_id.clone())
+            });
+        let _gone = self.apps.remove(app_id);
+        self.app_invites.retain(|_, i| i.app != app_id);
+        if let Some(o) = self.orgs.get_mut(&from) {
+            let _policy = o.app_upgrade_policies.remove(app_id);
+            let _approval = o.pending_upgrades.remove(app_id);
+        }
+        let before_invites = self.invites.len();
+        if let Some(team) = left_team {
+            let still = self
+                .apps
+                .values()
+                .any(|a| a.org == from && a.access.teams().iter().any(|t| t.as_str() == team));
+            if !still {
+                self.invites
+                    .retain(|_, i| !(i.org == from && i.teams.contains(&team)));
+            }
+        }
+        let revoked = before_invites - self.invites.len();
+        // A handful at most wait for root's mirror at once: keep the newest.
+        while self.moved_out.len() >= 64 {
+            let _oldest = self.moved_out.pop_first();
+        }
+        let _prev = self.moved_out.insert(app_id.to_owned(), to_org.to_owned());
+        Ok(
+            json!({ "appId": app_id, "from": from, "org": to_org, "revokedInvites": revoked as u64 }),
+        )
+    }
+
     /// `MANAGE_APPLICATION`: whether `account` may upgrade `org`'s apps
     /// (on `team`, or org-wide when `None`) and approve its outbound hosts.
     /// The owner, an admin, a team's lead, or a member holding the capability
@@ -6409,6 +6474,7 @@ impl SystemCmd {
             Self::UndoUpgrade { .. } => Area::Updates,
             Self::TransferApp { .. } => Area::Apps,
             Self::MoveApp { .. } => Area::Apps,
+            Self::ReleaseApp { .. } => Area::Apps,
             Self::SetDelegation { .. } => Area::Apps,
             Self::LinkApp { .. } => Area::Apps,
             Self::DeleteApp { .. } => Area::Apps,
@@ -6638,6 +6704,13 @@ impl SystemCmd {
                 scope: ReleaseScope::Org { org },
                 ..
             } => Scope::Org(org.clone()),
+            // A move applies on the target once the source's records are baked in.
+            Self::MoveApp {
+                to_org,
+                source: Some(_),
+                ..
+            } => Scope::Org(to_org.clone()),
+            Self::ReleaseApp { app_id, .. } => Scope::OfApp(app_id.clone()),
             // An instance's invites and links live with the instance.
             Self::CreateAppInvite { invite, .. } => Scope::OfApp(invite.app.clone()),
             Self::CreatePublicLink { link, .. } => Scope::OfApp(link.app.clone()),
@@ -7052,6 +7125,16 @@ pub fn move_app_args(to_org: &str, bring_members: bool) -> Value {
     json!({ "toOrg": to_org, "bringMembers": bring_members })
 }
 
+/// Root's accounting a sharded `MoveApp` carries to the target's tenant
+/// ([`SystemCmd::MoveApp`]): loaded for the move's judgment, never kept there.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MovePayer {
+    pub app_file_bytes: BTreeMap<AppId, u64>,
+    pub payer_file_bytes: BTreeMap<String, u64>,
+    pub compute: BTreeMap<AppId, BTreeMap<String, RunSlot>>,
+}
+
 /// What a person consents to when setting an update policy
 /// (`org:<org> / __set_upgrade_policy`): the app it is for (`null`: the organization's)
 /// and the policy (`null`: dropped).
@@ -7422,6 +7505,41 @@ pub enum SystemCmd {
         /// limits, as that release did.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         org_quotas: bool,
+        /// With the cutover on, the move applies on the target organization's
+        /// tenant group, which holds neither the app nor its source: the app's
+        /// record, the source organization's record and its members' accounts,
+        /// read at propose from the source's tenant, so the target judges the
+        /// move whole; the source then lets the app go (`ReleaseApp`). Absent
+        /// with the cutover off, when one group holds both
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        app: Option<Box<AppRecord>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<Box<Org>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        accounts: Vec<Account>,
+        /// Root's accounting the move is judged by, read at propose (root
+        /// holds it; the target's tenant does not): the file bytes the app
+        /// holds and the target pays for, and the compute runs of the app and
+        /// of the target's apps.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        payer: Option<Box<MovePayer>>,
+    },
+    /// The second half of a `MoveApp` with the cutover on: the source
+    /// organization's tenant group lets app `app_id` go to `to_org`, once the
+    /// target applied the move. Carries the move's own consent, judged again
+    /// here against the source's records (the actor manages the app where it
+    /// is), so a node cannot take an app out of an organization without it.
+    /// Written by the node after the target applied the move
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    ReleaseApp {
+        app_id: AppId,
+        to_org: OrgId,
+        actor: AccountId,
+        #[serde(default)]
+        consent: Value,
+        #[serde(default)]
+        bring_members: bool,
     },
     DeleteApp {
         app_id: AppId,
