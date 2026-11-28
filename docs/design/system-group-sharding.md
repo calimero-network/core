@@ -887,6 +887,44 @@ governance commands — route, bake, route readers; (5) the two-phase `MoveApp`;
 (7) `Accounts` (sessions by org context; the access gate's two-shard read);
 then S7 and S8.
 
+## The `Accounts` flip: sessions by organization context (designed, not built)
+
+The last area, and the one the throughput goal is about: the session family
+(`refresh`, `rotated_refresh`, `revoked_sessions`, `revoked_at`, `api_keys`) is
+the largest write source. Under the mirror design it lands as follows.
+
+- **Where a session lives.** A sign-in may name an organization (`org` on the
+  sign-in and sign-up routes and the consent page's sign-in). A session opened
+  for an organization lives on its tenant group (`CreateRefresh`, `UseRefresh`,
+  `RevokeSession` route there); one opened without (today's every session, and
+  an operator's) stays on root. Clients that name no organization keep working
+  unchanged; the write load moves as clients adopt it. An account acting in two
+  organizations holds a session per organization.
+- **Routing a token.** A refresh token names its shard in its opaque body
+  (`rt_<org>.<random>` for an organization session; `rt_<random>` for root), so
+  `UseRefresh` routes from the token alone, with no directory write on the hot
+  path. An access token (the node-signed session token) carries its session's
+  organization as a claim; the gate checks revocation (`revoked_sessions`) on
+  that tenant and the account-wide cut-off (`revoked_at`, written by
+  `RevokeAllSessions` on root) on root, each at a read index under O2's lease —
+  the two-shard read S6 names. `RevokeAllSessions` stays a single root write:
+  every tenant's sessions are judged against root's cut-off.
+- **Identity.** The credential a sign-in's assertion is verified against is
+  root's (the account directory); the tenant's replica carries the account
+  (`RootRecord::Account`, now kept in sync), so a tenant applies
+  `CreateRefresh` deterministically from its log. `SetSignCount` (a passkey's
+  counter) stays root's: the tenant re-verifies an assertion against the
+  replicated passkey, whose counter may only lag, never run ahead.
+- **API keys** stay on root: they are few, long-lived and account-wide.
+- **Wire and compatibility.** The new `org` request field is additive
+  (`docs/public/openapi.json`, `crates/client` regenerated, `sdks/clients`); the
+  refresh token stays opaque to clients. A node of an earlier release never
+  sees an organization session (hard cutover with the rest of the flip).
+
+Order: the token format and routing (no client change); then the `org` field on
+the sign-in routes and the clients; then the gate's two-shard read; then a
+multi-tenant `cluster_throughput` mode to measure the win.
+
 ## S7 under the mirror design: snapshots, backup, recovery
 
 The `Apps` flip changes what S7 needs. **No snapshot format change**: a tenant
