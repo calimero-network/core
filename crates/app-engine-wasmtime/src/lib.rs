@@ -776,7 +776,7 @@ mod tests {
         assert!(import_allowed(World::App, "calimero:app/files@0.5.0"));
         assert!(import_allowed(World::App, "calimero:app/files@0.5.1"));
         assert!(import_allowed(World::App, "calimero:app/files@0.5.8"));
-        assert!(!import_allowed(World::App, "calimero:app/files@0.5.8"));
+        assert!(!import_allowed(World::App, "calimero:app/files@0.5.9"));
     }
 
     #[test]
@@ -804,7 +804,7 @@ mod tests {
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.8"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.1"));
         assert!(import_allowed(World::App, "calimero:app/storage@0.5.0"));
-        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.8"));
+        assert!(!import_allowed(World::App, "calimero:app/storage@0.5.9"));
         assert!(!import_allowed(World::App, "calimero:app/storage@0.6.0"));
         assert!(!import_allowed(World::App, "calimero:app/nothing@0.5.0"));
         assert!(import_allowed(World::App, "wasi:cli/stdin@0.2.12"));
