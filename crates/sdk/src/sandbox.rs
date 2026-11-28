@@ -1,8 +1,8 @@
 //! Sandbox runs: what a `#[app::sandbox]` method does with its Linux sandbox.
 //!
-//! [`exec`] runs one command in a fresh sandbox over the run's workspace (`/workspace`), as an
-//! unprivileged user with no network; [`write`] and [`read`] move bytes in and out of the
-//! workspace, and [`collect`] takes a workspace file out as one of the run's sealed outputs. A
+//! [`exec()`] runs one command in a fresh sandbox over the run's workspace (`/workspace`), as an
+//! unprivileged user with no network; [`write()`] and [`read()`] move bytes in and out of the
+//! workspace, and [`collect()`] takes a workspace file out as one of the run's sealed outputs. A
 //! path is relative to the workspace; one that leaves it, or names a symlink or anything but a
 //! regular file, is refused. Nothing carries over from another run.
 //!
