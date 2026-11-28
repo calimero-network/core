@@ -9643,6 +9643,7 @@ fn offer_app(deployment: &str, app: &str, version: &str, actor: &str) -> SystemC
         actor: actor.into(),
         at: 10,
         consent: serde_json::Value::Null,
+        serving: Vec::new(),
     }
 }
 
@@ -10108,6 +10109,7 @@ fn deployment_changes_carry_their_managers_consent() {
         actor: "alice".into(),
         at: 10,
         consent,
+        serving: Vec::new(),
     };
     let for_1 = json!({ "app": "notes", "package": "p", "version": "1.0.0" });
     let c = consent(&mut alice, &subject, "__offer_app", &for_1);
@@ -10676,6 +10678,7 @@ fn a_deployment_holds_secrets_the_releases_its_offers_use_declare() {
             actor: "alice".into(),
             at: 10,
             consent: Value::Null,
+            serving: Vec::new(),
         })
         .unwrap();
     let d = m.state.deployments["a"].clone();
@@ -10777,6 +10780,7 @@ fn a_member_of_its_offers_signer_reads_the_deployments_secret() {
             actor: "alice".into(),
             at: 10,
             consent: Value::Null,
+            serving: Vec::new(),
         },
         set_secret("a", "PI_KEY", "devs-key", "alice"),
     ] {
@@ -10833,6 +10837,7 @@ fn a_used_release_its_owner_may_not_use_declares_no_deployment_secret() {
             actor: "alice".into(),
             at: 10,
             consent: Value::Null,
+            serving: Vec::new(),
         })
         .unwrap();
     // pi, another publisher's, becomes private to an organization alice is not in.

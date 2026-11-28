@@ -630,6 +630,10 @@ fn managed_deployment<'s>(
 
 /// Offer an app (a release the manager sees installed) in a deployment, or
 /// move it to another release of its package, within [`MAX_APPS_PER_DEPLOYMENT`].
+#[allow(
+    clippy::too_many_arguments,
+    reason = "an offer names its deployment, app, package and version, its actor and time, and the serving orgs baked for the sharded visibility check"
+)]
 fn offer_app(
     state: &mut SystemState,
     deployment: String,
