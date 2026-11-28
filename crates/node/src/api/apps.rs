@@ -89,6 +89,10 @@ pub(crate) async fn offered_bundle(
     version: Option<&str>,
     service: Option<&str>,
 ) -> Result<(String, Option<String>, PackageRef), ApiError> {
+    // The organizations the serve check reads (the deployment's owner and its
+    // offered releases' served orgs) come from their own shards
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let serve = node.deployment_serve_view(id);
     let find = || {
         node.sys(|s| {
             let d = s.deployments.get(id)?;
@@ -98,7 +102,7 @@ pub(crate) async fn offered_bundle(
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
                     // An offer serves only while its owner's side may still use the release.
-                    let r = s.offered_release(o).filter(|r| s.offer_serves(d, r))?;
+                    let r = s.offered_release(o).filter(|r| s.offer_serves_with(d, r, &serve))?;
                     Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();
@@ -886,19 +890,31 @@ pub(crate) async fn unit_members(
         }
         let range = semver::VersionReq::parse(&u.range)
             .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
+        // The used release's serving organizations come from their own shards
+        // (their tenant groups), so a member sees a private used release their
+        // organization serves
+        // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        let used_orgs = node.release_org_view(&u.package);
+        let serve = deployment
+            .map(|d| node.deployment_serve_view(d))
+            .unwrap_or_default();
         let installed: Vec<String> = node.sys(|s| {
             let same_signer = s.same_signer(&release.package, &u.package);
             let serves = |v: &crate::system::PackageVersion| {
                 deployment
                     .and_then(|d| s.deployments.get(d))
-                    .is_some_and(|d| s.offer_serves(d, v))
+                    .is_some_and(|d| s.offer_serves_with(d, v, &serve))
             };
             s.packages
                 .get(&u.package)
                 .map(|p| {
                     p.versions
                         .iter()
-                        .filter(|(_, v)| same_signer || s.sees_release(v, creator) || serves(v))
+                        .filter(|(_, v)| {
+                            same_signer
+                                || s.sees_release_with(v, creator, &used_orgs)
+                                || serves(v)
+                        })
                         .map(|(k, _)| k.clone())
                         .collect()
                 })

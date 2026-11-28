@@ -1032,7 +1032,8 @@ async fn start_run_with(
             // on the app's group: an app on another package or a newer
             // release is noted as failed.
             let refused = node.sys_with_org(&org, |s, o| {
-                let r = o?.upgrade_runs.get(&run_id)?;
+                o?; // membership gate on the tenant
+                let r = s.orgs.get(&org)?.upgrade_runs.get(&run_id)?;
                 s.run_may_move(r, s.apps.get(&app.app_id)?).err()
             });
             if let Some(why) = refused {
@@ -1348,11 +1349,14 @@ async fn org_upgrade_status(
     Path((org, run)): Path<(String, String)>,
 ) -> ApiResult {
     let account = signed_in(&node, &headers).await?.account()?;
+    // Membership is read from the org's tenant group; the upgrade runs are
+    // still written on root (the Updates area has not flipped), so they are
+    // read from root — the org record is split by field across the two shards
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     let r = node
-        .sys_with_org(&org, |_, o| {
-            let o = o?;
-            o.role(&account)?;
-            o.upgrade_runs.get(&run).cloned()
+        .sys_with_org(&org, |s, o| {
+            o?.role(&account)?;
+            s.orgs.get(&org)?.upgrade_runs.get(&run).cloned()
         })
         .ok_or_else(|| ApiError::not_found("no such upgrade"))?;
     Ok(Json(serde_json::to_value(r).unwrap_or_default()))
@@ -1367,7 +1371,7 @@ async fn org_upgrade_retry(
     body: Option<Json<Value>>,
 ) -> ApiResult {
     let prev = node
-        .sys_with_org(&org, |_, o| o?.upgrade_runs.get(&run).cloned())
+        .sys(|s| s.orgs.get(&org)?.upgrade_runs.get(&run).cloned())
         .ok_or_else(|| ApiError::not_found("no such upgrade"))?;
     let failed: Vec<crate::types::AppRecord> = node.sys(|s| {
         prev.failed
@@ -1891,6 +1895,11 @@ pub(crate) async fn update_view(
     let owner_approves = owner_approves(node).await;
     let by_operator =
         node.sys(|s| s.governance().app_upgrades == crate::system::Authority::Operator);
+    let serve = app
+        .deployment
+        .as_ref()
+        .map(|d| node.deployment_serve_view(d))
+        .unwrap_or_default();
     let available = node.sys(|s| {
         let r = running.as_ref()?;
         if let Some(d) = &app.deployment {
@@ -1900,7 +1909,7 @@ pub(crate) async fn update_view(
                 .values()
                 .filter(|o| {
                     o.package == r.package
-                        && s.offered_release(o).is_some_and(|v| s.offer_serves(d, v))
+                        && s.offered_release(o).is_some_and(|v| s.offer_serves_with(d, v, &serve))
                 })
                 .map(|o| o.version.as_str())
                 .max_by(|a, b| crate::system::compare_versions(a, b))?;

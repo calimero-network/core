@@ -1594,6 +1594,36 @@ impl Node {
         self.sys(|s| s.package_used_with(package, who, frontend, &extra))
     }
 
+    /// The organizations a deployment's serve check reads — its owner
+    /// organization and every organization its offered releases serve — each
+    /// read from its own shard (its tenant group), as the `extra` map
+    /// [`SystemState::offer_serves_with`] takes. A deployment spans many
+    /// customer organizations, so the node fans them out here
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn deployment_serve_view(
+        &self,
+        id: &str,
+    ) -> BTreeMap<crate::types::OrgId, crate::types::Org> {
+        let orgs: std::collections::BTreeSet<crate::types::OrgId> = self.sys(|s| {
+            let Some(d) = s.deployments.get(id) else {
+                return std::collections::BTreeSet::new();
+            };
+            let mut set = std::collections::BTreeSet::new();
+            if let crate::system::Deployer::Org(o) = &d.owner {
+                set.insert(o.clone());
+            }
+            for offer in d.apps.values() {
+                if let Some(r) = s.offered_release(offer) {
+                    set.extend(r.orgs.iter().cloned());
+                }
+            }
+            set
+        });
+        orgs.into_iter()
+            .filter_map(|o| self.org_of(&o).map(|org| (o, org)))
+            .collect()
+    }
+
     /// [`SystemState::sees_release`] with the organizations the release serves
     /// read fresh from their shards.
     #[must_use]

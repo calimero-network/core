@@ -3111,6 +3111,22 @@ impl SystemState {
         }
     }
 
+    /// [`Self::acts_for`] reading the owner organization from `extra` (its tenant
+    /// group), for the deployment-serve gate
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn acts_for_with(
+        &self,
+        owner: &Deployer,
+        account: &str,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        match owner {
+            Deployer::Account(a) => a == account,
+            Deployer::Org(o) => self.manages_apps(self.org_for(o, extra), account, None),
+        }
+    }
+
     /// Whether `owner` itself holds a live deployer grant at `now`, or deployments are open:
     /// what a deployment's receiver needs ([`SystemCmd::AcceptDeployment`]).
     #[must_use]
@@ -3443,6 +3459,45 @@ impl SystemState {
         candidates
             .into_iter()
             .any(|m| self.acts_for(&d.owner, m) && self.sees_release(v, m))
+    }
+
+    /// [`Self::offer_serves`] reading the deployment owner's organization and
+    /// the release's serving organizations from `extra` (their tenant groups),
+    /// for the deployment-serve gate
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn offer_serves_with(
+        &self,
+        d: &Deployment,
+        v: &PackageVersion,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        let owner_org = match &d.owner {
+            Deployer::Account(_) => None,
+            Deployer::Org(o) => self.org_for(o, extra),
+        };
+        let candidates: Vec<&str> = match &d.owner {
+            Deployer::Account(a) => vec![a],
+            Deployer::Org(o) => {
+                let for_all = v.installed_by_any(OPERATOR)
+                    || v.visibility == Some(Visibility::Public)
+                    || (v.visibility == Some(Visibility::Private) && v.orgs.contains(o));
+                if for_all {
+                    return owner_org
+                        .into_iter()
+                        .flat_map(|o| o.members.keys())
+                        .any(|m| self.acts_for_with(&d.owner, m, extra));
+                }
+                owner_org
+                    .into_iter()
+                    .flat_map(|o| o.members.keys())
+                    .map(String::as_str)
+                    .collect()
+            }
+        };
+        candidates
+            .into_iter()
+            .any(|m| self.acts_for_with(&d.owner, m, extra) && self.sees_release_with(v, m, extra))
     }
 
     /// Whether `d` offers a release that ships `bundle`: what an instance
