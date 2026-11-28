@@ -730,11 +730,12 @@ member with the cutover on):
     approver list read on root.
   Each needs the §3 audit (scope, bake, route readers); none is a load failure.
 
-- **Credential sync.** A member's passkeys reach the tenant when it is seeded or
-  when they join (`member`/`redeemer`); a passkey added or removed later on root
-  (`AddPasskey`, `RemovePasskey`) is not projected, so the tenant verifies their
-  consent against the passkeys it holds. This is the "kept in sync on credential
-  change" half of the identity binding, and is not built.
+- **Credential sync** (closed by the `Apps` flip's replica): a member's
+  passkeys reach the tenant when it is seeded or when they join
+  (`member`/`redeemer`), and since then `SyncTenantRoot` also carries the
+  tenant's members' accounts as root's directory holds them
+  (`RootRecord::Account`), so a passkey added or removed later reaches the
+  tenant before the next command routed to it.
 
 - **Freshness.** A standing is read from the local tenant replica (`sys_org`),
   not at a tenant read index: a demotion committed through another node may not

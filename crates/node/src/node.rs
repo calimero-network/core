@@ -1783,6 +1783,24 @@ impl Node {
         }
     }
 
+    /// Test hook: whether this build shards the control plane by tenant
+    /// (`shard::ACTIVE`), for a test whose checks differ with the cutover.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub const fn sharding_active() -> bool {
+        crate::system::shard::ACTIVE
+    }
+
+    /// Test hook: the organization app `app` belongs to as organization
+    /// `org`'s tenant group holds it on this node — `None` when this node does
+    /// not host that tenant or the tenant does not hold the app.
+    #[cfg(feature = "testing")]
+    #[must_use]
+    pub fn tenant_app_org(&self, org: &str, app: &str) -> Option<String> {
+        self.hosted_tenant(org)?
+            .read_local(|m, _| m.state.apps.get(app).map(|a| a.org.clone()))
+    }
+
     /// Test hook: whatever bytes a test forges (a raw system command, never
     /// judged by the API), written to this node's group of the shard the
     /// command routes to (`Node::shard_of`; root when it does not parse): a
@@ -1910,7 +1928,8 @@ impl Node {
             // The tenant applies it against its replica of root's registries:
             // bring that replica to the root state this request read first.
             if !keeps_shards_in_step(cmd) {
-                self.sync_tenant(org, deadline).await;
+                let named = self.sys(|s| crate::system::tenant_sync::named_accounts(cmd, s));
+                self.sync_tenant(org, deadline, &named).await;
             }
         }
         for attempt in 0_u32.. {
@@ -3171,7 +3190,8 @@ impl Node {
                     // registries and root's mirror of the tenant, each brought
                     // level when a write did not (a node that failed between).
                     let soon = tokio::time::Instant::now() + Duration::from_secs(1);
-                    self.sync_tenant(&org, soon).await;
+                    self.sync_tenant(&org, soon, &std::collections::BTreeSet::new())
+                        .await;
                     self.mirror_tenant(&org, g.applied()).await;
                 }
                 if !seeded && g.status().is_leader {
@@ -3215,7 +3235,12 @@ impl Node {
     /// command the tenant applies against it is routed there. The diff is taken
     /// against this node's view of the tenant; one the tenant refuses as stale
     /// (another node synced meanwhile) is taken again, until `deadline`.
-    pub(crate) async fn sync_tenant(&self, org: &str, deadline: tokio::time::Instant) {
+    pub(crate) async fn sync_tenant(
+        &self,
+        org: &str,
+        deadline: tokio::time::Instant,
+        named: &std::collections::BTreeSet<String>,
+    ) {
         use crate::system::tenant_sync;
         let Some(g) = self.hosted_tenant(org) else {
             return;
@@ -3232,7 +3257,7 @@ impl Node {
                     (
                         m.state.root_through,
                         index,
-                        tenant_sync::root_diff(&m.state, &root.state, org),
+                        tenant_sync::root_diff(&m.state, &root.state, org, named),
                     )
                 })
             });

@@ -69,6 +69,13 @@ pub enum RootRecord {
         id: OrgId,
         record: Option<Box<Org>>,
     },
+    /// A member's account (its passkeys) as root's directory holds it: the
+    /// identity the tenant verifies the member's consent against, kept as root
+    /// changes it (a passkey added or removed after the member joined).
+    Account {
+        id: crate::types::AccountId,
+        record: Option<Box<crate::types::Account>>,
+    },
     /// Root's small cluster-wide records, whole.
     Cluster(Box<ClusterRecords>),
 }
@@ -156,7 +163,12 @@ fn diff_map<K: Ord + Clone, V: Clone + Serialize>(
 /// What a tenant replica `tenant` lacks of `root`'s registries, empty when it
 /// holds them all as root does.
 #[must_use]
-pub fn root_diff(tenant: &SystemState, root: &SystemState, own: &str) -> Vec<RootRecord> {
+pub fn root_diff(
+    tenant: &SystemState,
+    root: &SystemState,
+    own: &str,
+    named_accounts: &BTreeSet<String>,
+) -> Vec<RootRecord> {
     let mut out = Vec::new();
     // Other organizations root's registries name: deployment owners and the
     // organizations releases serve. Never this tenant's own record, which is
@@ -194,6 +206,30 @@ pub fn root_diff(tenant: &SystemState, root: &SystemState, own: &str) -> Vec<Roo
                 record: record.map(Box::new),
             }),
     );
+    // This organization's members' accounts, as root's directory holds them,
+    // and any other account the command about to apply names (a guest
+    // granted, the account recovering the organization, a new owner).
+    let accounts: BTreeSet<&String> = tenant
+        .orgs
+        .get(own)
+        .into_iter()
+        .flat_map(|o| o.members.keys())
+        .chain(named_accounts.iter())
+        .collect();
+    for id in accounts {
+        let (held, source) = (tenant.accounts.get(id), root.accounts.get(id));
+        let differs = match (held, source) {
+            (Some(h), Some(r)) => !same(h, r),
+            (None, None) => false,
+            _ => true,
+        };
+        if differs {
+            out.push(RootRecord::Account {
+                id: id.clone(),
+                record: source.cloned().map(Box::new),
+            });
+        }
+    }
     out.extend(
         diff_map(&tenant.packages, &root.packages)
             .into_iter()
@@ -274,6 +310,7 @@ pub fn apply_sync(
                     put(&mut s.orgs, id, record.map(|o| *o));
                 }
             }
+            RootRecord::Account { id, record } => put(&mut s.accounts, id, record.map(|a| *a)),
             RootRecord::Cluster(c) => c.put(s),
         }
     }
@@ -444,6 +481,28 @@ pub fn apply_mirror(
     Ok(())
 }
 
+/// The accounts of root's directory a command names anywhere in it (its
+/// actor, a guest it grants, an account it hands an app to): what a tenant
+/// must hold to judge it.
+#[must_use]
+pub fn named_accounts(cmd: &super::SystemCmd, root: &SystemState) -> BTreeSet<String> {
+    fn walk(v: &serde_json::Value, root: &SystemState, out: &mut BTreeSet<String>) {
+        match v {
+            serde_json::Value::String(s) if root.accounts.contains_key(s) => {
+                let _new = out.insert(s.clone());
+            }
+            serde_json::Value::Array(items) => items.iter().for_each(|i| walk(i, root, out)),
+            serde_json::Value::Object(map) => map.values().for_each(|i| walk(i, root, out)),
+            _ => {}
+        }
+    }
+    let mut out = BTreeSet::new();
+    if let Ok(v) = serde_json::to_value(cmd) {
+        walk(&v, root, &mut out);
+    }
+    out
+}
+
 /// Split `records` into runs that each serialize under [`SYNC_ENTRY_BYTES`]
 /// (a record larger than that goes alone).
 pub fn chunks<T: Serialize>(records: Vec<T>) -> Vec<Vec<T>> {
@@ -473,17 +532,17 @@ mod tests {
         root.release_deadlines.insert("1.0.0".into(), 5);
         root.unbound_publishers.insert("did:key:x".into(), 1);
         let mut tenant = SystemState::default();
-        let diff = root_diff(&tenant, &root, "acme");
+        let diff = root_diff(&tenant, &root, "acme", &BTreeSet::new());
         assert!(!diff.is_empty());
         apply_sync(&mut tenant, "acme", 0, 9, diff).unwrap();
         assert_eq!(tenant.root_through, 9);
         assert_eq!(tenant.release_deadlines.get("1.0.0"), Some(&5));
-        assert!(root_diff(&tenant, &root, "acme").is_empty());
+        assert!(root_diff(&tenant, &root, "acme", &BTreeSet::new()).is_empty());
         // Computed against the replica before that sync: refused.
         root.unbound_publishers.clear();
-        let stale = root_diff(&SystemState::default(), &root, "acme");
+        let stale = root_diff(&SystemState::default(), &root, "acme", &BTreeSet::new());
         assert!(apply_sync(&mut tenant, "acme", 0, 12, stale).is_err());
-        let fresh = root_diff(&tenant, &root, "acme");
+        let fresh = root_diff(&tenant, &root, "acme", &BTreeSet::new());
         apply_sync(&mut tenant, "acme", 9, 12, fresh).unwrap();
         assert!(tenant.unbound_publishers.is_empty());
     }

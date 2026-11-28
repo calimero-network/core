@@ -584,6 +584,13 @@ fn redeem_sign_up_invite(
     match (admission, invite) {
         // A new account is never a member yet: every use is spent, as before
         // the free redemption existed.
+        // An invite root holds only in its routing directory lives on its
+        // organization's tenant group, which redeems it for the new account.
+        (Admission::OrgInvite, Some(redemption))
+            if !state.invites.contains_key(&redemption.invite_key) =>
+        {
+            Ok(state.invite_org.get(&redemption.invite_key).cloned())
+        }
         (Admission::OrgInvite, Some(redemption)) => Ok(Some(state.redeem_org_invite(
             &redemption.invite_key,
             account_id,

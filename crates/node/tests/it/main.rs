@@ -77,5 +77,6 @@ mod slow_compile;
 mod slow_disk;
 mod state_caps;
 mod tenant_governance;
+mod tenant_shards;
 mod upgrade_keys;
 mod upgrade_replay;

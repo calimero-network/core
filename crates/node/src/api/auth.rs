@@ -445,6 +445,10 @@ async fn sign_up_confirmed(
         signature: crate::proof::sign_invite_redeem(token, &account_id, now),
         clamp_grants,
     });
+    let redeem_on_tenant = invite
+        .as_ref()
+        .filter(|_| crate::system::shard::ACTIVE)
+        .map(|r| (r.invite_key.clone(), r.signature.clone()));
     let _ok = node
         .sys_write(&SystemCmd::CreateAccount {
             account: *account,
@@ -458,6 +462,30 @@ async fn sign_up_confirmed(
             personal_org,
         })
         .await?;
+    // With the cutover on, an organization invite lives on its tenant group:
+    // root admitted the account by its directory, the tenant redeems it now.
+    if let Some((invite_key, signature)) = redeem_on_tenant {
+        let (org, redeemer) = node.sys(|s| {
+            (
+                s.invite_org.get(&invite_key).cloned(),
+                s.accounts.get(&account_id).cloned().map(Box::new),
+            )
+        });
+        if org.is_some() {
+            let _joined = node
+                .sys_write(&SystemCmd::RedeemInvite {
+                    invite_key,
+                    signature,
+                    account: account_id.clone(),
+                    now,
+                    free_when_unchanged: false,
+                    clamp_grants,
+                    org,
+                    redeemer,
+                })
+                .await?;
+        }
+    }
     Ok(session_answer(&account_id, &token, &session))
 }
 

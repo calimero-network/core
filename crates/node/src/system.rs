@@ -3503,6 +3503,15 @@ impl SystemState {
                         return Err(Rejection::sign_up("the invite's organization is gone"));
                     }
                     Admission::OrgInvite
+                } else if self
+                    .invite_org
+                    .get(key)
+                    .is_some_and(|org| self.orgs.contains_key(org))
+                {
+                    // The invite lives on its organization's tenant group (the
+                    // cutover on): root admits by its routing directory, and the
+                    // redemption is the tenant's, after the account exists.
+                    Admission::OrgInvite
                 } else {
                     return Err(Rejection::sign_up(
                         "this invite was used up, revoked or never existed",
