@@ -1533,12 +1533,12 @@ impl Node {
 
     /// Read the system state that holds organization `org`'s own data: its
     /// tenant group once the org structure has moved there and the cutover is on
-    /// ([`shard::ACTIVE`]), otherwise the root group. The reader a request or a
+    /// (`shard::ACTIVE`), otherwise the root group. The reader a request or a
     /// page uses to look up an org's members, teams, metadata or settings, so it
     /// follows the org to its shard without every caller knowing where it lives.
     /// A node that is a system voter hosts every tenant group, so this reads
     /// locally; a node that does not host it falls back to root
-    /// ([`Node::system_shard`]) until forwarding lands.
+    /// (`Node::system_shard`) until forwarding lands.
     pub fn sys_org<R>(&self, org: &str, f: impl FnOnce(&SystemState) -> R) -> R {
         use crate::system::shard;
         if shard::ACTIVE {
