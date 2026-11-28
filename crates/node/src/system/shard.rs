@@ -57,6 +57,32 @@ pub(crate) const ACTIVE: bool = false;
 /// one, so a deleted org's id is never aliased to a new group.
 pub(crate) const TENANT_GROUP_BASE: GroupId = 1 << 32;
 
+/// The first group id of the tenants' app groups. Once apps live on their
+/// organization's tenant group, the tenant allocates its apps' group ids itself
+/// (`CreateApp`, `RestoreApp`, `UndoUpgrade` take `next_group + 1`), so each
+/// tenant gets its own block of [`TENANT_APP_GROUP_BLOCK`] ids from here, in
+/// the order of its tenant group id: no cross-shard allocator round, and two
+/// tenants never collide with each other, with root's app groups (below
+/// [`TENANT_GROUP_BASE`]) or with the tenant groups (from it, below this).
+pub(crate) const TENANT_APP_GROUP_BASE: GroupId = 1 << 40;
+
+/// How many app group ids one tenant's block holds (see
+/// [`TENANT_APP_GROUP_BASE`]): 2^32, a counter that never reuses an id; 2^24
+/// tenants fit below `u64::MAX`.
+pub(crate) const TENANT_APP_GROUP_BLOCK: GroupId = 1 << 32;
+
+/// The id the app groups of the tenant served by group `tenant_group` count
+/// up from: its tenant `next_group` starts here (`SeedTenant`).
+pub(crate) const fn tenant_app_groups(tenant_group: GroupId) -> GroupId {
+    TENANT_APP_GROUP_BASE
+        + (tenant_group.saturating_sub(TENANT_GROUP_BASE)) * TENANT_APP_GROUP_BLOCK
+}
+
+/// Whether `group` is a tenant system group (not root, not an app group).
+pub(crate) const fn is_tenant_group(group: GroupId) -> bool {
+    group >= TENANT_GROUP_BASE && group < TENANT_APP_GROUP_BASE
+}
+
 /// Which control-plane shard a piece of state lives in.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ShardId {
@@ -239,6 +265,22 @@ mod tests {
             ShardId::Tenant("acme".into())
         );
         assert_eq!(shard_for(true, None), ShardId::Root);
+    }
+
+    #[test]
+    fn each_tenant_allocates_app_groups_from_its_own_block() {
+        let first = TENANT_GROUP_BASE;
+        let second = TENANT_GROUP_BASE + 1;
+        assert_eq!(tenant_app_groups(first), TENANT_APP_GROUP_BASE);
+        assert_eq!(
+            tenant_app_groups(second),
+            TENANT_APP_GROUP_BASE + TENANT_APP_GROUP_BLOCK
+        );
+        // Neither block is a tenant group, and both are above every tenant group.
+        assert!(is_tenant_group(first) && is_tenant_group(second));
+        assert!(!is_tenant_group(tenant_app_groups(first)));
+        assert!(!is_tenant_group(tenant_app_groups(second) + 5));
+        assert!(!is_tenant_group(SYSTEM_GROUP) && !is_tenant_group(2));
     }
 
     #[test]

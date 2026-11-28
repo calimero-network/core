@@ -758,6 +758,87 @@ member with the cutover on):
   rule that consults `recovery`) read the tenant's copy; none was found in the
   audit, but a new one must merge or bake.
 
+## The `Apps` flip: tenants authoritative, root mirrors (decided)
+
+The governance audit above showed the `Orgs`-first order leaves commands that
+write both shards: `ScopeApps` (an `Orgs` command) writes the organization's
+teams *and* its app records' access; `MoveApp` (an `Apps` command) writes two
+organizations' teams and the app record; `SetEgress` writes the organization or
+one of its apps. Baking reads in at propose cannot fix a write to two shards. The
+decision is to move the rest of an organization's state to its tenant, and to
+keep on root only what cluster-wide machinery must read, as a mirror.
+
+**Ownership.** A tenant group is authoritative for everything scoped to its
+organization: the organization record (all fields, governance ones included),
+its app records (`apps` of that org), `app_invites`, `app_file_bytes`,
+`payer_file_bytes`, the deployments the organization owns and their
+`deployment_secrets`. The `Apps` area and the org-scoped commands of
+`Approvals`, `Updates` and `Deployments` route to the tenant
+(`SystemCmd::scope`); the cluster-wide commands of those areas stay on root.
+With the whole record on one shard, `Org::with_root_fields` and the standings
+of the governance commands become unnecessary for the moved commands (they stay
+for root-applied commands that judge membership, e.g. `InstallPackage`).
+
+**Root mirrors.** Root keeps `orgs` and `apps` as **mirrors** of the tenants'
+records, written only by node-made follow-on entries (`MirrorOrg`, `MirrorApp`,
+`ForgetApp`), never by a client command. Root's own machinery reads the mirror:
+Raft admission and the app-group routing index (`routing.rs`), which node hosts
+which app group, placement and replica moves, bundle garbage collection, alias
+resolution, and the cluster-wide quota counts. The mirror lags its tenant by one
+follow-on write; the tenant's leader writes it from the reconcile loop whenever
+the two differ (the `SeedTenant`/`SyncTenantMarks` pattern), and a write route
+that changes an app waits for the mirror before it answers, so a client that
+creates an app and then calls it finds the group hosted. **Authority is never
+judged on the mirror**: a root-applied command that judges membership carries
+the actor's standing read from the tenant at propose (as the governance
+commands do now).
+
+**App group ids.** `CreateApp`, `RestoreApp` and `UndoUpgrade` allocate new
+group ids; with apps on the tenant, the tenant allocates them from its own range
+(`shard::tenant_app_groups`: a fixed-size block per tenant, after the tenant
+group ids), so no cross-shard allocator round is needed and two tenants never
+collide. Root's `next_group` stays for groups root itself makes (none once apps
+move).
+
+**Root's registries, replicated into each tenant.** A tenant-applied `Apps`
+command reads a great deal of root state — the package registry and bundles
+(release facts, `ships`, signer pins, private-release visibility), the fleet
+(replica nodes), the cluster governance and quotas, the deployers and cluster
+owner. Baking each fact into each command (the `CreateApp { org }` pattern) does
+not scale to `UpgradeApp`'s rules. Instead each tenant holds a **replica of
+root's cluster-wide registries**, written by node-made `SyncTenantRoot` entries
+(per record, so no entry nears `MAX_ENTRY_BYTES`), with the root index they
+reflect; tenant `apply` reads them as it reads its own state, deterministically,
+from its own log. A write that routes to a tenant first waits until the tenant
+has synced the root index the request read (the root read index the access
+gate already takes), so a package installed and then used in one session is
+seen. The tenant also needs root's cluster-wide marks (`SyncTenantMarks`,
+landed): its log is not root's, and without them it applied every command under
+the earliest rules. Open cost: each tenant holds the registries in memory; at
+fleet scale this replica should narrow to the records an organization uses.
+
+**Two-phase operations.** A command that changes two organizations is split
+into an entry on each tenant, driven by the node and completed by the reconcile
+loop if the node fails between them:
+
+- `MoveApp` (org A → org B): A's tenant applies the move out (judges authority,
+  drops the record, keeps an outbound hand-off with the record and the target's
+  baked facts); the node writes `AdoptApp { record }` to B's tenant, which
+  places it under B's rules; A's hand-off is cleared once B's mirror shows it.
+- An instance created in a customer organization from another organization's
+  deployment reads the offer from the owner's tenant at propose (baked); no
+  write reaches the owner.
+- `DeleteOrg` (root directory) is followed by the tenant's own teardown.
+
+**Order of work.** (1) `SyncTenantMarks` (landed); (2) the tenant app-group
+range; (3) the root mirrors and their reconcile, with root's machinery reading
+the mirror (behaviour-preserving while the cutover is off, when root is still
+authoritative and the mirror is itself); (4) flip `Apps` with the org-scoped
+governance commands — route, bake, route readers; (5) the two-phase `MoveApp`;
+(6) `Recovery` (org-scoped commands to the tenant, account recovery on root);
+(7) `Accounts` (sessions by org context; the access gate's two-shard read);
+then S7 and S8.
+
 ## Open questions / risks
 
 - **The gating decision: verifying a credential inside a tenant.** This blocks

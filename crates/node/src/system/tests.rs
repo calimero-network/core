@@ -17820,3 +17820,55 @@ fn one_orgs_instances_fill_only_their_share_of_origins() {
     }
     let _ok = m.run_unproven(add_app_origin()).unwrap();
 }
+
+/// A tenant group's log is not root's, so it holds no cluster version or rule
+/// marks of its own: `SyncTenantMarks` brings it to root's, the version only
+/// rising and an index mark starting at the entry that sets it; root refuses it
+/// ([design note](https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md)).
+#[test]
+fn a_tenant_takes_roots_marks_from_the_entry_that_syncs_them() {
+    let mut root = SystemMachine::default();
+    root.state.cluster_version = Some("1.0.0".to_owned());
+    root.state.current_rules_from = Some(40);
+    root.state.expires_proofs = true;
+    let mut tenant = SystemMachine::new(
+        String::new(),
+        super::shard::ShardId::Tenant("acme".to_owned()),
+    );
+    let sync = super::tenant_marks_lag("acme", &tenant.state, &root.state)
+        .expect("a fresh tenant lags root");
+    tenant.index = 7;
+    tenant.run(sync).unwrap();
+    assert_eq!(tenant.state.cluster_version.as_deref(), Some("1.0.0"));
+    assert_eq!(tenant.state.current_rules_from, Some(7));
+    assert!(tenant.state.holds_current_rules(7));
+    assert!(tenant.state.expires_proofs);
+    assert!(tenant.state.session_proofs_from.is_none());
+    assert!(super::tenant_marks_lag("acme", &tenant.state, &root.state).is_none());
+
+    // A lower version never lowers it, and root does not take the command.
+    tenant
+        .run(SystemCmd::SyncTenantMarks {
+            org: "acme".into(),
+            cluster_version: Some("0.9.0".into()),
+            current_rules: false,
+            session_proofs: false,
+            attributes_by_release: false,
+            expires_proofs: false,
+        })
+        .unwrap();
+    assert_eq!(tenant.state.cluster_version.as_deref(), Some("1.0.0"));
+    let mut lagging = SystemMachine::default();
+    let e = lagging
+        .run(SystemCmd::SyncTenantMarks {
+            org: "acme".into(),
+            cluster_version: Some("1.0.0".into()),
+            current_rules: false,
+            session_proofs: false,
+            attributes_by_release: false,
+            expires_proofs: false,
+        })
+        .unwrap_err();
+    assert!(e.to_string().contains("tenant group"), "{e}");
+    assert!(lagging.state.cluster_version.is_none());
+}

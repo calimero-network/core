@@ -3104,6 +3104,18 @@ impl Node {
                 // from the root directory); apply is idempotent, so a re-seed on
                 // a later reconcile or another node changes nothing.
                 let seeded = g.read_local(|m, _| m.state.orgs.contains_key(&org));
+                // Bring the tenant to root's cluster-wide marks (cluster version,
+                // rule marks), which its `apply` judges by: without them a
+                // tenant applies under the earliest rules. Only while the cutover
+                // is on, when tenants apply commands at all.
+                if seeded && crate::system::shard::ACTIVE && g.status().is_leader {
+                    let lag = g.read_local(|m, _| {
+                        self.sys(|root| crate::system::tenant_marks_lag(&org, &m.state, root))
+                    });
+                    if let Some(cmd) = lag {
+                        self.write_tenant(&g, &org, &cmd).await;
+                    }
+                }
                 if !seeded && g.status().is_leader {
                     if let Some((record, members)) = self.sys(|s| {
                         s.orgs.get(&org).map(|o| {
@@ -3118,6 +3130,7 @@ impl Node {
                         let cmd = SystemCmd::SeedTenant {
                             org: Box::new(record),
                             members,
+                            app_groups_from: crate::system::shard::tenant_app_groups(group),
                         };
                         match serde_json::to_vec(&cmd) {
                             Ok(bytes) => {
@@ -3132,6 +3145,23 @@ impl Node {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// Write a node-made command (`SeedTenant`, `SyncTenantMarks`) straight to
+    /// organization `org`'s tenant group `g`; a write that does not land is
+    /// tried again on the next reconcile.
+    async fn write_tenant(&self, g: &Group<SystemMachine>, org: &str, cmd: &SystemCmd) {
+        match serde_json::to_vec(cmd) {
+            Ok(bytes) => {
+                if let Err(e) = g.write(bytes).await {
+                    debug!(org = %org, error = %e, "tenant write not yet made");
+                }
+            }
+            Err(e) => {
+                let error_kind = crate::log_safe::serde(&e);
+                warn!(org = %org, error_kind = %error_kind, "a tenant command does not serialize");
             }
         }
     }

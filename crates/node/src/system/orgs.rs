@@ -578,11 +578,23 @@ pub(super) fn prejudge(s: &SystemState, cmd: &SystemCmd) -> Result<(), Rejection
 /// `CreateTeam`, `SetTeamMember`, `UpdateTeam`) goes whole to its function,
 /// which takes its fields by name.
 pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
+    if let SystemCmd::SyncTenantMarks { .. } = cmd {
+        return sync_tenant_marks(m, cmd);
+    }
     let state = &mut m.state;
     match cmd {
         cmd @ SystemCmd::CreateOrg { .. } => create_org(state, cmd),
         SystemCmd::DeleteOrg { org, actor, .. } => delete_org(state, &org, &actor),
-        SystemCmd::SeedTenant { org, members } => seed_tenant(state, *org, members),
+        SystemCmd::SeedTenant {
+            org,
+            members,
+            app_groups_from,
+        } => {
+            // The tenant's app groups count up from its own block; a re-seed
+            // never moves the counter back.
+            state.next_group = state.next_group.max(app_groups_from);
+            seed_tenant(state, *org, members)
+        }
         SystemCmd::BindInvite { invite_key, org } => {
             let _prev = state.invite_org.insert(invite_key, org);
             Ok(Value::Null)
@@ -852,6 +864,74 @@ fn seed_tenant(
             .or_insert(account);
     }
     Ok(Value::Null)
+}
+
+/// Raise a tenant machine's cluster-wide marks to those `SyncTenantMarks`
+/// carries ([`SystemCmd::SyncTenantMarks`]): the cluster version only ever
+/// rises, and an index mark not yet set starts at this entry.
+fn sync_tenant_marks(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Rejection> {
+    let SystemCmd::SyncTenantMarks {
+        cluster_version,
+        current_rules,
+        session_proofs,
+        attributes_by_release,
+        expires_proofs,
+        ..
+    } = cmd
+    else {
+        // SAFETY: `apply` sends only a `SyncTenantMarks` here.
+        unreachable!("sync_tenant_marks applies a SyncTenantMarks")
+    };
+    if m.role == crate::system::shard::ShardId::Root {
+        return Err("a tenant's marks are synced only on its tenant group".into());
+    }
+    let index = m.index;
+    let state = &mut m.state;
+    if let Some(v) = cluster_version {
+        let newer = state
+            .cluster_version
+            .as_deref()
+            .is_none_or(|held| compare_versions(held, &v) == std::cmp::Ordering::Less);
+        if newer {
+            state.cluster_version = Some(v);
+        }
+    }
+    if current_rules && state.current_rules_from.is_none() {
+        state.current_rules_from = Some(index);
+    }
+    if session_proofs && state.session_proofs_from.is_none() {
+        state.session_proofs_from = Some(index);
+    }
+    state.attributes_by_release |= attributes_by_release;
+    state.expires_proofs |= expires_proofs;
+    Ok(Value::Null)
+}
+
+/// Whether a tenant state lags `root`'s cluster-wide marks
+/// ([`SystemCmd::SyncTenantMarks`]), and the command that brings it level.
+pub(crate) fn tenant_marks_lag(
+    org: &str,
+    tenant: &SystemState,
+    root: &SystemState,
+) -> Option<SystemCmd> {
+    let version_behind = match (&tenant.cluster_version, &root.cluster_version) {
+        (_, None) => false,
+        (None, Some(_)) => true,
+        (Some(held), Some(v)) => compare_versions(held, v) == std::cmp::Ordering::Less,
+    };
+    let behind = version_behind
+        || (root.current_rules_from.is_some() && tenant.current_rules_from.is_none())
+        || (root.session_proofs_from.is_some() && tenant.session_proofs_from.is_none())
+        || (root.attributes_by_release && !tenant.attributes_by_release)
+        || (root.expires_proofs && !tenant.expires_proofs);
+    behind.then(|| SystemCmd::SyncTenantMarks {
+        org: org.to_owned(),
+        cluster_version: root.cluster_version.clone(),
+        current_rules: root.current_rules_from.is_some(),
+        session_proofs: root.session_proofs_from.is_some(),
+        attributes_by_release: root.attributes_by_release,
+        expires_proofs: root.expires_proofs,
+    })
 }
 
 pub(super) fn bind_tenant_group(state: &mut SystemState, org_id: &str) {

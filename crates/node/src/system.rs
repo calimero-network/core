@@ -49,6 +49,7 @@ pub use deployments::{
     DeploymentAccepted, DeploymentDeleted, DeploymentMade, DeploymentOffered,
     DeploymentSecretCleared, DeploymentSecretSet, DeploymentTransferCancelled, GovernanceSet,
 };
+pub(crate) use orgs::tenant_marks_lag;
 pub use orgs::{
     InviteRedeemed, OrgCreated, OrgDeleted, OrgRenamed, OrgSettingsSet, TeamCreated, TeamDeleted,
 };
@@ -6466,6 +6467,7 @@ impl SystemCmd {
             Self::SetEgress { .. } => Area::Approvals,
             Self::DeleteOrg { .. } => Area::Orgs,
             Self::SeedTenant { .. } => Area::Orgs,
+            Self::SyncTenantMarks { .. } => Area::Orgs,
             Self::BindInvite { .. } => Area::Orgs,
             Self::SetOrgMetadata { .. } => Area::Orgs,
             Self::SetMemberMetadata { .. } => Area::Orgs,
@@ -6546,6 +6548,7 @@ impl SystemCmd {
             | Self::FinishRecovery { org, .. } => Scope::Org(org.clone()),
             // Seeded into the organization's own tenant group.
             Self::SeedTenant { org, .. } => Scope::Org(org.org_id.clone()),
+            Self::SyncTenantMarks { org, .. } => Scope::Org(org.clone()),
             // An invite and its redemption live in the organization's tenant
             // group: the invite carries its org directly; the redemption's org is
             // resolved from the root `invite_org` directory at propose and baked
@@ -8300,6 +8303,34 @@ pub enum SystemCmd {
     SeedTenant {
         org: Box<crate::types::Org>,
         members: Vec<crate::types::Account>,
+        /// Where the tenant's own app group ids start
+        /// (`shard::tenant_app_groups`): its `next_group` counts up from here.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        app_groups_from: u64,
+    },
+    /// Node-written, never from a client: brings an organization's tenant group
+    /// to the cluster-wide marks its root group logged — the cluster version and
+    /// the marks that switch rules on from a log position (`current_rules_from`,
+    /// `session_proofs_from`) or for good (`attributes_by_release`,
+    /// `expires_proofs`). `apply` judges an entry by the marks logged before it
+    /// on its own log, and a tenant group's log is not root's, so without this a
+    /// tenant applies every command under the earliest rules. The tenant's
+    /// leader writes it whenever the tenant lags root's marks; a mark only ever
+    /// rises, and an index mark starts at this entry's own index on the tenant's
+    /// log. Applied only on a tenant machine
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    SyncTenantMarks {
+        org: OrgId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cluster_version: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        current_rules: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        session_proofs: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        attributes_by_release: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        expires_proofs: bool,
     },
     /// Record an organization invite in the root routing directory
     /// ([`SystemState::invite_org`]): `invite_key` belongs to `org`. Written to
@@ -9002,8 +9033,10 @@ impl SystemMachine {
         } else {
             None
         };
-        if !matches!(cmd, SystemCmd::SeedTenant { .. })
-            && !shard::owns(&self.role, tenant, shard::ACTIVE)
+        if !matches!(
+            cmd,
+            SystemCmd::SeedTenant { .. } | SystemCmd::SyncTenantMarks { .. }
+        ) && !shard::owns(&self.role, tenant, shard::ACTIVE)
         {
             return Err("this command reached the wrong system shard".into());
         }

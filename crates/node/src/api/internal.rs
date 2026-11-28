@@ -258,7 +258,7 @@ fn admit_raft(
             "a Raft message names another node than the one that sent it",
         ));
     }
-    if group >= crate::system::shard::TENANT_GROUP_BASE {
+    if crate::system::shard::is_tenant_group(group) {
         // A tenant system group (its id is in the dedicated high range) is
         // placed on the system voters, so its members are the system group's.
         // Admit a fellow system member by that authoritative list — known
