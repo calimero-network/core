@@ -708,6 +708,27 @@ member with the cutover on):
 
 **Still open in the same class (not fixed here):**
 
+- **The `Orgs` flip still breaks with the cutover on.** Measured on nine
+  modules run isolated at `ACTIVE = true` (`egress`, `deployments`, `deployers`,
+  `approval_bypasses`, `instance_orgs`, `org_member_security`,
+  `tenant_governance`, `access_gate`, `org_app_teams`): 30 of 70 tests failed
+  at the branch head, 21 after this slice (one more, `access_gate::a_call_costs_one_system_read_round`,
+  is timing-flaky and passes alone on both builds). By symptom:
+  - *tenant commands that read root-only state*: team-member changes refused
+    `unknown account` (the tenant holds only seeded/joined accounts; the
+    `SetOrgRole`/`RedeemInvite` pattern of carrying the account applies),
+    app-team commands refused `no such package` and organizations left in
+    `legacy` mode (`CreateTeam`/`ScopeApps` read `packages` and `apps`, root),
+    and `org_app_teams` follow-ons (`no such app`, absent team ids) — most of
+    `org_app_teams` and the `access_gate` grant/revocation tests;
+  - *`no such organization` from an app or package path* (two `deployments`
+    tests) and *a private release unread* (`deployers::a_release_shows_its_kind…`);
+  - *`approval_bypasses::forged_credentials…`*: reads an invite's key from the
+    root log, where the invite no longer is;
+  - *`deployments::an_instance_shows_its_update_and_who_may_approve_it`*: the
+    approver list read on root.
+  Each needs the §3 audit (scope, bake, route readers); none is a load failure.
+
 - **Credential sync.** A member's passkeys reach the tenant when it is seeded or
   when they join (`member`/`redeemer`); a passkey added or removed later on root
   (`AddPasskey`, `RemovePasskey`) is not projected, so the tenant verifies their
