@@ -82,7 +82,8 @@ async fn org_policy(
     if !node.sys_with_org(&org, |_, o| o.and_then(|o| o.role(&account)).is_some()) {
         return Err(ApiError::not_found("no such organization"));
     }
-    Ok(Json(node.sys_org(&org, |s| s.policy_view(&org, None))))
+    // The policy is the `Updates` area's, which applies on root.
+    Ok(Json(node.sys(|s| s.policy_view(&org, None))))
 }
 
 /// `POST /orgs/{org}/upgrade-policy`: set or drop the organization's update policy, for
@@ -118,6 +119,7 @@ pub(crate) async fn set_upgrade_policy(
     node.require_features(&[Feature::UpgradePolicies]).await?;
     let args = crate::system::upgrade_policy_args(app, policy.as_ref());
     let consent = org_consent(node, p, org, "__set_upgrade_policy", &args, confirm).await?;
+    let standing = node.standing(org, &[&actor]);
     Ok(Json(
         node.sys_write(&SystemCmd::SetUpgradePolicy {
             org: org.to_owned(),
@@ -125,6 +127,7 @@ pub(crate) async fn set_upgrade_policy(
             policy,
             actor,
             consent,
+            standing,
         })
         .await?,
     ))
@@ -245,7 +248,22 @@ pub(crate) async fn approve_upgrade(
     let now = now_secs();
     // Another's live approval of this very move waits for its second, as `ApproveUpgrade`
     // refuses it where it applies.
-    let pending = node.sys(|s| {
+    // The first approval is the `Updates` area's (root); whether its approver still
+    // approves is the organization's membership, read from its own shard.
+    let first_by = node.sys(|s| {
+        s.orgs
+            .get(&app.org)
+            .and_then(|o| o.pending_upgrades.get(&app.app_id))
+            .map(|p| p.by.clone())
+    });
+    let standing = node.standing(
+        &app.org,
+        &[actor.as_str()]
+            .into_iter()
+            .chain(first_by.as_deref())
+            .collect::<Vec<_>>(),
+    );
+    let pending = node.sys_with_org(&app.org, |s, o| {
         s.orgs
             .get(&app.org)
             .and_then(|o| o.pending_upgrades.get(&app.app_id))
@@ -254,7 +272,7 @@ pub(crate) async fn approve_upgrade(
                     && p.package == target.package
                     && p.version == target.version
                     && p.targets == targets
-                    && s.approval_live(&app.org, &app.app_id, p, now)
+                    && s.approval_live_at(o, &app.app_id, p, now)
             })
     });
     if pending {
@@ -273,6 +291,7 @@ pub(crate) async fn approve_upgrade(
             actor,
             at: now,
             consent,
+            standing,
         })
         .await?;
     // Answered as `pendingApprovals` lists it (the `PendingApproval` schema), not as the

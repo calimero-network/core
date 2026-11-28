@@ -266,7 +266,7 @@ async fn app_undo(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    if !node.sys(|s| s.approves_upgrades(&app.org, &actor)) {
+    if !node.sys_with_org(&app.org, |s, o| s.approves_upgrades_at(o, &actor)) {
         return Err(ApiError::forbidden(crate::system::NOT_AN_UPGRADE_APPROVER));
     }
     node.require_features(&[Feature::RestorePoints]).await?;
@@ -328,6 +328,7 @@ async fn app_undo(
         body.confirm,
     )
     .await?;
+    let standing = node.standing(&app.org, &[&actor]);
     let out = node
         .sys_write(&SystemCmd::UndoUpgrade {
             app_id: app.app_id.clone(),
@@ -336,6 +337,7 @@ async fn app_undo(
             at: now,
             consent,
             release_installed,
+            standing,
         })
         .await?;
     // Each restored group seeded by its restore point's holder, then waited for.

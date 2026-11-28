@@ -281,6 +281,7 @@ impl Log {
                     role,
                     actor: PEOPLE[actor].into(),
                     consent,
+                    member: None,
                 }
             }
             Op::RemoveOrgMember {

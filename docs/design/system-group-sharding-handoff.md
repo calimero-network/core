@@ -21,6 +21,16 @@ grounded in the code as it stands on the PR branch.
   `SeedTenant` identity keystone, resolve-at-propose baking, and the cross-shard
   read helpers. The `Orgs` flip exercises all of it end to end.
 
+- **Read this before trusting the earlier measurements.** Re-running with the
+  cutover on at the branch head, an organization could not gain a member
+  (`SetOrgRole` refused `unknown account` on the tenant; invite redemption raced
+  the root `invite_org` directory; prejudge judged `Orgs` commands on root), and
+  every governance command judged its actor against root's stale copy of the
+  organization. Those are fixed in the slice that follows this handoff (design
+  note, "The governance areas stay on root: the split organization record"),
+  with what remains open listed there. Re-validate any area at `ACTIVE = true`
+  yourself (§6) rather than relying on a past green run.
+
 **The remaining flips are not mechanical.** `shard::area_placement` marks
 `Apps`/`Accounts`/`Recovery` as `Tenant`, but the S2 field partition (design
 note, "Field classification") keeps the **account identity directory**
@@ -143,11 +153,19 @@ session shards by the **org context it is minted for**; account-level sessions
 This is a subsystem change; do it last among the flips and on its own.
 
 ### `Approvals` / `Deployments` / `Updates` (`Placement::Scoped`)
-These are designed to split by command scope: an org-scoped approval/grant/policy
-→ tenant; the cluster-wide owner/global policy → root. These are the most
-tractable next flips **because they avoid the account-identity split** — route
-each command by its `Scope` (org-scoped → `Tenant`, cluster-wide → `Root`) rather
-than adding the whole area to `flipped()`. Audit each like §3. Start here.
+Designed to split by command scope (org-scoped → tenant, cluster-wide → root),
+but **the audit found they cannot move before `Apps`**: their state is read by
+root-applied `Apps` commands (`UpgradeApp` reads update policies, first
+approvals and deployments) and by root's Raft-admission index (release
+approvals), and their own commands read root (`apps`, `deployers`,
+`governance`). See the design note, "The governance areas stay on root: the split
+organization record". What landed instead keeps them on root and correct with
+the cutover on: readers merge the organization record (`Org::with_root_fields`
+in `Node::org_of`), and each governance command carries the actor's projected
+standing (`Org::standing_of`, `Node::standing`/`deployment_standings`) that
+`apply` judges membership against. The open items in the same class are listed
+there; close the root-applied `Apps` membership checks (same standing pattern)
+before or with the `Apps` flip.
 
 ### `Apps` (`Area::Apps`)
 App records belong to an org (`CreateApp` already bakes the org). The app
@@ -155,8 +173,10 @@ directory is read widely (gates, reports, consent page), so flipping it is mostl
 reader-routing work (step 4) plus baking the few cross-shard apply reads. No
 account-identity split, but high read breadth.
 
-**Suggested order:** `Deployments` → `Updates` → `Approvals` (scoped, no identity
-split) → `Apps` (read breadth) → `Recovery` (split) → `Accounts` (the crux).
+**Suggested order (revised after the governance audit):** close the remaining
+root-applied `Apps` membership checks with standings → `Apps` together with the
+scoped governance areas (`Deployments`, `Updates`, `Approvals`), whose state
+`Apps` reads → `Recovery` (split) → `Accounts` (the crux).
 
 ## 5. Pitfalls this session hit (save yourself the round-trips)
 

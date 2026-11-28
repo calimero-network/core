@@ -17,12 +17,12 @@ use crate::component_cluster::{eventually, mpk_declaring};
 use crate::consent_page::{origin, Page};
 use crate::harness::{home_org, kv_wasm, signed_up, typed, wire, Cluster, ORIGIN};
 
-const PREFIX: &str = "https://echo.outbound.test/v1/";
-const PACKAGE: &str = "com.calimero.v2-kv";
+pub(crate) const PREFIX: &str = "https://echo.outbound.test/v1/";
+pub(crate) const PACKAGE: &str = "com.calimero.v2-kv";
 
 /// A cluster whose operator allows the echo host, and Alice's instance of a release that
 /// declares it, its key set, with the prefix approved by her organization.
-async fn approved_app() -> (Cluster, Client, SoftAuthenticator, String, String) {
+pub(crate) async fn approved_app() -> (Cluster, Client, SoftAuthenticator, String, String) {
     let publisher = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let signer = calimero_bundle::derive_signer_id_did_key(publisher.verifying_key().as_bytes());
     let settings = calimero_outbound::OutboundSettings {
@@ -132,7 +132,7 @@ async fn enrich(cl: &Client, app: &str, key: &str) -> Result<String, String> {
     clippy::result_large_err,
     reason = "the client's own error, passed through for the test to read its code"
 )]
-async fn post(
+pub(crate) async fn post(
     cl: &Client,
     path: &str,
     body: Value,

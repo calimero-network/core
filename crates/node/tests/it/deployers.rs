@@ -664,6 +664,7 @@ async fn the_cluster_owner_grants_deployers_once_the_operator_names_it() {
             &json!({ "deployer": { "account": dev_id }, "until": null }),
         )),
         consent: None,
+        standings: Vec::new(),
     })
     .unwrap();
     assert!(append(&c, &forged).await.is_err());

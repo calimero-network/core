@@ -207,6 +207,7 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             role,
             actor,
             consent,
+            ..
         } => org_consent(
             proofs,
             actor,
@@ -605,8 +606,21 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             account,
             role,
             actor,
+            member,
             ..
-        } => set_org_role(state, &org, account, role, &actor),
+        } => {
+            // On a tenant group a new member's account is not yet in the shard:
+            // the proposer carries it from the root directory (`member`);
+            // register it, as `RedeemInvite` registers its redeemer, so the
+            // account is known here and the member's later tenant commands
+            // verify. Trusted at the seed's attestation boundary; the change
+            // itself is authorized by the actor's consent
+            // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+            if let Some(member) = member.filter(|m| m.account_id == account) {
+                let _kept = state.accounts.entry(account.clone()).or_insert(*member);
+            }
+            set_org_role(state, &org, account, role, &actor)
+        }
         SystemCmd::RemoveOrgMember {
             org,
             account,

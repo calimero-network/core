@@ -561,6 +561,7 @@ async fn forged_credentials_memberships_and_redemptions_are_refused() {
         role: calimero_node::types::OrgRole::Owner,
         actor: alice.clone(),
         consent,
+        member: None,
     };
     let owner_args = json!({ "account": bob, "role": "owner" });
     let now = calimero_node::types::now_secs();

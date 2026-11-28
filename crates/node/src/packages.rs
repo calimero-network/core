@@ -367,7 +367,16 @@ impl Node {
     /// before it refuses; `InstallPackage` and `PutBundle` ask again at
     /// apply, at their own time.
     pub async fn refuse_undeployable(&self, actor: &str) -> Result<(), ApiError> {
-        let may = || self.sys(|s| s.may_deploy(actor, now_secs()));
+        // A grant held by an organization is judged on the actor's standing in it,
+        // read from its own shard (`Node::deployment_standings`).
+        let may = || {
+            let judged = crate::system::SystemState::judged_orgs(self.deployment_standings(
+                &[actor],
+                None,
+                &[],
+            ));
+            self.sys(|s| s.may_deploy_with(actor, now_secs(), &judged))
+        };
         if may() {
             return Ok(());
         }

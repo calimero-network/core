@@ -607,6 +607,136 @@ flipped — only `Orgs` is flipped today (`shard::flipped`).
 - **The deployment customer report** (`api/deployments.rs`) aggregates member
   counts across every customer organization — the same fan-out, read-only.
 
+### The governance areas stay on root: the split organization record
+
+Auditing `Approvals`, `Updates` and `Deployments` for the scoped flip (route an
+org-scoped command to its tenant) found that **none of them can move before
+`Apps`**, and that the `Orgs` flip had left a class of break in them with the
+cutover on.
+
+**Why they cannot move yet.** Their state is read by commands that apply on root
+and by root's own derived indexes:
+
+- `Updates` writes `upgrade_policy`, `app_upgrade_policies` and
+  `pending_upgrades` on the organization record; `UpgradeApp` (`Apps`, root)
+  reads all three, and `SetUpgradePolicy` itself reads the org's apps (`apps`,
+  root) to prune policies of deleted apps.
+- `Approvals` writes `approved_releases`, `outbound_approvals` and `egress_off`
+  on the organization record (and `egress_off` on an `AppRecord`); root's
+  Raft-admission index (`routing::group_may_hold`, `release_may_hold`) reads the
+  release approvals, and the outbound gate reads the egress switch through root
+  (`SystemState::egress_off`).
+- `Deployments` writes `deployments`/`deployment_secrets` (tenant-owned per the
+  S2 table) but every command reads `deployers`, `governance` and
+  `cluster_owner` (root), and `UpgradeApp`/`CreateApp` (root) read
+  `deployments` to judge an instance from a deployment.
+
+Moving any of them first would turn each of those root reads into a cross-shard
+read inside `apply`. They move **with or after `Apps`**, not before it.
+
+**The decision: one organization record, written by two shards.** Until its
+area moves, each field of `Org` is owned by the shard whose area writes it:
+
+| Written on | Fields | By |
+| --- | --- | --- |
+| tenant | `name`, `members`, `teams`, `default_capabilities`, `capabilities`, `metadata`, `member_metadata`, `all_apps`, `personal`, `allow_guests`, `allow_public_links` | `Orgs` |
+| root | `approved_releases`, `outbound_approvals`, `egress_off` | `Approvals` |
+| root | `upgrade_policy`, `app_upgrade_policies`, `pending_upgrades` | `Updates` |
+| root | `upgrade_runs` | `Apps` (`StartUpgradeRun`/`FinishUpgradeRun`) |
+| root | `recovery` | `Recovery` |
+
+Two mechanisms make that consistent:
+
+1. **Readers merge the record** (`Org::with_root_fields`, applied by
+   `Node::org_of` with the cutover on): the tenant's record with the root-written
+   fields taken from root's copy. Before this, a page or gate that read the
+   organization through `org_of`/`sys_org` showed the tenant's never-written
+   governance fields — `GET /orgs/{org}` answered `egressOff: false` after egress
+   was turned off, and `GET /orgs/{org}/upgrade-policy` the default policy after
+   one was set.
+2. **Root-applied governance commands carry the actor's standing**
+   (`Org::standing_of`): the actor's role and organization-wide capabilities —
+   and nothing else — projected from the tenant at propose. `apply` judges
+   membership against it (`SystemState::org_judged`, and the `_with` readers over
+   `SystemState::judged_orgs` for the deployment commands, which may read several
+   organizations). Without it, `apply` on root judged the actor against root's
+   copy of the organization, which holds only what `CreateOrg` wrote, so **an
+   admin added after the organization was made could not set its egress, approve
+   its outbound hosts or releases, set its update policy, approve or undo an
+   upgrade, or manage its deployments** — refused at `apply` after the API gate
+   (which reads the tenant) let them through and asked for their passkey. The
+   projection keeps the entry small whatever the organization's size (baking the
+   whole `Org`, as `CreateApp`/`TransferApp` do, scales with its members, teams
+   and metadata toward `MAX_ENTRY_BYTES`). Carried by `SetUpgradePolicy`,
+   `ApproveUpgrade` (the actor and the first approver), `UndoUpgrade`,
+   `SetEgress`, `SetReleaseApproval`, `SetOutboundApproval` (in the scope's
+   organization and every organization the package's releases serve, which
+   decide the release it reads), and every deployment
+   command that judges an actor (`GrantDeployer`, `RevokeDeployer`,
+   `CreateDeployment`, `OfferApp`, `WithdrawApp`, `DeleteDeployment`,
+   `OfferDeployment`, `AcceptDeployment`, `CancelDeploymentTransfer`,
+   `SetDeploymentSecret`, `ClearDeploymentSecret`). The field is absent with the
+   cutover off, so those entries keep their bytes. Its trust is the baked-`org`
+   trust of `CreateApp`: the attested leader read it; the consent signature is
+   still verified against root's credential.
+
+Regression tests: `tenant_governance::an_admin_who_joined_later_governs_the_organization`
+and the existing `deployments::accounts_and_organizations_own_deployments_their_managers_change`
+(a member granted `MANAGE_APPLICATION` after the organization was made creates
+and manages its deployment). Both are green with the cutover off and showed the
+breaks below only with `shard::ACTIVE = true`, where both failed on this branch
+before these fixes — so the earlier "whole suite green with the cutover on"
+measurement did not hold at the branch head.
+
+**Three breaks in the `Orgs` flip itself**, found by the same reproduction
+before it reached the governance commands (an organization could not gain a
+member with the cutover on):
+
+- **`SetOrgRole` judged a new member against the tenant's account directory**,
+  which holds only the accounts `SeedTenant` projected: adding anyone not yet a
+  member was refused `unknown account`. It now carries the member's account
+  from root (`member`) and the tenant registers it, as `RedeemInvite` already
+  registered its redeemer.
+- **Redeeming an invite read the root `invite_org` directory without a read
+  index**: on a node that had not applied the invite's `BindInvite`, the
+  redemption found no org, routed to root, and was refused as an invite that
+  never existed. The redeem path now reads it fresh.
+- **`Node::sys_prejudge` judged every command on the root machine**, so an
+  `Orgs` command was prejudged against root's copy of the organization (a later
+  admin's invite or role change refused before it was proposed). It now judges
+  on the shard the command routes to.
+
+**Still open in the same class (not fixed here):**
+
+- **Credential sync.** A member's passkeys reach the tenant when it is seeded or
+  when they join (`member`/`redeemer`); a passkey added or removed later on root
+  (`AddPasskey`, `RemovePasskey`) is not projected, so the tenant verifies their
+  consent against the passkeys it holds. This is the "kept in sync on credential
+  change" half of the identity binding, and is not built.
+
+- **Freshness.** A standing is read from the local tenant replica (`sys_org`),
+  not at a tenant read index: a demotion committed through another node may not
+  have applied here yet. S6's per-shard fresh read must cover standings too.
+- **Root-applied `Apps` commands still judge root's copy**: `DeleteApp`,
+  `MoveApp`, `LinkApp`, `SetDelegation`, app invites and public links
+  (`manages_grants_self`, `manages_app_self`), `RedeemAppInvite`'s
+  `guests_allowed` (a tenant-written setting read on root), `UpgradeApp`'s
+  approver check (`approves_upgrades` on the run's approver) and its second
+  approver (`approval_live`). The same standing, or the `Apps` flip, closes them.
+- **Multi-organization reads on root**: `reads_release`'s instance branch (a
+  private release read because the actor reaches an instance that runs it — its
+  serving-organization branch is judged on standings, `reads_release_with`; the
+  instance branch needs the organization's teams, which a standing leaves out
+  on purpose, since dropping them would widen a guest's reach), `offer_serves` in
+  `AcceptDeployment` (every member of the owner organization),
+  `InstallPackage`/`PutBundle`'s `may_deploy` (an organization's deployer grant),
+  the updates hub (`consent_page::updates::hub_model`, every organization the
+  person approves updates of) — each reads the membership of organizations the
+  command does not name, which a single projection cannot carry.
+- **Tenant-applied `Orgs` commands reading root-written fields** (for example a
+  rule that consults `recovery`) read the tenant's copy; none was found in the
+  audit, but a new one must merge or bake.
+
 ## Open questions / risks
 
 - **The gating decision: verifying a credential inside a tenant.** This blocks

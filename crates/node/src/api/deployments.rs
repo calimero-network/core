@@ -40,6 +40,18 @@ fn deployer_of(key: &str) -> Result<Deployer, ApiError> {
     })
 }
 
+/// The organizations `account`'s standing is read from for the deployment
+/// rules, from their own shards (`Node::deployment_standings`), as the map the
+/// `_with` readers take.
+fn judged(
+    node: &Node,
+    account: &str,
+    deployment: Option<&str>,
+    also: &[&Deployer],
+) -> std::collections::BTreeMap<crate::types::OrgId, crate::types::Org> {
+    crate::system::SystemState::judged_orgs(node.deployment_standings(&[account], deployment, also))
+}
+
 /// Refused `403` once the cluster's owner grants its deployers: the
 /// operator no longer may.
 async fn operator_grants_deployers(node: &Node) -> Result<(), ApiError> {
@@ -59,11 +71,12 @@ async fn owner_granting(node: &Node, headers: &HeaderMap) -> Result<Principal, A
     let p = holder(node, headers).await?;
     let account = p.account()?;
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    let judged = judged(node, &account, None, &[]);
     node.sys(|s| match s.deployers_owner() {
         None => Err(ApiError::forbidden(
             "this cluster's operator grants its deployers",
         )),
-        Some(owner) if s.acts_for(owner, &account) => Ok(()),
+        Some(owner) if s.acts_for_with(owner, &account, &judged) => Ok(()),
         Some(_) => Err(ApiError::forbidden(
             "only the cluster's owner grants its deployers",
         )),
@@ -97,6 +110,7 @@ async fn ops_deployer_grant(
             actor: crate::system::OPERATOR.to_owned(),
             proof: Some(proof),
             consent: None,
+            standings: Vec::new(),
         })
         .await?,
     ))
@@ -128,6 +142,7 @@ async fn ops_deployer_revoke(
             actor: crate::system::OPERATOR.to_owned(),
             proof: Some(proof),
             consent: None,
+            standings: Vec::new(),
         })
         .await?,
     ))
@@ -216,14 +231,17 @@ async fn deployer_grant(
         body.confirm,
     )
     .await?;
+    let actor = p.account()?;
+    let standings = node.deployment_standings(&[&actor], None, &[]);
     Ok(Json(
         node.sys_write(&SystemCmd::GrantDeployer {
             deployer: body.deployer,
             until,
             at: now_secs(),
-            actor: p.account()?,
+            actor,
             proof: None,
             consent: Some(consent),
+            standings,
         })
         .await?,
     ))
@@ -248,13 +266,16 @@ async fn deployer_revoke(
         confirm,
     )
     .await?;
+    let actor = p.account()?;
+    let standings = node.deployment_standings(&[&actor], None, &[]);
     Ok(Json(
         node.sys_write(&SystemCmd::RevokeDeployer {
             deployer,
             at: now_secs(),
-            actor: p.account()?,
+            actor,
             proof: None,
             consent: Some(consent),
+            standings,
         })
         .await?,
     ))
@@ -273,10 +294,11 @@ async fn deployer_list(
         p.beyond_instance(&node)?;
         let account = p.account()?;
         let _caught_up = node.sys_fresh_from(p.sys_index).await;
+        let judged = judged(&node, &account, None, &[]);
         let owner = node.sys(|s| {
             s.cluster_owner
                 .as_ref()
-                .is_some_and(|o| s.acts_for(o, &account))
+                .is_some_and(|o| s.acts_for_with(o, &account, &judged))
         });
         if !owner {
             return Err(ApiError::forbidden(
@@ -346,12 +368,13 @@ async fn managed_deployment(node: &Node, p: &Principal, id: &str) -> Result<Depl
     let account = p.account()?;
     let account = account.as_str();
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    let judged = judged(node, account, Some(id), &[]);
     node.sys(|s| {
         let d = s
             .deployments
             .get(id)
             .ok_or_else(|| ApiError::not_found("no such deployment"))?;
-        if !s.acts_for(&d.owner, account) {
+        if !s.acts_for_with(&d.owner, account, &judged) {
             return Err(ApiError::forbidden(
                 "only the deployment's owner, or MANAGE_APPLICATION in its organization, manages it",
             ));
@@ -626,7 +649,9 @@ async fn deployment_create(
     let p = holder(&node, &headers).await?;
     let account = p.account()?;
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
-    if !node.sys(|s| s.acts_for(&body.owner, &account)) {
+    let standings = node.deployment_standings(&[&account], None, &[&body.owner]);
+    let judged = crate::system::SystemState::judged_orgs(standings.clone());
+    if !node.sys(|s| s.acts_for_with(&body.owner, &account, &judged)) {
         return Err(ApiError::forbidden(
             "a deployment is created by its owner account, or by MANAGE_APPLICATION in its organization",
         ));
@@ -662,6 +687,7 @@ async fn deployment_create(
             at: now_secs(),
             consent,
             deployment_needs_recovery: needs_recovery,
+            standings,
         })
         .await?;
     // Its frontend host, `app_host::deployment_label`, for the resolver.
@@ -699,6 +725,7 @@ async fn deployment_offer(
     )
     .await?;
     let serving = node.release_org_view(&body.package).into_values().collect();
+    let standings = node.deployment_standings(&[&account], Some(&id), &[]);
     Ok(Json(
         node.sys_write(&SystemCmd::OfferApp {
             deployment: id,
@@ -709,6 +736,7 @@ async fn deployment_offer(
             at: now_secs(),
             consent,
             serving,
+            standings,
         })
         .await?,
     ))
@@ -739,12 +767,14 @@ async fn deployment_withdraw(
         confirm,
     )
     .await?;
+    let standings = node.deployment_standings(&[&account], Some(&id), &[]);
     Ok(Json(
         node.sys_write(&SystemCmd::WithdrawApp {
             deployment: id,
             app,
             actor: account,
             consent,
+            standings,
         })
         .await?,
     ))
@@ -771,11 +801,13 @@ async fn deployment_delete(
         confirm,
     )
     .await?;
+    let standings = node.deployment_standings(&[&account], Some(&id), &[]);
     Ok(Json(
         node.sys_write(&SystemCmd::DeleteDeployment {
             deployment: id,
             actor: account,
             consent,
+            standings,
         })
         .await?,
     ))
@@ -795,7 +827,9 @@ async fn deployment_transfer_offer(
     node.require_features(&[crate::system::cluster_version::Feature::DeploymentTransfer])
         .await?;
     let d = managed_deployment(&node, &p, &id).await?;
-    if !node.sys(|s| s.hands_over(&d.owner, &account)) {
+    let standings = node.deployment_standings(&[&account], Some(&id), &[]);
+    let judged = crate::system::SystemState::judged_orgs(standings.clone());
+    if !node.sys(|s| s.hands_over_with(&d.owner, &account, &judged)) {
         return Err(crate::node::rejected(crate::system::NOT_HANDING_OVER));
     }
     if !node.sys(|s| s.exists(&body.to)) {
@@ -827,6 +861,7 @@ async fn deployment_transfer_offer(
             actor: account,
             at,
             consent,
+            standings,
         })
         .await?,
     ))
@@ -847,12 +882,14 @@ async fn deployment_transfer_accept(
         .await?;
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
     let at = now_secs();
+    let standings = node.deployment_standings(&[&account], Some(&id), &[&body.to]);
+    let judged = crate::system::SystemState::judged_orgs(standings.clone());
     let offered_at = node.sys(|s| {
         let d = s
             .deployments
             .get(&id)
             .ok_or_else(|| ApiError::not_found("no such deployment"))?;
-        if !s.acts_for(&body.to, &account) {
+        if !s.acts_for_with(&body.to, &account, &judged) {
             return Err(ApiError::forbidden(
                 "a deployment is accepted by the account it is offered to, or by MANAGE_APPLICATION in that organization",
             ));
@@ -862,7 +899,7 @@ async fn deployment_transfer_accept(
             .as_ref()
             .filter(|t| t.to == body.to)
             .ok_or_else(|| crate::node::rejected(crate::system::NO_TRANSFER))?;
-        if !s.hands_over(&d.owner, &t.offered_by) {
+        if !s.hands_over_with(&d.owner, &t.offered_by, &judged) {
             return Err(crate::node::rejected(crate::system::TRANSFER_STALE));
         }
         if !t.live(at) {
@@ -898,6 +935,7 @@ async fn deployment_transfer_accept(
             actor: account,
             at,
             consent,
+            standings,
         })
         .await?,
     ))
@@ -917,6 +955,8 @@ async fn deployment_transfer_cancel(
     node.require_features(&[crate::system::cluster_version::Feature::DeploymentTransfer])
         .await?;
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
+    let standings = node.deployment_standings(&[&account], Some(&id), &[]);
+    let judged = crate::system::SystemState::judged_orgs(standings.clone());
     node.sys(|s| {
         let d = s
             .deployments
@@ -925,8 +965,8 @@ async fn deployment_transfer_cancel(
         let receiver = d
             .transfer
             .as_ref()
-            .is_some_and(|t| s.acts_for(&t.to, &account));
-        if !s.acts_for(&d.owner, &account) && !receiver {
+            .is_some_and(|t| s.acts_for_with(&t.to, &account, &judged));
+        if !s.acts_for_with(&d.owner, &account, &judged) && !receiver {
             return Err(ApiError::forbidden(
                 "an offer of a deployment is cancelled by a manager of its owner or of the owner it is offered to",
             ));
@@ -951,6 +991,7 @@ async fn deployment_transfer_cancel(
             deployment: id,
             actor: account,
             consent,
+            standings,
         })
         .await?,
     ))
@@ -968,11 +1009,25 @@ async fn deployment_list(
     let account = p.account()?;
     let _caught_up = node.sys_fresh_from(p.sys_index).await;
     let now = now_secs();
+    // Every owner a deployment names, and every owner one is offered to.
+    let owners: Vec<Deployer> = node.sys(|s| {
+        s.deployments
+            .values()
+            .flat_map(|d| {
+                std::iter::once(d.owner.clone()).chain(d.transfer.as_ref().map(|t| t.to.clone()))
+            })
+            .collect()
+    });
+    let judged = crate::system::SystemState::judged_orgs(node.deployment_standings(
+        &[&account],
+        None,
+        &owners.iter().collect::<Vec<_>>(),
+    ));
     let (deployments, offered) = node.sys(|s| {
         let managed = s
             .deployments
             .values()
-            .filter(|d| s.acts_for(&d.owner, &account))
+            .filter(|d| s.acts_for_with(&d.owner, &account, &judged))
             .map(|d| deployment_json(&node, d))
             .collect();
         let offered = s
@@ -981,8 +1036,8 @@ async fn deployment_list(
             .filter_map(|d| {
                 let t = d.transfer.as_ref()?;
                 (t.live(now)
-                    && s.acts_for(&t.to, &account)
-                    && s.hands_over(&d.owner, &t.offered_by))
+                    && s.acts_for_with(&t.to, &account, &judged)
+                    && s.hands_over_with(&d.owner, &t.offered_by, &judged))
                 .then(|| offered_json(s, d, t))
             })
             .collect();
@@ -1139,6 +1194,7 @@ async fn deployment_secret_set(
         body.confirm,
     )
     .await?;
+    let standings = node.deployment_standings(&[&account], Some(&id), &[]);
     Ok(Json(
         node.sys_write(&SystemCmd::SetDeploymentSecret {
             deployment: id,
@@ -1148,6 +1204,7 @@ async fn deployment_secret_set(
             at: now_secs(),
             consent,
             used,
+            standings,
         })
         .await?,
     ))
@@ -1184,12 +1241,14 @@ async fn deployment_secret_clear(
         confirm,
     )
     .await?;
+    let standings = node.deployment_standings(&[&account], Some(&id), &[]);
     Ok(Json(
         node.sys_write(&SystemCmd::ClearDeploymentSecret {
             deployment: id,
             name,
             actor: account,
             consent,
+            standings,
         })
         .await?,
     ))

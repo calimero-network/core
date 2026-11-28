@@ -263,6 +263,7 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             app,
             actor,
             consent,
+            ..
         } => manager_consent(
             proofs,
             actor,
@@ -306,6 +307,7 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             deployment,
             actor,
             consent,
+            ..
         } => manager_consent(
             proofs,
             actor,
@@ -318,6 +320,7 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             deployment,
             actor,
             consent,
+            ..
         } => manager_consent(
             proofs,
             actor,
@@ -351,6 +354,7 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             name,
             actor,
             consent,
+            ..
         } => manager_consent(
             proofs,
             actor,
@@ -426,12 +430,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             until,
             at,
             actor,
+            standings,
             ..
-        } => grant_deployer(state, deployer, until, at, actor),
+        } => grant_deployer(state, deployer, until, at, (actor, standings)),
         SystemCmd::RevokeDeployer {
-            deployer, actor, ..
+            deployer,
+            actor,
+            standings,
+            ..
         } => {
-            state.grants_deployers(&actor)?;
+            state.grants_deployers_with(&actor, &SystemState::judged_orgs(standings))?;
             let key = deployer.key();
             let _gone = state.deployers.remove(&key).ok_or(NO_SUCH_GRANT)?;
             Ok(json!(DeployerRevoked { key }))
@@ -456,28 +464,61 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             at,
             serving,
+            standings,
             ..
-        } => offer_app(state, deployment, app, package, version, actor, at, serving),
+        } => offer_app(
+            state,
+            deployment,
+            app,
+            (package, version),
+            (actor, standings),
+            at,
+            serving,
+        ),
         SystemCmd::WithdrawApp {
             deployment,
             app,
             actor,
+            standings,
             ..
-        } => withdraw_app(state, deployment, app, &actor),
+        } => withdraw_app(
+            state,
+            deployment,
+            app,
+            &actor,
+            &SystemState::judged_orgs(standings),
+        ),
         SystemCmd::OfferDeployment {
             deployment,
             to,
             actor,
             at,
+            standings,
             ..
-        } => offer_deployment(state, deployment, to, actor, at),
+        } => offer_deployment(state, deployment, to, (actor, standings), at),
         cmd @ SystemCmd::AcceptDeployment { .. } => accept_deployment(state, cmd),
         SystemCmd::CancelDeploymentTransfer {
-            deployment, actor, ..
-        } => cancel_deployment_transfer(state, deployment, &actor),
+            deployment,
+            actor,
+            standings,
+            ..
+        } => cancel_deployment_transfer(
+            state,
+            deployment,
+            &actor,
+            &SystemState::judged_orgs(standings),
+        ),
         SystemCmd::DeleteDeployment {
-            deployment, actor, ..
-        } => delete_deployment(state, deployment, &actor),
+            deployment,
+            actor,
+            standings,
+            ..
+        } => delete_deployment(
+            state,
+            deployment,
+            &actor,
+            &SystemState::judged_orgs(standings),
+        ),
         SystemCmd::SetDeploymentSecret {
             deployment,
             name,
@@ -485,14 +526,29 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             at,
             used,
+            standings,
             ..
-        } => set_deployment_secret(state, deployment, name, value, &actor, at, used),
+        } => set_deployment_secret(
+            state,
+            (deployment, name, value),
+            &actor,
+            at,
+            used,
+            &SystemState::judged_orgs(standings),
+        ),
         SystemCmd::ClearDeploymentSecret {
             deployment,
             name,
             actor,
+            standings,
             ..
-        } => clear_deployment_secret(state, deployment, name, &actor),
+        } => clear_deployment_secret(
+            state,
+            deployment,
+            name,
+            &actor,
+            &SystemState::judged_orgs(standings),
+        ),
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached deployments::apply"),
@@ -506,9 +562,9 @@ fn grant_deployer(
     deployer: Deployer,
     until: Option<u64>,
     at: u64,
-    actor: AccountId,
+    (actor, standings): (AccountId, Vec<Org>),
 ) -> Result<Value, Rejection> {
-    state.grants_deployers(&actor)?;
+    state.grants_deployers_with(&actor, &SystemState::judged_orgs(standings))?;
     if !state.exists(&deployer) {
         return Err(NO_SUCH_ACCOUNT_OR_ORG);
     }
@@ -558,6 +614,7 @@ fn create_deployment(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, R
         actor,
         at,
         deployment_needs_recovery,
+        standings,
         ..
     } = cmd
     else {
@@ -572,10 +629,11 @@ fn create_deployment(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, R
     if !state.exists(&owner) {
         return Err(NO_SUCH_ACCOUNT_OR_ORG);
     }
-    if !state.acts_for(&owner, &actor) {
+    let extra = SystemState::judged_orgs(standings);
+    if !state.acts_for_with(&owner, &actor, &extra) {
         return Err(NOT_FOR_OWNER);
     }
-    if !state.may_deploy(&actor, at) {
+    if !state.may_deploy_with(&actor, at, &extra) {
         return Err(NOT_A_DEPLOYER);
     }
     if !state.keeps_recoverable(&owner, deployment_needs_recovery) {
@@ -619,33 +677,30 @@ fn managed_deployment<'s>(
     state: &'s SystemState,
     deployment: &str,
     actor: &str,
+    extra: &BTreeMap<OrgId, Org>,
 ) -> Result<&'s Deployment, Rejection> {
     let record = state
         .deployments
         .get(deployment)
         .ok_or(NO_SUCH_DEPLOYMENT)?;
-    state.manages_deployment(record, actor)?;
+    state.manages_deployment_with(record, actor, extra)?;
     Ok(record)
 }
 
 /// Offer an app (a release the manager sees installed) in a deployment, or
 /// move it to another release of its package, within [`MAX_APPS_PER_DEPLOYMENT`].
-#[allow(
-    clippy::too_many_arguments,
-    reason = "an offer names its deployment, app, package and version, its actor and time, and the serving orgs baked for the sharded visibility check"
-)]
 fn offer_app(
     state: &mut SystemState,
     deployment: String,
     app: String,
-    package: String,
-    version: String,
-    actor: AccountId,
+    (package, version): (String, String),
+    (actor, standings): (AccountId, Vec<Org>),
     at: u64,
     serving: Vec<crate::types::Org>,
 ) -> Result<Value, Rejection> {
-    let record = managed_deployment(state, &deployment, &actor)?;
-    if !state.may_deploy(&actor, at) {
+    let judged = SystemState::judged_orgs(standings);
+    let record = managed_deployment(state, &deployment, &actor, &judged)?;
+    if !state.may_deploy_with(&actor, at, &judged) {
         return Err(NOT_A_DEPLOYER);
     }
     deployment_segment_fits(&app)?;
@@ -695,8 +750,9 @@ fn withdraw_app(
     deployment: String,
     app: String,
     actor: &str,
+    extra: &BTreeMap<OrgId, Org>,
 ) -> Result<Value, Rejection> {
-    let record = managed_deployment(state, &deployment, actor)?;
+    let record = managed_deployment(state, &deployment, actor, extra)?;
     let offer = record.apps.get(&app).ok_or(NO_SUCH_OFFER)?;
     let running = state.apps.values().any(|instance| {
         instance.deployment.as_deref() == Some(deployment.as_str())
@@ -717,11 +773,12 @@ fn offer_deployment(
     state: &mut SystemState,
     deployment: String,
     to: Deployer,
-    actor: AccountId,
+    (actor, standings): (AccountId, Vec<Org>),
     at: u64,
 ) -> Result<Value, Rejection> {
-    let record = managed_deployment(state, &deployment, &actor)?;
-    if !state.hands_over(&record.owner, &actor) {
+    let extra = SystemState::judged_orgs(standings);
+    let record = managed_deployment(state, &deployment, &actor, &extra)?;
+    if !state.hands_over_with(&record.owner, &actor, &extra) {
         return Err(NOT_HANDING_OVER);
     }
     if !state.exists(&to) {
@@ -760,6 +817,7 @@ fn accept_deployment(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, R
         offered_at,
         actor,
         at,
+        standings,
         ..
     } = cmd
     else {
@@ -770,7 +828,8 @@ fn accept_deployment(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, R
         .deployments
         .get(&deployment)
         .ok_or(NO_SUCH_DEPLOYMENT)?;
-    if !state.acts_for(&to, &actor) {
+    let extra = SystemState::judged_orgs(standings);
+    if !state.acts_for_with(&to, &actor, &extra) {
         return Err(NOT_THE_RECEIVER);
     }
     let offer = record
@@ -778,7 +837,7 @@ fn accept_deployment(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, R
         .as_ref()
         .filter(|offer| offer.to == to && offer.offered_at == offered_at)
         .ok_or(NO_TRANSFER)?;
-    if !state.hands_over(&record.owner, &offer.offered_by) {
+    if !state.hands_over_with(&record.owner, &offer.offered_by, &extra) {
         return Err(TRANSFER_STALE);
     }
     if !offer.live(at) {
@@ -837,13 +896,16 @@ fn cancel_deployment_transfer(
     state: &mut SystemState,
     deployment: String,
     actor: &str,
+    extra: &BTreeMap<OrgId, Org>,
 ) -> Result<Value, Rejection> {
     let record = state
         .deployments
         .get(&deployment)
         .ok_or(NO_SUCH_DEPLOYMENT)?;
     let offer = record.transfer.as_ref().ok_or(NO_TRANSFER)?;
-    if !state.acts_for(&record.owner, actor) && !state.acts_for(&offer.to, actor) {
+    if !state.acts_for_with(&record.owner, actor, extra)
+        && !state.acts_for_with(&offer.to, actor, extra)
+    {
         return Err(NOT_AN_END_OF_THE_OFFER);
     }
     if let Some(record) = state.deployments.get_mut(&deployment) {
@@ -858,8 +920,9 @@ fn delete_deployment(
     state: &mut SystemState,
     deployment: String,
     actor: &str,
+    extra: &BTreeMap<OrgId, Org>,
 ) -> Result<Value, Rejection> {
-    let record = managed_deployment(state, &deployment, actor)?;
+    let record = managed_deployment(state, &deployment, actor, extra)?;
     if !record.apps.is_empty() {
         return Err(STILL_OFFERS);
     }
@@ -880,14 +943,13 @@ fn delete_deployment(
 /// within the bounds per deployment and in all. The answer never holds the value.
 fn set_deployment_secret(
     state: &mut SystemState,
-    deployment: String,
-    name: String,
-    value: crate::component::SecretValue,
+    (deployment, name, value): (String, String, crate::component::SecretValue),
     actor: &str,
     at: u64,
     used: bool,
+    extra: &BTreeMap<OrgId, Org>,
 ) -> Result<Value, Rejection> {
-    let record = managed_deployment(state, &deployment, actor)?;
+    let record = managed_deployment(state, &deployment, actor, extra)?;
     if !calimero_bundle::is_secret_name(&name) {
         return Err(BAD_SECRET_NAME);
     }
@@ -946,8 +1008,9 @@ fn clear_deployment_secret(
     deployment: String,
     name: String,
     actor: &str,
+    extra: &BTreeMap<OrgId, Org>,
 ) -> Result<Value, Rejection> {
-    let _managed = managed_deployment(state, &deployment, actor)?;
+    let _managed = managed_deployment(state, &deployment, actor, extra)?;
     let held = state.deployment_secrets.get_mut(&deployment);
     if held.and_then(|secrets| secrets.remove(&name)).is_none() {
         return Err(NO_DEPLOYMENT_SECRET);

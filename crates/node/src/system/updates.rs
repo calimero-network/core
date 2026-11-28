@@ -60,6 +60,7 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             policy,
             actor,
             consent,
+            ..
         } => passkey_consent(
             proofs,
             actor,
@@ -131,8 +132,9 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             app,
             policy,
             actor,
+            standing,
             ..
-        } => set_upgrade_policy(state, &org, app, policy, &actor),
+        } => set_upgrade_policy(state, &org, app, policy, &actor, standing.as_deref()),
         cmd @ SystemCmd::ApproveUpgrade { .. } => approve_upgrade(state, cmd),
         SystemCmd::UndoUpgrade {
             app_id,
@@ -140,8 +142,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             at,
             release_installed,
+            standing,
             ..
-        } => undo_upgrade(state, &app_id, apps, &actor, at, release_installed),
+        } => undo_upgrade(
+            state,
+            &app_id,
+            apps,
+            (&actor, standing.as_deref()),
+            at,
+            release_installed,
+        ),
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached updates::apply"),
@@ -156,11 +166,12 @@ fn set_upgrade_policy(
     app: Option<AppId>,
     policy: Option<UpgradePolicy>,
     actor: &str,
+    standing: Option<&Org>,
 ) -> Result<Value, Rejection> {
     if !state.orgs.contains_key(org) {
         return Err(NO_SUCH_ORG);
     }
-    if !state.approves_upgrades(org, actor) {
+    if !state.approves_upgrades_at(state.org_judged(org, standing), actor) {
         return Err(NOT_AN_UPGRADE_APPROVER.into());
     }
     if let Some(app_id) = &app {
@@ -216,6 +227,7 @@ fn approve_upgrade(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rej
         class,
         actor,
         at,
+        standing,
         ..
     } = cmd
     else {
@@ -223,7 +235,8 @@ fn approve_upgrade(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rej
         unreachable!("approve_upgrade applies an ApproveUpgrade")
     };
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    if !state.approves_upgrades(&app.org, &actor) {
+    let judged = state.org_judged(&app.org, standing.as_deref());
+    if !state.approves_upgrades_at(judged, &actor) {
         return Err(NOT_AN_UPGRADE_APPROVER.into());
     }
     if !state.upgrade_policy_of(app).0.second_approver || class.is_green() {
@@ -261,7 +274,7 @@ fn approve_upgrade(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rej
             && pending.package == package
             && pending.version == version
             && pending.targets == targets
-            && state.approval_live(&org, &app_id, pending, at)
+            && state.approval_live_at(judged, &app_id, pending, at)
         {
             return Err(APPROVAL_PENDING);
         }
@@ -313,12 +326,12 @@ fn undo_upgrade(
     state: &mut SystemState,
     app_id: &str,
     apps: BTreeMap<AppId, Vec<u64>>,
-    actor: &str,
+    (actor, standing): (&str, Option<&Org>),
     at: u64,
     release_installed: bool,
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
-    if !state.approves_upgrades(&app.org, actor) {
+    if !state.approves_upgrades_at(state.org_judged(&app.org, standing), actor) {
         return Err(NOT_AN_UPGRADE_APPROVER.into());
     }
     let named: BTreeSet<&AppId> = apps.keys().collect();
@@ -1202,6 +1215,19 @@ impl SystemState {
     /// approver still an owner or admin, and some app it covers not yet at its target.
     #[must_use]
     pub fn approval_live(&self, org: &str, approved: &str, p: &PendingApproval, at: u64) -> bool {
+        self.approval_live_at(self.orgs.get(org), approved, p, at)
+    }
+
+    /// [`Self::approval_live`] judging the approver against `org` as read from its
+    /// own shard (the cross-shard read convention at [`Self::member_of`]).
+    #[must_use]
+    pub fn approval_live_at(
+        &self,
+        org: Option<&Org>,
+        approved: &str,
+        p: &PendingApproval,
+        at: u64,
+    ) -> bool {
         let runs = |id: &str, package: &str, version: &str| {
             self.apps.get(id).is_none_or(|a| {
                 a.release
@@ -1213,7 +1239,7 @@ impl SystemState {
             && p.targets
                 .iter()
                 .all(|(id, t)| runs(id, &t.package, &t.version));
-        p.fresh_at(at) && self.approves_upgrades(org, &p.by) && !spent
+        p.fresh_at(at) && self.approves_upgrades_at(org, &p.by) && !spent
     }
 
     /// Drop `org`'s first approvals that can let nothing through any more at `at`.

@@ -101,8 +101,8 @@ mod update_policies;
 pub(crate) mod upgrades;
 
 pub(crate) use approvals::{
-    outbound_release, refuse_egress_off, set_egress, set_outbound_approval, set_release_approval,
-    EgressBody, OutboundApprovalBody, ReleaseApprovalBody,
+    outbound_release_fresh, refuse_egress_off, set_egress, set_outbound_approval,
+    set_release_approval, EgressBody, OutboundApprovalBody, ReleaseApprovalBody,
 };
 // `POST /apps/{app}/egress`, routed beside its `GET` in `upgrades::routes`.
 use approvals::app_set_egress;

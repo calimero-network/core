@@ -2507,19 +2507,53 @@ impl SystemState {
     /// (one that names no release, only when `v` is not recorded private).
     #[must_use]
     pub fn reads_release(&self, package: &str, v: &PackageVersion, who: &str) -> bool {
-        self.sees_release(v, who)
-            || (who != OPERATOR
-                && self.apps.values().any(|a| {
-                    // Releases may share a WASM: an app runs the one its record names, and
-                    // one naming none is never told a private sibling.
-                    a.release
-                        .as_ref()
-                        .map_or(v.visibility != Some(Visibility::Private), |r| {
-                            r.package == package && r.version == v.version
-                        })
-                        && v.app_parts().values().any(|h| *h == a.bundle)
-                        && self.may_reach(a, Some(who), self.orgs.get(&a.org))
-                }))
+        self.sees_release(v, who) || self.reads_release_through_an_app(package, v, who)
+    }
+
+    /// [`Self::reads_release`] with the organizations the release serves read
+    /// from `extra` when it holds them (the cross-shard read convention at
+    /// [`Self::member_of`]); the instance branch still reads this state.
+    #[must_use]
+    pub fn reads_release_with(
+        &self,
+        package: &str,
+        v: &PackageVersion,
+        who: &str,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        self.sees_release_with(v, who, extra) || self.reads_release_through_an_app(package, v, who)
+    }
+
+    /// [`Self::newest_read`] judging release visibility with `extra`
+    /// ([`Self::reads_release_with`]).
+    #[must_use]
+    pub fn newest_read_with(
+        &self,
+        package: &str,
+        who: &str,
+        frontend: bool,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> Option<&PackageVersion> {
+        self.packages.get(package)?.latest_where(|v| {
+            (frontend && v.visibility.is_none()) || self.reads_release_with(package, v, who, extra)
+        })
+    }
+
+    /// The instance half of [`Self::reads_release`]: `who` reaches an app that
+    /// runs this release.
+    fn reads_release_through_an_app(&self, package: &str, v: &PackageVersion, who: &str) -> bool {
+        who != OPERATOR
+            && self.apps.values().any(|a| {
+                // Releases may share a WASM: an app runs the one its record names, and
+                // one naming none is never told a private sibling.
+                a.release
+                    .as_ref()
+                    .map_or(v.visibility != Some(Visibility::Private), |r| {
+                        r.package == package && r.version == v.version
+                    })
+                    && v.app_parts().values().any(|h| *h == a.bundle)
+                    && self.may_reach(a, Some(who), self.orgs.get(&a.org))
+            })
     }
 
     /// Whether `who` reaches an app running one of `v`'s services.
@@ -3198,6 +3232,14 @@ impl SystemState {
     /// not an install.
     #[must_use]
     pub fn may_deploy(&self, account: &str, now: u64) -> bool {
+        self.may_deploy_with(account, now, &BTreeMap::new())
+    }
+
+    /// [`Self::may_deploy`] reading each organization that holds a grant from
+    /// `extra` when it holds it (the cross-shard read convention at
+    /// [`Self::member_of`]).
+    #[must_use]
+    pub fn may_deploy_with(&self, account: &str, now: u64, extra: &BTreeMap<OrgId, Org>) -> bool {
         if account == OPERATOR || self.governance().deployments == Deployments::Open {
             return true;
         }
@@ -3207,7 +3249,7 @@ impl SystemState {
         }
         self.deployers.iter().any(|(key, g)| {
             g.live(now)
-                && matches!(Deployer::from_key(key), Some(Deployer::Org(o)) if self.manages_apps_self(&o, account, None))
+                && matches!(Deployer::from_key(key), Some(Deployer::Org(o)) if self.manages_apps(self.org_for(&o, extra), account, None))
         })
     }
 
@@ -3276,6 +3318,19 @@ impl SystemState {
             Deployer::Account(a) => a == account,
             Deployer::Org(o) => self.manages_apps_self(o, account, None),
         }
+    }
+
+    /// The organizations a root-applied command carries the actor's standing in
+    /// (`Org::standing_of`), keyed by each one's own id, as the `extra` map the
+    /// `_with` readers take: a standing filed under another organization's key is
+    /// never read for it
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn judged_orgs(standings: Vec<Org>) -> BTreeMap<OrgId, Org> {
+        standings
+            .into_iter()
+            .map(|o| (o.org_id.clone(), o))
+            .collect()
     }
 
     /// [`Self::acts_for`] reading the owner organization from `extra` (its tenant
@@ -3355,6 +3410,21 @@ impl SystemState {
         match owner {
             Deployer::Account(a) => a == actor,
             Deployer::Org(o) => self.is_org_admin_self(o, actor),
+        }
+    }
+
+    /// [`Self::hands_over`] reading the owner organization from `extra` when it
+    /// holds it (the cross-shard read convention at [`Self::member_of`]).
+    #[must_use]
+    pub fn hands_over_with(
+        &self,
+        owner: &Deployer,
+        actor: &str,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        match owner {
+            Deployer::Account(a) => a == actor,
+            Deployer::Org(o) => self.is_org_admin(self.org_for(o, extra), actor),
         }
     }
 
@@ -3575,12 +3645,18 @@ impl SystemState {
     }
 
     /// Whether `actor` may grant or revoke deployers now: the operator while
-    /// it grants them, else whoever acts for the cluster's owner.
-    fn grants_deployers(&self, actor: &str) -> Result<(), &'static str> {
+    /// it grants them, else whoever acts for the cluster's owner, that owner
+    /// organization read from `extra` when it holds it (the cross-shard read
+    /// convention at [`Self::member_of`]).
+    fn grants_deployers_with(
+        &self,
+        actor: &str,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> Result<(), &'static str> {
         match self.deployers_owner() {
             None if actor == OPERATOR => Ok(()),
             None => Err("the operator grants this cluster's deployers"),
-            Some(owner) if actor != OPERATOR && self.acts_for(owner, actor) => Ok(()),
+            Some(owner) if actor != OPERATOR && self.acts_for_with(owner, actor, extra) => Ok(()),
             Some(_) => Err("this cluster's owner grants its deployers"),
         }
     }
@@ -4193,8 +4269,15 @@ impl SystemState {
     }
 
     /// Whether `actor` may change `d`: [`Self::acts_for`] its owner.
-    fn manages_deployment(&self, d: &Deployment, actor: &str) -> Result<(), &'static str> {
-        if actor == OPERATOR || !self.acts_for(&d.owner, actor) {
+    /// The owner organization is read from `extra` when it holds it (the
+    /// cross-shard read convention at [`Self::member_of`]).
+    fn manages_deployment_with(
+        &self,
+        d: &Deployment,
+        actor: &str,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> Result<(), &'static str> {
+        if actor == OPERATOR || !self.acts_for_with(&d.owner, actor, extra) {
             return Err("only the deployment's owner, or MANAGE_APPLICATION in its organization, may manage it");
         }
         Ok(())
@@ -4471,6 +4554,28 @@ impl SystemState {
     #[must_use]
     pub fn approves_upgrades(&self, org: &str, account: &str) -> bool {
         self.is_org_admin_self(org, account)
+    }
+
+    /// [`Self::approves_upgrades`] reading the organization from its own shard
+    /// (the cross-shard read convention at [`Self::member_of`]).
+    #[must_use]
+    pub fn approves_upgrades_at(&self, org: Option<&Org>, account: &str) -> bool {
+        self.is_org_admin(org, account)
+    }
+
+    /// Organization `org` as a governance command applied on this (root) state
+    /// judges who acts in it: the `standing` the command carries
+    /// ([`crate::types::Org::standing_of`], read from the organization's tenant
+    /// group at propose) when it is this organization's, else this state's own
+    /// copy — what every command read before tenant sharding, and still reads
+    /// with the cutover off, when no standing is carried. A standing of another
+    /// organization is never used.
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>)
+    #[must_use]
+    pub fn org_judged<'a>(&'a self, org: &str, standing: Option<&'a Org>) -> Option<&'a Org> {
+        standing
+            .filter(|o| o.org_id == org)
+            .or_else(|| self.orgs.get(org))
     }
 
     /// Whether the rule [`cluster_version::Feature::OwnerApprovedUpgrades`] brings
@@ -7085,6 +7190,15 @@ pub enum SystemCmd {
         /// The actor's passkey consent over it ([`crate::proof`]).
         #[serde(default)]
         consent: Value,
+        /// The actor's standing in the organization (`Org::standing_of`),
+        /// read at propose from the organization's own shard (its tenant group
+        /// once the control plane is sharded): `apply` runs on the root group,
+        /// whose copy of the organization holds only what `CreateOrg` wrote, so
+        /// it judges the actor against this instead. Absent with the cutover
+        /// off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        standing: Option<Box<crate::types::Org>>,
     },
     /// The first approval of a red update of `app_id` where its policy asks for a second
     /// approver: an owner or admin of its organization, with passkey consent over
@@ -7105,6 +7219,16 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The standing in the app's organization (`Org::standing_of`) of the
+        /// actor and of the account whose first approval it may meet,
+        /// read at propose from the organization's own shard (its tenant group
+        /// once the control plane is sharded): `apply` runs on the root group,
+        /// whose copy of the organization holds only what `CreateOrg` wrote, so
+        /// it judges the actor against this instead. Absent with the cutover
+        /// off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        standing: Option<Box<crate::types::Org>>,
     },
     /// Undo `app_id`'s last upgrade within [`crate::types::UNDO_WINDOW_SECS`] of it
     /// (judged at `at`): an owner or admin of its organization, with passkey consent
@@ -7128,6 +7252,15 @@ pub enum SystemCmd {
         /// set once every node reads it ([`cluster_version::Feature::UndoToInstalledRelease`]).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         release_installed: bool,
+        /// The actor's standing in the organization (`Org::standing_of`),
+        /// read at propose from the organization's own shard (its tenant group
+        /// once the control plane is sharded): `apply` runs on the root group,
+        /// whose copy of the organization holds only what `CreateOrg` wrote, so
+        /// it judges the actor against this instead. Absent with the cutover
+        /// off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        standing: Option<Box<crate::types::Org>>,
     },
     TransferApp {
         app_id: AppId,
@@ -7701,6 +7834,15 @@ pub enum SystemCmd {
         actor: AccountId,
         #[serde(default)]
         consent: Value,
+        /// The actor's standing in the organization (`Org::standing_of`),
+        /// read at propose from the organization's own shard (its tenant group
+        /// once the control plane is sharded): `apply` runs on the root group,
+        /// whose copy of the organization holds only what `CreateOrg` wrote, so
+        /// it judges the actor against this instead. Absent with the cutover
+        /// off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        standing: Option<Box<crate::types::Org>>,
     },
     /// Bind a package signing key to an organization: the key's own
     /// signature over [`publisher_binding_message`] at the key's current
@@ -7750,6 +7892,16 @@ pub enum SystemCmd {
         /// The same statement, as the owner-side account's passkey consent.
         #[serde(default)]
         consent: Option<Value>,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// End `deployer`'s grant: it installs nothing new; what it installed,
     /// and the apps running it, stay. Authorized as [`SystemCmd::GrantDeployer`]
@@ -7762,6 +7914,16 @@ pub enum SystemCmd {
         proof: Option<Value>,
         #[serde(default)]
         consent: Option<Value>,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// The operator moves the cluster's deployments from `open` to `granted`
     /// (`cluster / __deployments_granted / {}`): once, never back. It changes
@@ -7828,6 +7990,16 @@ pub enum SystemCmd {
         /// ([`SystemState::keeps_recoverable`]); absent in an earlier entry.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         deployment_needs_recovery: bool,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// Offer `package@version`, installed already, as `app` in `deployment`,
     /// adding the entry or moving it to another release of its package
@@ -7851,6 +8023,16 @@ pub enum SystemCmd {
         /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         serving: Vec<crate::types::Org>,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// Remove `app` from `deployment` (`__withdraw_app / { app }`): refused
     /// while an instance created from the deployment runs its package. The
@@ -7861,6 +8043,16 @@ pub enum SystemCmd {
         actor: AccountId,
         #[serde(default)]
         consent: Value,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// Register `origin` for `package`'s frontend, its ceremonies verified
     /// against `rp_id` (`package:{package} / __add_origin / { origin, rpId }`,
@@ -7922,6 +8114,16 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// A manager of `to` accepts the offer of `deployment` to it made at `offered_at`
     /// (`deployment:{id} / __accept_deployment / { to, offeredAt }`): `to` becomes its
@@ -7934,6 +8136,16 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// A manager of either side drops the offer of `deployment`
     /// (`deployment:{id} / __cancel_deployment_transfer / {}`).
@@ -7942,6 +8154,16 @@ pub enum SystemCmd {
         actor: AccountId,
         #[serde(default)]
         consent: Value,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// Remove a deployment that offers nothing and no instance came from
     /// (`__delete_deployment / {}`). Its secret values go with it.
@@ -7950,6 +8172,16 @@ pub enum SystemCmd {
         actor: AccountId,
         #[serde(default)]
         consent: Value,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// A manager of `deployment` sets its value of secret `name`, which a
     /// release it offers declares (`deployment:{id} / __set_secret / { name,
@@ -7970,6 +8202,16 @@ pub enum SystemCmd {
         /// offered releases alone, as before. Left out when `false`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         used: bool,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// A manager removes the deployment's value of `name`
     /// (`deployment:{id} / __clear_secret / { name }`): its instances fall
@@ -7980,6 +8222,16 @@ pub enum SystemCmd {
         actor: AccountId,
         #[serde(default)]
         consent: Value,
+        /// The actor's standing (`Org::standing_of`) in each organization the
+        /// deployment rules read — its owner, the owner it is offered to, the
+        /// organizations holding deployer grants, the cluster's owner — read at
+        /// propose from each organization's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor against these (keyed by their own
+        /// `org_id`). Empty with the cutover off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// The owner approves URL prefixes for a package's publisher to call out
     /// to, in an org's apps or their own outside one. `selection` is the latest release's declared
@@ -7994,6 +8246,16 @@ pub enum SystemCmd {
         actor: AccountId,
         #[serde(default)]
         consent: Value,
+        /// The actor's standing (`Org::standing_of`) in the organization the
+        /// scope names and in every organization the package's releases serve,
+        /// read at propose from each one's own shard: `apply` runs on the root
+        /// group, whose copy of an organization holds only what `CreateOrg`
+        /// wrote, so it judges the actor, and which release it reads, against
+        /// these (keyed by their own `org_id`). Empty with the cutover off, then
+        /// read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        standings: Vec<crate::types::Org>,
     },
     /// Turn egress off (`egress: false`) or back on for every app of an organization, or
     /// with `app` for that instance alone ([`crate::types::Org::egress_off`],
@@ -8010,6 +8272,15 @@ pub enum SystemCmd {
         actor: AccountId,
         #[serde(default)]
         consent: Value,
+        /// The actor's standing in the organization (`Org::standing_of`),
+        /// read at propose from the organization's own shard (its tenant group
+        /// once the control plane is sharded): `apply` runs on the root group,
+        /// whose copy of the organization holds only what `CreateOrg` wrote, so
+        /// it judges the actor against this instead. Absent with the cutover
+        /// off, then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        standing: Option<Box<crate::types::Org>>,
     },
     /// The owner deletes the organization: its teams, invites and apps go
     /// with it. Logged with the owner's passkey consent.
@@ -8164,6 +8435,14 @@ pub enum SystemCmd {
         /// The actor's passkey consent over it ([`crate::proof`]).
         #[serde(default)]
         consent: Value,
+        /// The account's identity (its passkeys), read from the root account
+        /// directory at propose: with the cutover on this applies on the
+        /// organization's tenant group, which holds only its members' accounts
+        /// (`SeedTenant`), so it registers a new member from the entry, as
+        /// `RedeemInvite` registers its redeemer. Absent with the cutover off
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<Box<Account>>,
     },
     /// Remove a member, or (`account == actor`) leave.
     RemoveOrgMember {

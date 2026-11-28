@@ -1663,6 +1663,78 @@ pub struct OutboundApproval {
 }
 
 impl Org {
+    /// The part of this organization that judges `accounts`' standing in it:
+    /// their roles and organization-wide capabilities ([`Self::role`],
+    /// [`Self::org_caps`]), the default capabilities, and nothing else — no
+    /// teams, metadata, approvals or policies. A governance command that
+    /// applies on the root group carries this, read at propose from the
+    /// organization's tenant group (where its membership lives once the control
+    /// plane is sharded), so `apply` judges the actor against it rather than
+    /// root's copy; projecting only the accounts judged keeps the entry small
+    /// whatever the organization's size
+    /// ([design note](https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md)).
+    #[must_use]
+    pub fn standing_of<'a>(&self, accounts: impl IntoIterator<Item = &'a str>) -> Self {
+        let accounts: std::collections::BTreeSet<&str> = accounts.into_iter().collect();
+        Self {
+            org_id: self.org_id.clone(),
+            name: String::new(),
+            members: self
+                .members
+                .iter()
+                .filter(|(a, _)| accounts.contains(a.as_str()))
+                .map(|(a, r)| (a.clone(), *r))
+                .collect(),
+            teams: BTreeMap::new(),
+            default_capabilities: self.default_capabilities,
+            capabilities: self
+                .capabilities
+                .iter()
+                .filter(|(a, _)| accounts.contains(a.as_str()))
+                .map(|(a, c)| (a.clone(), *c))
+                .collect(),
+            approved_releases: std::collections::BTreeSet::new(),
+            outbound_approvals: BTreeMap::new(),
+            metadata: serde_json::Value::Null,
+            member_metadata: BTreeMap::new(),
+            upgrade_runs: BTreeMap::new(),
+            recovery: None,
+            all_apps: std::collections::BTreeSet::new(),
+            personal: self.personal,
+            allow_guests: self.allow_guests,
+            allow_public_links: self.allow_public_links,
+            egress_off: false,
+            upgrade_policy: None,
+            app_upgrade_policies: BTreeMap::new(),
+            pending_upgrades: BTreeMap::new(),
+        }
+    }
+
+    /// This organization (as its tenant group holds it) with the fields the
+    /// root group still writes taken from `root`, root's copy of it. Once the
+    /// control plane shards by tenant, one organization record is written by two
+    /// shards: the `Orgs` area (its name, members, teams, capabilities, metadata
+    /// and settings) applies on the tenant, while the areas not yet moved apply
+    /// on root and write their own fields of the record there — release and
+    /// outbound approvals and the egress switch (`Approvals`), update policies
+    /// and first approvals (`Updates`), upgrade runs (`Apps`) and recovery
+    /// (`Recovery`). A reader that wants the whole organization reads each field
+    /// from the shard that writes it, through this
+    /// ([design note](https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md)).
+    #[must_use]
+    pub fn with_root_fields(mut self, root: &Self) -> Self {
+        self.approved_releases.clone_from(&root.approved_releases);
+        self.outbound_approvals.clone_from(&root.outbound_approvals);
+        self.egress_off = root.egress_off;
+        self.upgrade_policy = root.upgrade_policy;
+        self.app_upgrade_policies
+            .clone_from(&root.app_upgrade_policies);
+        self.pending_upgrades.clone_from(&root.pending_upgrades);
+        self.upgrade_runs.clone_from(&root.upgrade_runs);
+        self.recovery.clone_from(&root.recovery);
+        self
+    }
+
     #[must_use]
     pub fn role(&self, account: &str) -> Option<OrgRole> {
         self.members.get(account).copied()

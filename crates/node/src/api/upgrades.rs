@@ -206,7 +206,7 @@ fn run_refusal(
     owner_approves: bool,
 ) -> Result<(), ApiError> {
     if owner_approves {
-        if !node.sys(|s| s.approves_upgrades(org, account)) {
+        if !node.sys_with_org(org, |s, o| s.approves_upgrades_at(o, account)) {
             return Err(ApiError::forbidden(
                 "only an owner or admin of the organization approves its apps' upgrades",
             ));

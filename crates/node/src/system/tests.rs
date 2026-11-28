@@ -415,6 +415,7 @@ fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         replace: false,
         actor: actor.into(),
         consent: serde_json::Value::Null,
+        standings: Vec::new(),
     };
     // An approval covers the whole organization, so a team-only grant
     // does not reach it.
@@ -511,6 +512,7 @@ fn check(g: &Governance) {
         approved: true,
         actor: "alice".into(),
         consent: serde_json::Value::Null,
+        standing: None,
     });
     assert_eq!(
         ops_release.is_ok(),
@@ -535,6 +537,7 @@ fn check(g: &Governance) {
         replace: false,
         actor: actor.into(),
         consent: serde_json::Value::Null,
+        standings: Vec::new(),
     };
     let ops_outbound = m
         .run_authorized(outbound(ReleaseScope::Cluster, ""))
@@ -1133,6 +1136,7 @@ fn an_outbound_approval_takes_the_newest_release_its_approver_reads() {
         replace: false,
         actor: "alice".into(),
         consent: Value::Null,
+        standings: Vec::new(),
     };
     let mut old = SystemMachine {
         state: m.state.clone(),
@@ -1525,6 +1529,7 @@ fn approve_with(actor: &str, version: &str, consent: serde_json::Value) -> Syste
         approved: true,
         actor: actor.into(),
         consent,
+        standing: None,
     }
 }
 
@@ -1597,6 +1602,7 @@ fn a_decision_applies_with_its_makers_consent_once() {
             approved: false,
             actor: "alice".into(),
             consent: w,
+            standing: None,
         })
         .unwrap();
     assert_eq!(
@@ -2960,6 +2966,7 @@ fn activity_records_sign_ins_and_step_ups_from_their_times() {
             approved: false,
             actor: "alice".into(),
             consent: untimed,
+            standing: None,
         })
         .unwrap();
     assert_eq!(
@@ -3402,6 +3409,7 @@ fn an_org_commands_refusals_keep_their_wording_and_code() {
                 role: OrgRole::Member,
                 actor: "bob".into(),
                 consent: Value::Null,
+                member: None,
             },
             "only admins manage members",
         ),
@@ -4717,6 +4725,7 @@ fn memberships_need_the_actors_passkey() {
             role: OrgRole::Admin,
             actor: "alice".into(),
             consent,
+            member: None,
         },
     );
     assert_eq!(m.state.orgs["org"].members["bob"], OrgRole::Admin);
@@ -7849,6 +7858,7 @@ fn approve(org: &str, version: &str, actor: &str) -> SystemCmd {
         approved: true,
         actor: actor.into(),
         consent: serde_json::Value::Null,
+        standing: None,
     }
 }
 
@@ -7947,6 +7957,7 @@ fn approving_releases_is_a_capability() {
         approved: true,
         actor: "erin".into(),
         consent: serde_json::Value::Null,
+        standing: None,
     };
     let _ok = m.run_unproven(own).unwrap();
     assert!(m.state.orgs[&p("erin")].approved_releases.contains("2.4.0"));
@@ -9137,6 +9148,7 @@ fn grant(deployer: super::Deployer, until: Option<u64>, actor: &str) -> SystemCm
         actor: actor.into(),
         proof: None,
         consent: None,
+        standings: Vec::new(),
     }
 }
 
@@ -9224,6 +9236,7 @@ fn on_a_granted_cluster_only_deployers_install() {
             actor: OPERATOR.into(),
             proof: None,
             consent: None,
+            standings: Vec::new(),
         })
         .unwrap();
     assert!(m.run_unproven(install_at("carol", "2.3.0", T)).is_err());
@@ -9304,6 +9317,7 @@ fn on_a_granted_cluster_an_instance_outside_every_deployment_is_a_deployers() {
             actor: OPERATOR.into(),
             proof: None,
             consent: None,
+            standings: Vec::new(),
         })
         .unwrap();
     assert_eq!(
@@ -9385,6 +9399,7 @@ fn on_a_granted_cluster_an_instance_outside_every_deployment_keeps_out_of_a_depl
             actor: OPERATOR.into(),
             proof: None,
             consent: None,
+            standings: Vec::new(),
         })
         .unwrap();
     assert_eq!(
@@ -9658,6 +9673,7 @@ fn undo(app: &str) -> SystemCmd {
         at: 20,
         consent: Value::Null,
         release_installed: true,
+        standing: None,
     }
 }
 
@@ -10527,6 +10543,7 @@ fn deployer_grants_carry_the_operators_signature_then_the_owners_passkey() {
         actor: OPERATOR.into(),
         proof: Some(proof),
         consent: None,
+        standings: Vec::new(),
     };
 
     // Before the owner is named, the operator grants, with its key.
@@ -10571,6 +10588,7 @@ fn deployer_grants_carry_the_operators_signature_then_the_owners_passkey() {
                     "__grant_deployer",
                     &args("bob"),
                 )),
+                standings: Vec::new(),
             },
         ),
     ] {
@@ -10591,6 +10609,7 @@ fn deployer_grants_carry_the_operators_signature_then_the_owners_passkey() {
                 &json!({ "deployer": { "account": "bob" } }),
             )),
             consent: None,
+            standings: Vec::new(),
         })
         .unwrap();
     assert_eq!(
@@ -10634,6 +10653,7 @@ fn deployer_grants_carry_the_operators_signature_then_the_owners_passkey() {
             actor: OPERATOR.into(),
             proof: Some(fresh_operator),
             consent: None,
+            standings: Vec::new(),
         })
         .is_err());
     let by_owner = |actor: &str, pk: &mut calimero_identity::testing::SoftAuthenticator| {
@@ -10644,6 +10664,7 @@ fn deployer_grants_carry_the_operators_signature_then_the_owners_passkey() {
             actor: actor.into(),
             proof: None,
             consent: Some(consent(pk, "cluster", "__grant_deployer", &args("bob"))),
+            standings: Vec::new(),
         }
     };
     assert!(m.run(by_owner("bob", &mut bob)).is_err(), "not the owner");
@@ -10674,6 +10695,7 @@ fn create_deployment(id: &str, owner: super::Deployer, actor: &str) -> SystemCmd
         at: 10,
         consent: serde_json::Value::Null,
         deployment_needs_recovery: false,
+        standings: Vec::new(),
     }
 }
 
@@ -10687,6 +10709,7 @@ fn offer_app(deployment: &str, app: &str, version: &str, actor: &str) -> SystemC
         at: 10,
         consent: serde_json::Value::Null,
         serving: Vec::new(),
+        standings: Vec::new(),
     }
 }
 
@@ -10696,6 +10719,7 @@ fn withdraw_app(deployment: &str, app: &str, actor: &str) -> SystemCmd {
         app: app.into(),
         actor: actor.into(),
         consent: serde_json::Value::Null,
+        standings: Vec::new(),
     }
 }
 
@@ -10704,6 +10728,7 @@ fn delete_deployment(deployment: &str, actor: &str) -> SystemCmd {
         deployment: deployment.into(),
         actor: actor.into(),
         consent: serde_json::Value::Null,
+        standings: Vec::new(),
     }
 }
 
@@ -10761,6 +10786,7 @@ fn deployments_are_their_managers_and_keep_what_they_offer() {
         at: 10,
         consent: serde_json::Value::Null,
         deployment_needs_recovery: false,
+        standings: Vec::new(),
     };
     assert!(m.run_unproven(bad_name).is_err());
     assert!(m
@@ -11094,6 +11120,7 @@ fn on_a_granted_cluster_deploying_needs_a_grant() {
             actor: OPERATOR.into(),
             proof: None,
             consent: None,
+            standings: Vec::new(),
         })
         .unwrap();
     assert_eq!(
@@ -11123,6 +11150,7 @@ fn deployment_changes_carry_their_managers_consent() {
             at: 10,
             consent,
             deployment_needs_recovery: false,
+            standings: Vec::new(),
         };
     assert!(m
         .run(create("d".into(), "alice", serde_json::Value::Null))
@@ -11153,6 +11181,7 @@ fn deployment_changes_carry_their_managers_consent() {
         at: 10,
         consent,
         serving: Vec::new(),
+        standings: Vec::new(),
     };
     let for_1 = json!({ "app": "notes", "package": "p", "version": "1.0.0" });
     let c = consent(&mut alice, &subject, "__offer_app", &for_1);
@@ -11163,6 +11192,7 @@ fn deployment_changes_carry_their_managers_consent() {
         app: "notes".into(),
         actor: "alice".into(),
         consent,
+        standings: Vec::new(),
     };
     let c = consent(
         &mut alice,
@@ -11188,6 +11218,7 @@ fn deployment_changes_carry_their_managers_consent() {
         actor: "alice".into(),
         at: 10,
         consent,
+        standings: Vec::new(),
     };
     assert!(m.run(offer_to("bob", Value::Null)).is_err(), "no consent");
     let by_bob = consent(&mut bob, &subject, "__offer_deployment", &to_bob);
@@ -11205,6 +11236,7 @@ fn deployment_changes_carry_their_managers_consent() {
         actor: actor.into(),
         at: 11,
         consent,
+        standings: Vec::new(),
     };
     let the_offer = json!({ "to": { "account": "bob" }, "offeredAt": 10 });
     assert!(m.run(accept("bob", Value::Null)).is_err(), "no consent");
@@ -11218,6 +11250,7 @@ fn deployment_changes_carry_their_managers_consent() {
         deployment: id.clone(),
         actor: actor.into(),
         consent,
+        standings: Vec::new(),
     };
     let c = consent(
         &mut bob,
@@ -11232,6 +11265,7 @@ fn deployment_changes_carry_their_managers_consent() {
             actor: "bob".into(),
             at: 12,
             consent: c,
+            standings: Vec::new(),
         })
         .unwrap();
     assert!(m.run(cancel("alice", Value::Null)).is_err(), "no consent");
@@ -11249,6 +11283,7 @@ fn deployment_changes_carry_their_managers_consent() {
             deployment: id.clone(),
             actor: "bob".into(),
             consent: c,
+            standings: Vec::new(),
         })
         .unwrap();
     assert!(m.state.deployments.is_empty());
@@ -11309,6 +11344,7 @@ fn set_secret(deployment: &str, name: &str, value: &str, actor: &str) -> SystemC
         at: 20,
         consent: serde_json::Value::Null,
         used: false,
+        standings: Vec::new(),
     }
 }
 
@@ -11334,6 +11370,7 @@ fn set_used_secret(deployment: &str, name: &str, value: &str, actor: &str) -> Sy
         at,
         consent,
         used: true,
+        standings: Vec::new(),
     }
 }
 
@@ -11343,6 +11380,7 @@ fn clear_secret(deployment: &str, name: &str, actor: &str) -> SystemCmd {
         name: name.into(),
         actor: actor.into(),
         consent: serde_json::Value::Null,
+        standings: Vec::new(),
     }
 }
 
@@ -11542,6 +11580,7 @@ fn deployment_secrets_carry_their_managers_consent() {
             at: 20,
             consent,
             used: false,
+            standings: Vec::new(),
         };
     let fp = |v: &str| crate::component::SecretValue(v.into()).fingerprint();
     let args = json!({ "name": "API_KEY", "fingerprint": fp("real") });
@@ -11573,6 +11612,7 @@ fn deployment_secrets_carry_their_managers_consent() {
         name: "API_KEY".into(),
         actor: "alice".into(),
         consent,
+        standings: Vec::new(),
     };
     let c = consent(
         &mut alice,
@@ -11722,6 +11762,7 @@ fn a_deployment_holds_secrets_the_releases_its_offers_use_declare() {
             at: 10,
             consent: Value::Null,
             serving: Vec::new(),
+            standings: Vec::new(),
         })
         .unwrap();
     let d = m.state.deployments["a"].clone();
@@ -11824,6 +11865,7 @@ fn a_member_of_its_offers_signer_reads_the_deployments_secret() {
             at: 10,
             consent: Value::Null,
             serving: Vec::new(),
+            standings: Vec::new(),
         },
         set_secret("a", "PI_KEY", "devs-key", "alice"),
     ] {
@@ -11881,6 +11923,7 @@ fn a_used_release_its_owner_may_not_use_declares_no_deployment_secret() {
             at: 10,
             consent: Value::Null,
             serving: Vec::new(),
+            standings: Vec::new(),
         })
         .unwrap();
     // pi, another publisher's, becomes private to an organization alice is not in.
@@ -14819,6 +14862,7 @@ fn an_update_policy_is_an_owners_or_admins_and_bounded() {
             policy,
             actor: actor.into(),
             consent,
+            standing: None,
         }
     };
     let strict = UpgradePolicy {
@@ -14920,6 +14964,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
         actor: actor.into(),
         at,
         consent: Value::Null,
+        standing: None,
     };
     // Without the policy, one approval, and a first approval has nothing to wait for.
     assert_eq!(
@@ -14936,6 +14981,7 @@ fn a_red_update_needs_a_second_approver_where_the_policy_asks() {
             }),
             actor: "eve".into(),
             consent: Value::Null,
+            standing: None,
         })
         .unwrap();
     // A green update still needs one.
@@ -15060,6 +15106,7 @@ fn a_first_approval_of_a_release_its_approver_may_not_use_is_refused() {
             }),
             actor: "eve".into(),
             consent: Value::Null,
+            standing: None,
         })
         .unwrap();
     if let Some(v) = m
@@ -15080,6 +15127,7 @@ fn a_first_approval_of_a_release_its_approver_may_not_use_is_refused() {
         actor: "cora".into(),
         at: 5,
         consent: Value::Null,
+        standing: None,
     };
     let mut old = SystemMachine {
         state: m.state.clone(),
@@ -15209,6 +15257,7 @@ fn automatic(m: &mut SystemMachine, hold: u32) {
             }),
             actor: "eve".into(),
             consent: Value::Null,
+            standing: None,
         })
         .unwrap();
 }
@@ -15431,6 +15480,7 @@ fn an_upgrade_is_undone_within_a_week_back_to_its_restore_point() {
         at,
         consent: Value::Null,
         release_installed: false,
+        standing: None,
     };
     let within = hold_over + UNDO_WINDOW_SECS;
     assert_eq!(
@@ -15634,6 +15684,7 @@ fn an_undo_never_returns_to_a_release_that_is_no_longer_installed() {
         at: 60,
         consent: Value::Null,
         release_installed,
+        standing: None,
     };
     assert_eq!(
         undo(true).features(),
@@ -15683,6 +15734,7 @@ fn an_undo_never_returns_to_a_release_that_is_no_longer_installed() {
         at: 60,
         consent: Value::Null,
         release_installed,
+        standing: None,
     };
     let _ok = m.run_unproven(seeded(true)).unwrap();
     let _ok = m
@@ -15874,6 +15926,7 @@ fn an_unclassified_move_is_approved_first_as_red_naming_what_the_log_lacks() {
         actor: actor.into(),
         at,
         consent: Value::Null,
+        standing: None,
     };
     let mut m = classified();
     let _ok = m
@@ -15886,6 +15939,7 @@ fn an_unclassified_move_is_approved_first_as_red_naming_what_the_log_lacks() {
             }),
             actor: "eve".into(),
             consent: Value::Null,
+            standing: None,
         })
         .unwrap();
     let empty = std::collections::BTreeMap::new();
@@ -16450,6 +16504,7 @@ fn offer_deployment(deployment: &str, to: super::Deployer, actor: &str, at: u64)
         actor: actor.into(),
         at,
         consent: serde_json::Value::Null,
+        standings: Vec::new(),
     }
 }
 
@@ -16468,6 +16523,7 @@ fn accept_deployment(
         actor: actor.into(),
         at,
         consent: serde_json::Value::Null,
+        standings: Vec::new(),
     }
 }
 
@@ -16476,6 +16532,7 @@ fn cancel_transfer(deployment: &str, actor: &str) -> SystemCmd {
         deployment: deployment.into(),
         actor: actor.into(),
         consent: serde_json::Value::Null,
+        standings: Vec::new(),
     }
 }
 
@@ -16510,6 +16567,7 @@ fn a_deployment_changes_hands_when_its_receiver_accepts() {
         actor: super::OPERATOR.into(),
         proof: None,
         consent: None,
+        standings: Vec::new(),
     };
     for who in [dave(), org()] {
         let _ok = m.run_unproven(grant(who)).unwrap();
@@ -17651,6 +17709,7 @@ fn an_undo_or_restore_into_another_package_forgets_the_instances_origins() {
             at: 20,
             consent: Value::Null,
             release_installed: true,
+            standing: None,
         })
         .unwrap();
     assert_eq!(m.state.origins_of_app("a").count(), 0);

@@ -84,6 +84,7 @@ pub(crate) async fn set_release_approval(
         json!({ "version": body.version })
     };
     let consent = consent(node, p, &subject, method, &args, body.confirm).await?;
+    let standing = scope_standing(node, &scope, &account);
     Ok(Json(
         node.sys_write(&SystemCmd::SetReleaseApproval {
             scope,
@@ -91,6 +92,7 @@ pub(crate) async fn set_release_approval(
             approved: body.approved,
             actor: account,
             consent,
+            standing,
         })
         .await?,
     ))
@@ -130,13 +132,16 @@ pub(crate) struct OutboundApprovalBody {
 }
 
 /// The release whose prefixes an outbound approval of `package` by `account` covers, shown
-/// on the consent page and approved by the route alike: the newest one the account reads.
-pub(crate) fn outbound_release<'s>(
-    s: &'s crate::system::SystemState,
+/// on the consent page and approved by the route alike: the newest one the account reads,
+/// the organizations the package's releases serve read from their own shards
+/// (`Node::release_org_view`), as the visibility of a private release is their membership.
+pub(crate) fn outbound_release_fresh(
+    node: &Node,
     package: &str,
     account: &str,
-) -> Option<&'s crate::system::PackageVersion> {
-    s.newest_read(package, account, false)
+) -> Option<crate::system::PackageVersion> {
+    let extra = node.release_org_view(package);
+    node.sys(|s| s.newest_read_with(package, account, false, &extra).cloned())
 }
 
 /// Approve URL prefixes a package's publisher may call out to from the apps
@@ -152,7 +157,7 @@ pub(crate) async fn set_outbound_approval(
     // Apply approves the prefixes of the newest release the caller reads: with none, it is
     // answered before the passkey, as for a package that is not installed.
     node.sys_fresh_from(p.sys_index).await;
-    if node.sys(|s| outbound_release(s, &body.package, &account).is_none()) {
+    if outbound_release_fresh(node, &body.package, &account).is_none() {
         return Err(ApiError::not_found("no such package"));
     }
     let subject = match &scope {
@@ -176,6 +181,16 @@ pub(crate) async fn set_outbound_approval(
         body.confirm,
     )
     .await?;
+    // The actor's standing in the scope's organization and in every organization
+    // the package's releases serve, which decide the release it reads.
+    let mut orgs = node.sys(|s| s.release_serving_orgs(&body.package));
+    if let crate::system::ReleaseScope::Org { org } = &scope {
+        let _new = orgs.insert(org.clone());
+    }
+    let standings = orgs
+        .iter()
+        .filter_map(|o| node.standing(o, &[&account]).map(|b| *b))
+        .collect();
     Ok(Json(
         node.sys_write(&SystemCmd::SetOutboundApproval {
             scope,
@@ -184,6 +199,7 @@ pub(crate) async fn set_outbound_approval(
             replace: body.replace,
             actor: account,
             consent,
+            standings,
         })
         .await?,
     ))
@@ -202,6 +218,19 @@ async fn org_outbound_approval(
 /// `409 EGRESS_OFF` while `org` turned egress off: it approves no outbound host until an
 /// owner or admin turns egress on again. Asked before the passkey ceremony; the log asks
 /// again (`SetOutboundApproval`).
+/// The actor's standing in the organization an org-scoped approval names
+/// (`Node::standing`), for the command to carry to root; none for the cluster's.
+fn scope_standing(
+    node: &Node,
+    scope: &crate::system::ReleaseScope,
+    account: &str,
+) -> Option<Box<crate::types::Org>> {
+    match scope {
+        crate::system::ReleaseScope::Org { org } => node.standing(org, &[account]),
+        crate::system::ReleaseScope::Cluster => None,
+    }
+}
+
 pub(crate) fn refuse_egress_off(node: &Node, org: &str) -> Result<(), ApiError> {
     if node.sys_with_org(org, |_, o| o.is_some_and(|o| o.egress_off)) {
         return Err(crate::node::rejected(crate::system::EGRESS_OFF));
@@ -277,6 +306,7 @@ pub(crate) async fn set_egress(
         body.confirm,
     )
     .await?;
+    let standing = node.standing(&org, &[&account]);
     Ok(Json(
         node.sys_write(&SystemCmd::SetEgress {
             org,
@@ -284,6 +314,7 @@ pub(crate) async fn set_egress(
             egress: body.egress,
             actor: account,
             consent,
+            standing,
         })
         .await?,
     ))
@@ -486,6 +517,7 @@ async fn ops_outbound(
             replace: body.replace,
             actor: String::new(),
             consent,
+            standings: Vec::new(),
         })
         .await?,
     ))

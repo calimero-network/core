@@ -131,6 +131,7 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             approved,
             actor,
             consent,
+            ..
         } => {
             let proven = proofs.fresh(proofs.consent_of(actor, consent)?)?;
             release_stated(
@@ -156,6 +157,7 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             replace,
             actor,
             consent,
+            ..
         } => authorize_outbound(proofs, scope, package, selection, *replace, actor, consent),
         SystemCmd::SetEgress {
             org,
@@ -163,6 +165,7 @@ pub(super) fn authorize(proofs: &Proofs<'_>, cmd: &SystemCmd) -> Result<Option<S
             egress,
             actor,
             consent,
+            ..
         } => {
             let (statement, used) = proofs.fresh(proofs.consent_of(actor, consent)?)?;
             proofs.states(&statement, &format!("org:{org}"), "__set_egress", &|args| {
@@ -250,23 +253,39 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             version,
             approved,
             actor,
+            standing,
             ..
-        } => set_release_approval(state, &scope, version, approved, &actor),
+        } => set_release_approval(
+            state,
+            &scope,
+            version,
+            approved,
+            (&actor, standing.as_deref()),
+        ),
         SystemCmd::SetOutboundApproval {
             scope,
             package,
             selection,
             replace,
             actor,
+            standings,
             ..
-        } => set_outbound_approval(state, &scope, &package, &selection, replace, &actor),
+        } => set_outbound_approval(
+            state,
+            &scope,
+            &package,
+            &selection,
+            replace,
+            (&actor, &SystemState::judged_orgs(standings)),
+        ),
         SystemCmd::SetEgress {
             org,
             app,
             egress,
             actor,
+            standing,
             ..
-        } => set_egress(state, org, app, egress, &actor),
+        } => set_egress(state, org, app, egress, (&actor, standing.as_deref())),
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached approvals::apply"),
@@ -342,7 +361,7 @@ fn set_release_approval(
     scope: &ReleaseScope,
     version: String,
     approved: bool,
-    actor: &str,
+    (actor, standing): (&str, Option<&Org>),
 ) -> Result<Value, Rejection> {
     if state.governance().releases == Authority::Operator {
         return Err(RELEASES_BY_OPERATOR);
@@ -350,7 +369,7 @@ fn set_release_approval(
     let releases = match scope {
         ReleaseScope::Cluster => return Err(OPERATOR_USES_ITS_OWN),
         ReleaseScope::Org { org } => {
-            if !state.approves_releases(org, actor) {
+            if !state.approves_releases_at(state.org_judged(org, standing), actor) {
                 return Err(NEEDS_APPROVE_RELEASES);
             }
             let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
@@ -372,7 +391,7 @@ fn set_outbound_approval(
     package: &str,
     selection: &calimero_primitives::outbound::OutboundSelection,
     replace: bool,
-    actor: &str,
+    (actor, judged): (&str, &BTreeMap<OrgId, Org>),
 ) -> Result<Value, Rejection> {
     let record = state.packages.get(package).ok_or(NO_SUCH_PACKAGE)?;
     let signer = record.signer_id.clone();
@@ -380,8 +399,9 @@ fn set_outbound_approval(
     // the newest of all); entries logged below private releases apply as they did.
     let gated = state.cluster_brings(cluster_version::Feature::PrivateReleases)
         && *scope != ReleaseScope::Cluster;
-    let newest =
-        record.latest_where(|version| !gated || state.reads_release(package, version, actor));
+    let newest = record.latest_where(|version| {
+        !gated || state.reads_release_with(package, version, actor, judged)
+    });
     if gated && newest.is_none() {
         return Err(NO_SUCH_PACKAGE);
     }
@@ -396,7 +416,7 @@ fn set_outbound_approval(
             OUTBOUND_BY_OWNERS
         });
     }
-    let approvals = outbound_approvals_of(state, scope, actor)?;
+    let approvals = outbound_approvals_of(state, scope, (actor, judged))?;
     let existing = approvals
         .get(&signer)
         .map(|approval| calimero_outbound::Approval {
@@ -420,7 +440,7 @@ fn set_outbound_approval(
 fn outbound_approvals_of<'s>(
     state: &'s mut SystemState,
     scope: &ReleaseScope,
-    actor: &str,
+    (actor, judged): (&str, &BTreeMap<OrgId, Org>),
 ) -> Result<&'s mut BTreeMap<String, crate::types::OutboundApproval>, Rejection> {
     match scope {
         ReleaseScope::Cluster => Ok(&mut state.operator_outbound),
@@ -428,7 +448,7 @@ fn outbound_approvals_of<'s>(
             Err(EGRESS_OFF)
         }
         ReleaseScope::Org { org } => {
-            if !state.manages_apps_self(org, actor, None) {
+            if !state.manages_apps(state.org_judged(org, judged.get(org)), actor, None) {
                 return Err(NEEDS_MANAGE_APPLICATION);
             }
             let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
@@ -444,9 +464,9 @@ fn set_egress(
     org: OrgId,
     app: Option<AppId>,
     egress: bool,
-    actor: &str,
+    (actor, standing): (&str, Option<&Org>),
 ) -> Result<Value, Rejection> {
-    if !state.is_org_admin_self(&org, actor) {
+    if !state.is_org_admin(state.org_judged(&org, standing), actor) {
         return Err(ONLY_ADMINS_SWITCH_EGRESS);
     }
     match &app {

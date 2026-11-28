@@ -100,9 +100,9 @@ use serde_json::{json, Value};
 use url::Url;
 
 use crate::api::{
-    consent, create_invite, create_org, outbound_release, owner_holds, peer_only, person,
-    redeem_invite, set_outbound_approval, set_release_approval, signed_in, upgrade_app,
-    ConfirmBody, InviteBody, OutboundApprovalBody, Principal, ReleaseApprovalBody, UpgradeBody,
+    consent, create_invite, create_org, owner_holds, peer_only, person, redeem_invite,
+    set_outbound_approval, set_release_approval, signed_in, upgrade_app, ConfirmBody, InviteBody,
+    OutboundApprovalBody, Principal, ReleaseApprovalBody, UpgradeBody,
 };
 use crate::error::ApiError;
 use crate::node::Node;
@@ -2597,8 +2597,7 @@ async fn outbound_request(
             ))
         }
     };
-    let latest = node
-        .sys(|s| outbound_release(s, &package, account).cloned())
+    let latest = crate::api::outbound_release_fresh(node, &package, account)
         .ok_or_else(|| ApiError::not_found("no such package"))?;
     let (scope, scope_json) = scope_of(node, account, scope)?;
     if let ReleaseScope::Org { org } = &scope {
@@ -3610,7 +3609,7 @@ fn still_current(node: &Node, req: &ConsentRequest) -> Result<(), ApiError> {
             ..
         } => {
             let latest =
-                node.sys(|s| outbound_release(s, package, &req.account).map(|v| v.mpk.clone()));
+                crate::api::outbound_release_fresh(node, package, &req.account).map(|v| v.mpk);
             if latest.as_ref() == Some(latest_mpk) {
                 Ok(())
             } else {
@@ -4034,7 +4033,7 @@ mod tests {
                     "services": { "": "b2" }, "installedBy": "alice", "installedAt": 2 },
             }),
         );
-        let shown = outbound_release(&s, "p", "bob").map(|v| v.version.clone());
+        let shown = s.newest_read("p", "bob", false).map(|v| v.version.clone());
         assert_eq!(shown.as_deref(), Some("1.0.0"));
     }
 

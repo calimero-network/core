@@ -1576,7 +1576,36 @@ impl Node {
     /// the cross-shard access read the sharded control plane performs.
     #[must_use]
     pub fn org_of(&self, org: &str) -> Option<crate::types::Org> {
-        self.sys_org(org, |s| s.orgs.get(org).cloned())
+        let tenant = self.sys_org(org, |s| s.orgs.get(org).cloned())?;
+        if !crate::system::shard::ACTIVE {
+            return Some(tenant);
+        }
+        // The fields the areas still on root write are root's
+        // (`types::Org::with_root_fields`).
+        Some(match self.sys(|s| s.orgs.get(org).cloned()) {
+            Some(root) => tenant.with_root_fields(&root),
+            None => tenant,
+        })
+    }
+
+    /// The standing of `accounts` in organization `org`
+    /// (`types::Org::standing_of`), read from the organization's own shard, for
+    /// a governance command that applies on the root group to carry
+    /// (`SystemState::org_judged`). `None` while the cutover is off: every
+    /// command then applies where the membership is, and the entry is the bytes
+    /// it was before
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub(crate) fn standing(&self, org: &str, accounts: &[&str]) -> Option<Box<crate::types::Org>> {
+        use crate::system::{shard, Area};
+        if !(shard::ACTIVE && shard::flipped(Area::Orgs)) {
+            return None;
+        }
+        self.sys_org(org, |s| {
+            s.orgs
+                .get(org)
+                .map(|o| Box::new(o.standing_of(accounts.iter().copied())))
+        })
     }
 
     /// Read with the root system state and organization `org` together: `f`
@@ -1594,6 +1623,53 @@ impl Node {
     ) -> R {
         let owned = self.org_of(org);
         self.sys(|s| f(s, owned.as_ref()))
+    }
+
+    /// The standing of `accounts` (`types::Org::standing_of`) in every
+    /// organization the deployment rules may judge them in — the cluster's owner,
+    /// deployment `deployment`'s owner and the owner it is offered to (whose
+    /// offerer is judged too), each of `also`, and every organization holding a
+    /// deployer grant — each read from its own shard, for a deployment command
+    /// to carry to root and for the gates to read through the `_with` readers
+    /// (`SystemState::judged_orgs`). Empty while the cutover is off: every read
+    /// is then root's, and the entry is the bytes it was before
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub(crate) fn deployment_standings(
+        &self,
+        accounts: &[&str],
+        deployment: Option<&str>,
+        also: &[&crate::system::Deployer],
+    ) -> Vec<crate::types::Org> {
+        use crate::system::{shard, Area, Deployer};
+        if !(shard::ACTIVE && shard::flipped(Area::Orgs)) {
+            return Vec::new();
+        }
+        let (orgs, offerer) = self.sys(|s| {
+            let mut owners: Vec<Deployer> = also.iter().map(|d| (*d).clone()).collect();
+            owners.extend(s.cluster_owner.clone());
+            let mut offerer = None;
+            if let Some(d) = deployment.and_then(|id| s.deployments.get(id)) {
+                owners.push(d.owner.clone());
+                if let Some(t) = &d.transfer {
+                    owners.push(t.to.clone());
+                    offerer = Some(t.offered_by.clone());
+                }
+            }
+            owners.extend(s.deployers.keys().filter_map(|k| Deployer::from_key(k)));
+            let orgs: std::collections::BTreeSet<crate::types::OrgId> = owners
+                .into_iter()
+                .filter_map(|d| match d {
+                    Deployer::Org(o) => Some(o),
+                    Deployer::Account(_) => None,
+                })
+                .collect();
+            (orgs, offerer)
+        });
+        let judged: Vec<&str> = accounts.iter().copied().chain(offerer.as_deref()).collect();
+        orgs.iter()
+            .filter_map(|o| self.standing(o, &judged).map(|b| *b))
+            .collect()
     }
 
     /// The organizations a release serves, each read from its own shard (its
@@ -1755,7 +1831,11 @@ impl Node {
     /// catch up proposes it, and `apply` judges it.
     /// Spec: <https://calimero-network.github.io/core/protocol/system-group/#judged-before-it-is-proposed>
     async fn sys_prejudge(&self, cmd: &SystemCmd) -> Result<(), ApiError> {
-        let judge = || self.sys_machine(|m| crate::system::prejudge(m, cmd));
+        // Judged on the shard that will apply it: with the cutover on, an
+        // organization's commands apply on its tenant group, whose membership and
+        // invites root's copy does not hold.
+        let shard = self.system_shard(&self.shard_of(cmd));
+        let judge = || shard.read_local(|m, _| crate::system::prejudge(m, cmd));
         if judge().is_ok() || !self.sys_fresh().await {
             return Ok(());
         }

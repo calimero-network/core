@@ -285,7 +285,7 @@ async fn org_get(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let o = node
-        .sys_org(&org, |s| s.orgs.get(&org).cloned())
+        .org_of(&org)
         .ok_or_else(|| ApiError::not_found("no such organization"))?;
     if o.role(&account).is_none() {
         return Err(ApiError::not_found("no such organization"));
@@ -644,6 +644,12 @@ pub(crate) async fn set_member_role(
     let actor = p.account()?;
     let args = json!({ "account": account, "role": role });
     let consent = org_consent(node, p, &org, "__set_org_role", &args, confirm).await?;
+    // The member's account, from the root directory, for the tenant to register.
+    let member = if crate::system::shard::ACTIVE {
+        node.sys(|s| s.accounts.get(&account).cloned().map(Box::new))
+    } else {
+        None
+    };
     let _ok = node
         .sys_write(&SystemCmd::SetOrgRole {
             org,
@@ -651,6 +657,7 @@ pub(crate) async fn set_member_role(
             role,
             actor,
             consent,
+            member,
         })
         .await?;
     Ok(Json(json!({})))
@@ -1492,6 +1499,10 @@ pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> 
     // redemption stays authorized by the bearer token, re-checked on the tenant
     // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     let (org, redeemer) = if crate::system::shard::ACTIVE {
+        // The invite's `BindInvite` may have committed through another node: read
+        // the directory at a read index, or the redemption finds no org and
+        // routes to root, where the invite is not.
+        let _caught_up = node.sys_fresh().await;
         node.sys(|s| {
             (
                 s.invite_org.get(&invite_key).cloned(),
