@@ -54,10 +54,10 @@ fn check_policy(policy: Option<&UpgradePolicy>) -> Result<(), ApiError> {
 
 /// `404` to anyone outside `org`, `403` to a member who is not its owner or an admin.
 pub(crate) fn approver_of(node: &Node, org: &str, account: &str) -> Result<(), ApiError> {
-    let (member, approves) = node.sys(|s| {
+    let (member, approves) = node.sys_with_org(org, |s, o| {
         (
-            s.orgs.get(org).and_then(|o| o.role(account)).is_some(),
-            s.approves_upgrades(org, account),
+            o.and_then(|o| o.role(account)).is_some(),
+            s.is_org_admin(o, account),
         )
     });
     if !member {
@@ -79,10 +79,10 @@ async fn org_policy(
     p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    if !node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&account)).is_some()) {
+    if !node.sys_with_org(&org, |_, o| o.and_then(|o| o.role(&account)).is_some()) {
         return Err(ApiError::not_found("no such organization"));
     }
-    Ok(Json(node.sys(|s| s.policy_view(&org, None))))
+    Ok(Json(node.sys_org(&org, |s| s.policy_view(&org, None))))
 }
 
 /// `POST /orgs/{org}/upgrade-policy`: set or drop the organization's update policy, for

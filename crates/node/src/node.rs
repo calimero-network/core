@@ -596,6 +596,12 @@ pub struct Node {
     pub config: Config,
     pub engine: Arc<Engine>,
     pub system: Arc<Group<SystemMachine>>,
+    /// Per-organization system shards: an organization's control-plane state
+    /// lives in its own Raft group once tenant sharding creates one. Empty today
+    /// — every shard resolves to [`Node::system`] (the root group) through
+    /// [`Node::system_shard`] — so this is the backbone later slices fill, not
+    /// yet a behaviour change.
+    tenants: RwLock<HashMap<crate::types::OrgId, Arc<Group<SystemMachine>>>>,
     apps: RwLock<HashMap<GroupId, Arc<Group<AppMachine>>>>,
     /// Runs the apps whose bundle is a `calimero:app` component (one wasmtime
     /// engine for all of them); compiled artifacts cached under
@@ -1155,7 +1161,10 @@ impl Node {
             None => None,
         };
         let system = engine
-            .start_group(SYSTEM_GROUP, SystemMachine::new(config.cluster.clone()))
+            .start_group(
+                SYSTEM_GROUP,
+                SystemMachine::new(config.cluster.clone(), crate::system::shard::ShardId::Root),
+            )
             .await?;
         let sealed = Arc::new(calimero_sealed::SealedTransport::generate(
             &calimero_sealed::SealedOptions {
@@ -1194,6 +1203,7 @@ impl Node {
             config,
             engine: Arc::clone(&engine),
             system,
+            tenants: RwLock::new(HashMap::new()),
             apps: RwLock::new(HashMap::new()),
             wasm,
             compute_wasm,
@@ -1510,13 +1520,215 @@ impl Node {
 
     /// Read the system state as applied here.
     pub fn sys<R>(&self, f: impl FnOnce(&SystemState) -> R) -> R {
-        self.system.read_local(|m, _| f(&m.state))
+        self.system_shard(&crate::system::shard::ShardId::Root)
+            .read_local(|m, _| f(&m.state))
     }
 
     /// [`Node::sys`] with the machine, for what it derives from the state
     /// (`SystemMachine::app_of_group`, `apps_on`, `group_may_hold`).
     pub fn sys_machine<R>(&self, f: impl FnOnce(&SystemMachine) -> R) -> R {
-        self.system.read_local(|m, _| f(m))
+        self.system_shard(&crate::system::shard::ShardId::Root)
+            .read_local(|m, _| f(m))
+    }
+
+    /// Read the system state that holds organization `org`'s own data: its
+    /// tenant group once the org structure has moved there and the cutover is on
+    /// (`shard::ACTIVE`), otherwise the root group. The reader a request or a
+    /// page uses to look up an org's members, teams, metadata or settings, so it
+    /// follows the org to its shard without every caller knowing where it lives.
+    /// A node that is a system voter hosts every tenant group, so this reads
+    /// locally; a node that does not host it falls back to root
+    /// (`Node::system_shard`) until forwarding lands.
+    pub fn sys_org<R>(&self, org: &str, f: impl FnOnce(&SystemState) -> R) -> R {
+        use crate::system::shard;
+        if shard::ACTIVE {
+            self.system_shard(&shard::ShardId::Tenant(org.to_owned()))
+                .read_local(|m, _| f(&m.state))
+        } else {
+            self.sys(f)
+        }
+    }
+
+    /// Wait until this node hosts organization `org`'s tenant group and its
+    /// applied state holds the org (the node's reconcile forms and seeds it once
+    /// `CreateOrg` commits on root), so a command routed to it finds it. Gives up
+    /// at `deadline`; the write then falls back to the root group and the caller
+    /// surfaces its refusal, as a system write that never found a leader does.
+    async fn await_tenant_ready(&self, org: &crate::types::OrgId, deadline: tokio::time::Instant) {
+        loop {
+            let ready = self
+                .tenants
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(org)
+                .is_some_and(|g| g.read_local(|m, _| m.state.orgs.contains_key(org)));
+            if ready || tokio::time::Instant::now() >= deadline {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Organization `org`'s record, read from the shard that owns it
+    /// ([`Node::sys_org`]). The membership methods on [`SystemState`] take the
+    /// org this returns, so they read an app's organization from its tenant
+    /// group while reading the fleet, packages and guest records from root —
+    /// the cross-shard access read the sharded control plane performs.
+    #[must_use]
+    pub fn org_of(&self, org: &str) -> Option<crate::types::Org> {
+        self.sys_org(org, |s| s.orgs.get(org).cloned())
+    }
+
+    /// Read with the root system state and organization `org` together: `f`
+    /// takes the root state (fleet, packages, the account directory, the app
+    /// directory) and the organization record from its own shard (its tenant
+    /// group once the control plane is sharded). This is the cross-shard access
+    /// read — an authorization or detail check that judges an org's membership
+    /// or teams against root-held records reads both here, instead of a single
+    /// `sys` that finds the org missing from root once its area has moved off it
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn sys_with_org<R>(
+        &self,
+        org: &str,
+        f: impl FnOnce(&SystemState, Option<&crate::types::Org>) -> R,
+    ) -> R {
+        let owned = self.org_of(org);
+        self.sys(|s| f(s, owned.as_ref()))
+    }
+
+    /// The organizations a release serves, each read from its own shard (its
+    /// tenant group), as the `extra` map the release-visibility `*_with` readers
+    /// take. A private release is visible to a member of an organization it
+    /// serves, and that membership lives in the organization's tenant group once
+    /// the control plane is sharded, so the node fans those organizations out
+    /// here rather than reading stale membership from root
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn release_org_view(
+        &self,
+        package: &str,
+    ) -> BTreeMap<crate::types::OrgId, crate::types::Org> {
+        self.sys(|s| s.release_serving_orgs(package))
+            .into_iter()
+            .filter_map(|o| self.org_of(&o).map(|org| (o, org)))
+            .collect()
+    }
+
+    /// Whether `who` may use a release of `package` ([`SystemState::package_used`]),
+    /// the serving organizations read fresh from their shards. `frontend`: a
+    /// session bound to the package's frontend.
+    #[must_use]
+    pub fn package_used_fresh(&self, package: &str, who: &str, frontend: bool) -> bool {
+        let extra = self.release_org_view(package);
+        self.sys(|s| s.package_used_with(package, who, frontend, &extra))
+    }
+
+    /// The organizations a deployment's serve check reads — its owner
+    /// organization and every organization its offered releases serve — each
+    /// read from its own shard (its tenant group), as the `extra` map
+    /// [`SystemState::offer_serves_with`] takes. A deployment spans many
+    /// customer organizations, so the node fans them out here
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn deployment_serve_view(
+        &self,
+        id: &str,
+    ) -> BTreeMap<crate::types::OrgId, crate::types::Org> {
+        let orgs: std::collections::BTreeSet<crate::types::OrgId> = self.sys(|s| {
+            let Some(d) = s.deployments.get(id) else {
+                return std::collections::BTreeSet::new();
+            };
+            let mut set = std::collections::BTreeSet::new();
+            if let crate::system::Deployer::Org(o) = &d.owner {
+                set.insert(o.clone());
+            }
+            for offer in d.apps.values() {
+                if let Some(r) = s.offered_release(offer) {
+                    set.extend(r.orgs.iter().cloned());
+                }
+            }
+            set
+        });
+        orgs.into_iter()
+            .filter_map(|o| self.org_of(&o).map(|org| (o, org)))
+            .collect()
+    }
+
+    /// [`SystemState::sees_release`] with the organizations the release serves
+    /// read fresh from their shards.
+    #[must_use]
+    pub fn sees_release_fresh(&self, v: &crate::system::PackageVersion, who: &str) -> bool {
+        let extra: BTreeMap<crate::types::OrgId, crate::types::Org> = v
+            .orgs
+            .iter()
+            .filter_map(|o| self.org_of(o).map(|org| (o.clone(), org)))
+            .collect();
+        self.sys(|s| s.sees_release_with(v, who, &extra))
+    }
+
+    /// Whether `who` may use `package@version` ([`SystemState::release_used`]),
+    /// the serving organizations read fresh from their shards.
+    #[must_use]
+    pub fn release_used_fresh(&self, package: &str, version: &str, who: &str) -> bool {
+        let extra = self.release_org_view(package);
+        self.sys(|s| {
+            s.packages
+                .get(package)
+                .and_then(|p| p.versions.get(version))
+                .is_some_and(|v| s.sees_release_with(v, who, &extra))
+        })
+    }
+
+    /// Whether `who` is a member of `org`, read from the organization's own shard
+    /// (its tenant group).
+    #[must_use]
+    pub fn member_of_fresh(&self, org: &str, who: &str) -> bool {
+        self.org_of(org)
+            .and_then(|o| o.role(who))
+            .is_some_and(|r| r >= crate::types::OrgRole::Member)
+    }
+
+    /// The system Raft group that serves a shard ([`crate::system::shard`]): the
+    /// root group for [`ShardId::Root`] (today also the single system group), or
+    /// an organization's tenant group once one exists. Until tenant groups are
+    /// created the map is empty and every shard resolves to the root group, so
+    /// routing through this is behaviour-preserving; it is the tenant-sharding
+    /// backbone (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn system_shard(
+        &self,
+        shard: &crate::system::shard::ShardId,
+    ) -> Arc<Group<SystemMachine>> {
+        use crate::system::shard::ShardId;
+        match shard {
+            ShardId::Root => Arc::clone(&self.system),
+            ShardId::Tenant(org) => self
+                .tenants
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(org)
+                .map_or_else(|| Arc::clone(&self.system), Arc::clone),
+        }
+    }
+
+    /// Test hook: the tenant group's own view of its seeding — `None` when this
+    /// node does not host it, else whether it holds the org record and whether
+    /// `account` is projected with a usable passkey (the identity the tenant
+    /// verifies consent against).
+    #[cfg(feature = "testing")]
+    pub fn tenant_seed(&self, org: &crate::types::OrgId, account: &str) -> Option<(bool, bool)> {
+        self.tenants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(org)
+            .map(|g| {
+                g.read_local(|m, _| {
+                    (
+                        m.state.orgs.contains_key(org),
+                        m.state
+                            .accounts
+                            .get(account)
+                            .is_some_and(|a| !a.passkeys.is_empty()),
+                    )
+                })
+            })
     }
 
     /// Commit a system command through the system group's leader; `409
@@ -1553,16 +1765,45 @@ impl Node {
     /// [`Node::sys_write`] past the gate: only for `SetClusterVersion`, which
     /// the gate itself logs ([`Node::raise_cluster_version_once`] checks it on
     /// what every node supports).
+    /// The shard a system command's state belongs to: its org's tenant group
+    /// when its area has moved there (`shard::flipped`) and the cutover is on
+    /// (`shard::ACTIVE`), otherwise the root group. While the cutover is off this
+    /// is always the root group, so routing is behaviour-preserving. Both the
+    /// local propose path ([`Node::sys_propose`]) and the peer-forward handler
+    /// (`api::internal::internal_system`) resolve it this way, so a command that
+    /// forwards to another node's leader still lands on the right shard
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn shard_of(&self, cmd: &SystemCmd) -> crate::system::shard::ShardId {
+        use crate::system::shard;
+        let tenant = if shard::flipped(cmd.area()) {
+            shard::tenant_of(&cmd.scope(), |_| None)
+        } else {
+            None
+        };
+        shard::shard_for(shard::ACTIVE, tenant)
+    }
+
     pub(crate) async fn sys_propose(&self, cmd: &SystemCmd) -> Result<Value, ApiError> {
         let bytes = serde_json::to_vec(cmd).map_err(|e| ApiError::internal(&e.to_string()))?;
+        let shard = self.shard_of(cmd);
         // Long enough to ride out a system leader election, and never longer
         // than `SYSTEM_WRITE_TIMEOUT` in all: bounded by the deadline, not by a
         // count of tries, which a leaderless group used up in about 7.5 s
         // (`a_system_write_waits_for_a_leader_until_its_deadline`).
         let deadline = tokio::time::Instant::now() + SYSTEM_WRITE_TIMEOUT;
+        // A command bound for a tenant group must find it formed and seeded with
+        // its org: an organization's first command can arrive before the node
+        // has opened and seeded the tenant group its `CreateOrg` allocated (that
+        // happens on the next reconcile). Wait for it, rather than fall back to
+        // the root group, where role-aware apply refuses a command its area has
+        // moved off root.
+        if let crate::system::shard::ShardId::Tenant(org) = &shard {
+            self.await_tenant_ready(org, deadline).await;
+        }
         for attempt in 0_u32.. {
             let Ok(written) =
-                tokio::time::timeout_at(deadline, self.system.write(bytes.clone())).await
+                tokio::time::timeout_at(deadline, self.system_shard(&shard).write(bytes.clone()))
+                    .await
             else {
                 return Err(self.system_stalled());
             };
@@ -2349,6 +2590,63 @@ impl Node {
         Ok(g)
     }
 
+    /// Host an organization's tenant system group, forming it when this node is
+    /// its initializer. Tenant groups are hosted by the system voters and
+    /// mirror the system group's membership; the lowest-id voter forms the
+    /// group and the others host their own replica on their next reconcile,
+    /// Raft bringing them in (openraft treats an already-formed group as done).
+    /// A later slice spreads a tenant group's voters across zones instead of
+    /// pinning them to the system voters
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    async fn ensure_tenant_group(
+        &self,
+        org: &crate::types::OrgId,
+        group: GroupId,
+    ) -> eyre::Result<Arc<Group<SystemMachine>>> {
+        if let Some(g) = self
+            .tenants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(org)
+            .cloned()
+        {
+            return Ok(g);
+        }
+        let _starting = self.starting.lock().await;
+        if let Some(g) = self
+            .tenants
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(org)
+            .cloned()
+        {
+            return Ok(g);
+        }
+        let machine = SystemMachine::new(
+            self.config.cluster.clone(),
+            crate::system::shard::ShardId::Tenant(org.clone()),
+        );
+        let g = self.engine.start_group(group, machine).await?;
+        let _prev = self
+            .tenants
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(org.clone(), Arc::clone(&g));
+        let mut members = self.system.status().voters;
+        members.sort_unstable();
+        if members.first() == Some(&self.config.node_id) {
+            let voters: BTreeMap<NodeId, String> = self.sys(|s| {
+                members
+                    .iter()
+                    .filter_map(|id| s.nodes.get(id).map(|n| (*id, n.addr.clone())))
+                    .collect()
+            });
+            g.initialize(voters).await?;
+        }
+        info!(org = %org, group, "hosting tenant group");
+        Ok(g)
+    }
+
     /// Wait for `account`'s turn to make an API key on this node, so its quota
     /// check, follow-ups and `CreateApiKey` never interleave with another's.
     pub async fn api_key_turn(self: &Arc<Self>, account: &str) -> KeyTurn {
@@ -2695,6 +2993,65 @@ impl Node {
                 }
                 let _r = self.engine.remove_group(group).await;
                 info!(group, "stopped hosting app group");
+            }
+        }
+        // Host the tenant system groups this node is a voter of: an
+        // organization's own control plane lives in its tenant group, placed on
+        // the system voters alongside the root system group. Nothing routes to
+        // these groups until the routing flip; forming them early lets a tenant
+        // group be ready the moment its org's first command is routed to it.
+        if self.system.status().voters.contains(&self.config.node_id) {
+            let tenants: Vec<(crate::types::OrgId, GroupId)> = self.sys(|s| {
+                s.tenant_groups
+                    .iter()
+                    .map(|(o, g)| (o.clone(), *g))
+                    .collect()
+            });
+            for (org, group) in tenants {
+                let g = match self.ensure_tenant_group(&org, group).await {
+                    Ok(g) => g,
+                    Err(e) => {
+                        // The error's words can quote what it failed on, so name
+                        // it by kind at this always-on level (`log_safe`).
+                        let error_kind = crate::log_safe::kind(e.as_ref());
+                        warn!(org = %org, group, error_kind = %error_kind, "could not host tenant group");
+                        continue;
+                    }
+                };
+                // Seed the tenant group once with its org record and a
+                // projection of its members' passkeys, so it can authorize its
+                // own commands from the log alone. The leader writes it (read
+                // from the root directory); apply is idempotent, so a re-seed on
+                // a later reconcile or another node changes nothing.
+                let seeded = g.read_local(|m, _| m.state.orgs.contains_key(&org));
+                if !seeded && g.status().is_leader {
+                    if let Some((record, members)) = self.sys(|s| {
+                        s.orgs.get(&org).map(|o| {
+                            let members: Vec<crate::types::Account> = o
+                                .members
+                                .keys()
+                                .filter_map(|a| s.accounts.get(a).cloned())
+                                .collect();
+                            (o.clone(), members)
+                        })
+                    }) {
+                        let cmd = SystemCmd::SeedTenant {
+                            org: Box::new(record),
+                            members,
+                        };
+                        match serde_json::to_vec(&cmd) {
+                            Ok(bytes) => {
+                                if let Err(e) = g.write(bytes).await {
+                                    debug!(org = %org, group, error = %e, "tenant seed not yet written");
+                                }
+                            }
+                            Err(e) => {
+                                let error_kind = crate::log_safe::serde(&e);
+                                warn!(org = %org, error_kind = %error_kind, "a tenant seed does not serialize");
+                            }
+                        }
+                    }
+                }
             }
         }
     }

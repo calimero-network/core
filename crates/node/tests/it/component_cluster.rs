@@ -2714,7 +2714,7 @@ async fn an_event_after_a_removal_never_reaches_the_removed_member_on_a_lagging_
         held.sys(|s| s
             .apps
             .get(&app)
-            .is_some_and(|r| s.may_reach(r, Some(&bob_id)))),
+            .is_some_and(|r| s.may_reach_self(r, Some(&bob_id)))),
         "the held replica must still hold Bob's membership"
     );
     let _r = alice
@@ -7518,9 +7518,11 @@ async fn a_deployment_sets_a_secret_its_offers_use_and_their_apps_send_it() {
     member.deployment = Some(d.clone());
     member.release = None;
     let carried = member.app_id.clone();
+    let baked_org = node.org_of(&member.org).map(Box::new);
     let _ = node
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(member),
+            org: baked_org,
             unit_offer: None,
             offers_only: false,
         })

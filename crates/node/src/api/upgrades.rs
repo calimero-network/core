@@ -213,7 +213,8 @@ fn run_refusal(
         }
         return Ok(());
     }
-    if !node.sys(|s| s.manages_apps(org, account, team)) {
+    let org_rec = node.org_of(org);
+    if !node.sys(|s| s.manages_apps(org_rec.as_ref(), account, team)) {
         return Err(ApiError::forbidden(
             "upgrading the organization's apps needs MANAGE_APPLICATION there",
         ));
@@ -1047,7 +1048,8 @@ async fn start_run_with(
             // Judged as `UpgradeApp { run }` judges it, before anything runs
             // on the app's group: an app on another package or a newer
             // release is noted as failed.
-            let refused = node.sys(|s| {
+            let refused = node.sys_with_org(&org, |s, o| {
+                o?; // membership gate on the tenant
                 let r = s.orgs.get(&org)?.upgrade_runs.get(&run_id)?;
                 s.run_may_move(r, s.apps.get(&app.app_id)?).err()
             });
@@ -1238,12 +1240,12 @@ async fn publisher_upgrade(
     let account = p.account()?;
     owner_holds(&node, |g| g.app_upgrades, "app upgrades")?;
     node.sys_fresh_from(p.sys_index).await;
-    let publishes = node.sys(|s| {
-        s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some())
+    let publishes = node.sys_with_org(&org, |s, o| {
+        o.is_some_and(|o| o.role(&account).is_some())
             && s.packages
                 .get(&package)
                 .and_then(|pk| s.publisher_of_signer(&pk.signer_id))
-                .is_some_and(|o| *o == org)
+                .is_some_and(|owner| *owner == org)
     });
     if !publishes {
         return Err(ApiError::not_found(
@@ -1253,7 +1255,10 @@ async fn publisher_upgrade(
     let owner_approves = owner_approves(&node).await;
     if owner_approves {
         run_refusal(&node, &org, &account, None, true)?;
-    } else if !node.sys(|s| s.manages_apps(&org, &account, None)) {
+    } else if !{
+        let o = node.org_of(&org);
+        node.sys(|s| s.manages_apps(o.as_ref(), &account, None))
+    } {
         return Err(ApiError::forbidden(
             "upgrading a published package's instances needs MANAGE_APPLICATION in the publisher",
         ));
@@ -1363,11 +1368,14 @@ async fn org_upgrade_status(
     let p = signed_in(&node, &headers).await?;
     p.beyond_instance(&node)?;
     let account = p.account()?;
+    // Membership is read from the org's tenant group; the upgrade runs are
+    // still written on root (the Updates area has not flipped), so they are
+    // read from root — the org record is split by field across the two shards
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     let r = node
-        .sys(|s| {
-            let o = s.orgs.get(&org)?;
-            o.role(&account)?;
-            o.upgrade_runs.get(&run).cloned()
+        .sys_with_org(&org, |s, o| {
+            o?.role(&account)?;
+            s.orgs.get(&org)?.upgrade_runs.get(&run).cloned()
         })
         .ok_or_else(|| ApiError::not_found("no such upgrade"))?;
     Ok(Json(serde_json::to_value(r).unwrap_or_default()))
@@ -1923,6 +1931,11 @@ pub(crate) async fn update_view(
     let owner_approves = owner_approves(node).await;
     let by_operator =
         node.sys(|s| s.governance().app_upgrades == crate::system::Authority::Operator);
+    let serve = app
+        .deployment
+        .as_ref()
+        .map(|d| node.deployment_serve_view(d))
+        .unwrap_or_default();
     let available = node.sys(|s| {
         let r = running.as_ref()?;
         if let Some(d) = &app.deployment {
@@ -1932,7 +1945,8 @@ pub(crate) async fn update_view(
                 .values()
                 .filter(|o| {
                     o.package == r.package
-                        && s.offered_release(o).is_some_and(|v| s.offer_serves(d, v))
+                        && s.offered_release(o)
+                            .is_some_and(|v| s.offer_serves_with(d, v, &serve))
                 })
                 .map(|o| o.version.as_str())
                 .max_by(|a, b| crate::system::compare_versions(a, b))?;
@@ -2129,7 +2143,7 @@ async fn member_targets_readable(
     let (Some(account), Some(running)) = (account, running) else {
         return false;
     };
-    if node.sys(|s| s.member_of(&app.org, account)) {
+    if node.member_of_fresh(&app.org, account) {
         return true;
     }
     let target = crate::system::PackageRef {

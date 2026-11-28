@@ -507,7 +507,9 @@ fn create_account(
             seed.release,
             true,
         );
+        let org_id = seed.org_id.clone();
         let _prev = state.orgs.insert(seed.org_id, org);
+        super::orgs::bind_tenant_group(state, &org_id);
     }
     if let Some(entry) = signed_in {
         state.record_activity(&id, entry);

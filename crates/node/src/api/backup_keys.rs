@@ -143,7 +143,7 @@ async fn org_backup_key(
     let actor = p.account()?;
     node.sys_fresh().await;
     if node
-        .sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)))
+        .sys_with_org(&org, |_, o| o.and_then(|o| o.role(&actor)))
         .is_none()
     {
         return Err(ApiError::not_found("no such organization"));

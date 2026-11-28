@@ -581,9 +581,10 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
     match cmd {
         SystemCmd::CreateApp {
             app,
+            org,
             unit_offer,
             offers_only,
-        } => create_app(state, *app, unit_offer, offers_only),
+        } => create_app(state, *app, org.map(|o| *o), unit_offer, offers_only),
         cmd @ SystemCmd::UpgradeApp { .. } => upgrade_app(state, index, cmd),
         cmd @ SystemCmd::UpgradeFailed { .. } => upgrade_failed(state, cmd),
         SystemCmd::StartUpgradeRun {
@@ -621,8 +622,17 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             owner_in_org,
             owner_in_team,
+            org,
             ..
-        } => transfer_app(state, app_id, to, actor, owner_in_org, owner_in_team),
+        } => transfer_app(
+            state,
+            app_id,
+            to,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            org.map(|o| *o),
+        ),
         SystemCmd::MoveApp {
             app_id,
             to_org,
@@ -674,7 +684,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             owner_in_org,
             owner_in_team,
-        } => set_access(state, app_id, access, actor, owner_in_org, owner_in_team),
+            org,
+        } => set_access(
+            state,
+            app_id,
+            access,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            org.map(|o| *o),
+        ),
         SystemCmd::SetDelegation {
             account,
             source,
@@ -725,7 +744,16 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             actor,
             owner_in_org,
             owner_in_team,
-        } => set_app_metadata(state, app_id, metadata, actor, owner_in_org, owner_in_team),
+            org,
+        } => set_app_metadata(
+            state,
+            app_id,
+            metadata,
+            actor,
+            owner_in_org,
+            owner_in_team,
+            org.map(|o| *o),
+        ),
         // SAFETY: `SystemCmd::area` sends a command only to the module of
         // its area, and this match has an arm for each command of it.
         _ => unreachable!("a command of another area reached apps::apply"),
@@ -736,9 +764,18 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
 fn create_app(
     state: &mut SystemState,
     mut app: AppRecord,
+    org: Option<Org>,
     unit_offer: Option<PackageRef>,
     offers_only: bool,
 ) -> Result<Value, Rejection> {
+    // The app's organization as its own shard (its tenant group) holds it,
+    // baked into the entry at propose; apply cannot read another shard, so the
+    // membership, capability, installer, grant and team checks all judge against
+    // this one rather than root's copy
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    // `None` (an entry logged before sharding, or with the cutover off) reads
+    // the organization from this state as before.
+    let org = org.as_ref().or_else(|| state.orgs.get(&app.org));
     check_bundle(
         state,
         &app.bundle,
@@ -751,11 +788,11 @@ fn create_app(
     check_new_app_id(state, &app)?;
     check_deployment_offer(state, &app, unit_offer.as_ref())?;
     check_outside_offers(state, &app, unit_offer.as_ref(), offers_only)?;
-    check_org_membership(state, &app)?;
-    check_create_capability(state, &app)?;
-    check_new_package_installer(state, &app)?;
-    state.check_grants(&app.org, app.access.grants())?;
-    check_team_writes(state, &app)?;
+    check_org_membership(org, &app)?;
+    check_create_capability(org, &app)?;
+    check_new_package_installer(state, org, &app)?;
+    state.check_grants(&app.org, org, app.access.grants())?;
+    check_team_writes(org, &app)?;
     state.next_group = state.next_group.max(1) + 1;
     app.group = state.next_group;
     app.restore = None;
@@ -875,12 +912,10 @@ fn check_outside_offers(
     Ok(())
 }
 
-/// The owner is a member (or above) of the app's organization.
-fn check_org_membership(state: &SystemState, app: &AppRecord) -> Result<(), Rejection> {
-    let role = state
-        .orgs
-        .get(&app.org)
-        .and_then(|org| org.role(&app.owner));
+/// The owner is a member (or above) of the app's organization. `org` is that
+/// organization as its shard holds it (resolved by `create_app`).
+fn check_org_membership(org: Option<&Org>, app: &AppRecord) -> Result<(), Rejection> {
+    let role = org.and_then(|org| org.role(&app.owner));
     if !role.is_some_and(|r| r >= OrgRole::Member) {
         return Err(OWNER_NOT_A_MEMBER);
     }
@@ -889,9 +924,8 @@ fn check_org_membership(state: &SystemState, app: &AppRecord) -> Result<(), Reje
 
 /// The owner holds `CREATE_APP` where the app goes: admins and the team's
 /// leads do, a member only when granted (not by default).
-fn check_create_capability(state: &SystemState, app: &AppRecord) -> Result<(), Rejection> {
+fn check_create_capability(org: Option<&Org>, app: &AppRecord) -> Result<(), Rejection> {
     let team = app.access.the_team().map(String::as_str);
-    let org = state.orgs.get(&app.org);
     if !org.is_some_and(|org| org.may(&app.owner, team, crate::types::caps::CREATE_APP)) {
         return Err(NEEDS_CREATE_APP);
     }
@@ -900,8 +934,12 @@ fn check_create_capability(state: &SystemState, app: &AppRecord) -> Result<(), R
 
 /// In an organization whose apps have app teams, a package with none is a
 /// new app there: only its owner or an admin installs it.
-fn check_new_package_installer(state: &SystemState, app: &AppRecord) -> Result<(), Rejection> {
-    if let (Some(org), Some(package)) = (state.orgs.get(&app.org), state.package_of(app)) {
+fn check_new_package_installer(
+    state: &SystemState,
+    org: Option<&Org>,
+    app: &AppRecord,
+) -> Result<(), Rejection> {
+    if let (Some(org), Some(package)) = (org, state.package_of(app)) {
         if org.mode() != crate::types::OrgMode::Legacy
             && org.app_team(package).is_none()
             && !org.role(&app.owner).is_some_and(|r| r >= OrgRole::Admin)
@@ -913,8 +951,7 @@ fn check_new_package_installer(state: &SystemState, app: &AppRecord) -> Result<(
 }
 
 /// A team's app is created by someone who writes each team it admits.
-fn check_team_writes(state: &SystemState, app: &AppRecord) -> Result<(), Rejection> {
-    let org = state.orgs.get(&app.org);
+fn check_team_writes(org: Option<&Org>, app: &AppRecord) -> Result<(), Rejection> {
     for team in app.access.teams() {
         if !org.is_some_and(|org| org.writes_team(&app.owner, team)) {
             return Err(NOT_IN_TEAM);
@@ -1322,18 +1359,22 @@ fn transfer_app(
     actor: AccountId,
     owner_in_org: bool,
     owner_in_team: bool,
+    baked: Option<Org>,
 ) -> Result<Value, Rejection> {
     if !state.accounts.contains_key(&to) {
         return Err(UNKNOWN_ACCOUNT);
     }
     let org = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?.org.clone();
+    // The app's organization comes from its own shard (its tenant group), baked
+    // at propose; `apply` cannot read it from root once org membership moved off
+    // root (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let organization = baked.as_ref().or_else(|| state.orgs.get(&org));
     // An org's app stays with a member of the org (as `CreateApp`),
     // except that, before organizations are ordinary
     // (`SystemState::ordinary_orgs`), one in a personal organization handed
     // to someone outside it goes to theirs, as a personal app went with its
     // new owner.
     let mut to_org = None;
-    let organization = state.orgs.get(&org);
     let role = organization.and_then(|o| o.role(&to));
     if !role.is_some_and(|r| r >= OrgRole::Member) {
         match (
@@ -1350,7 +1391,12 @@ fn transfer_app(
         return Err(ONLY_OWNER_TRANSFERS);
     }
     if owner_in_org
-        && !state.manages_app_as_logged(app, &actor, OwnerRule::logged(true, owner_in_team))
+        && !state.manages_app_as_logged(
+            app,
+            &actor,
+            OwnerRule::logged(true, owner_in_team),
+            organization,
+        )
     {
         return Err(ONLY_MANAGERS_TRANSFER.into());
     }
@@ -1410,7 +1456,10 @@ fn check_delete(
     members: Option<&[AppId]>,
 ) -> Result<Vec<AppId>, Rejection> {
     let may_delete = |app: &AppRecord| {
-        state.owner_acts_as_logged(app, actor, rule) || state.is_org_admin(&app.org, actor)
+        // The app's organization is read from the apply machine's own shard
+        // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        let org = state.orgs.get(&app.org);
+        state.owner_acts_as_logged(app, actor, rule, org) || state.is_org_admin(org, actor)
     };
     let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
     if !may_delete(app) {
@@ -1521,24 +1570,32 @@ fn set_access(
     actor: AccountId,
     owner_in_org: bool,
     owner_in_team: bool,
+    baked: Option<Org>,
 ) -> Result<Value, Rejection> {
     let rule = OwnerRule::logged(owner_in_org, owner_in_team);
-    let access = check_access(state, &app_id, access, &actor, rule)?;
+    let access = check_access(state, &app_id, access, &actor, rule, baked.as_ref())?;
     let app = state.apps.get_mut(&app_id).ok_or(NO_SUCH_APP)?;
     app.access = access;
     Ok(Value::Null)
 }
 
-/// [`set_access`]'s rules, read-only: the access the app then has.
+/// [`set_access`]'s rules, read-only: the access the app then has. The app's
+/// organization is the one baked at propose from its own shard (its tenant
+/// group), else read from this machine's own state
+/// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
 fn check_access(
     state: &SystemState,
     app_id: &str,
     access: Access,
     actor: &str,
     rule: OwnerRule,
+    baked: Option<&Org>,
 ) -> Result<Access, Rejection> {
     let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
-    if !state.owner_acts_as_logged(app, actor, rule) && !state.may_set_access(app, &access, actor) {
+    let org = baked.or_else(|| state.orgs.get(&app.org));
+    if !state.owner_acts_as_logged(app, actor, rule, org)
+        && !state.may_set_access(app, &access, actor, org)
+    {
         return Err(ONLY_MANAGERS_SET_ACCESS);
     }
     // The instance's public links stay as they are: made and revoked with their own
@@ -1547,7 +1604,7 @@ fn check_access(
         .access
         .keeping_links(access)
         .ok_or(LINKS_KEEP_THEIR_CONSENT)?;
-    state.check_grants(&app.org, access.without_links().grants())?;
+    state.check_grants(&app.org, org, access.without_links().grants())?;
     Ok(access)
 }
 
@@ -1578,7 +1635,9 @@ fn set_delegation(
     if source == target {
         return Err(SELF_DELEGATION);
     }
-    if !state.may_reach(from, Some(&account)) || !state.may_reach(to, Some(&account)) {
+    if !state.may_reach(from, Some(&account), state.orgs.get(&from.org))
+        || !state.may_reach(to, Some(&account), state.orgs.get(&to.org))
+    {
         return Err(DELEGATION_NEEDS_REACH);
     }
     let distinct: BTreeSet<&String> = methods.iter().collect();
@@ -1607,7 +1666,7 @@ fn create_app_invite(
     actor: AccountId,
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&invite.app).ok_or(NO_SUCH_APP)?;
-    if !state.manages_grants(app, &actor) {
+    if !state.manages_grants_self(app, &actor) {
         return Err(ONLY_MANAGERS_INVITE);
     }
     // Whether guests are allowed is judged when someone redeems it (a member always
@@ -1658,7 +1717,7 @@ fn create_public_link(
     actor: AccountId,
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&link.app).ok_or(NO_SUCH_APP)?;
-    if !state.manages_grants(app, &actor) {
+    if !state.manages_grants_self(app, &actor) {
         return Err(ONLY_MANAGERS_MAKE_LINKS);
     }
     if !state
@@ -1708,7 +1767,7 @@ fn revoke_public_link(
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&app_id).ok_or(super::PUBLIC_LINK_GONE)?;
     let link = app.access.link(&link_key).ok_or(super::PUBLIC_LINK_GONE)?;
-    if link.created_by != actor && !state.manages_grants(app, &actor) {
+    if link.created_by != actor && !state.manages_grants_self(app, &actor) {
         return Err(ONLY_CREATOR_OR_MANAGERS_REVOKE_LINK);
     }
     let access = app.access.without_link(&link_key);
@@ -1731,7 +1790,7 @@ fn revoke_app_invite(
         .filter(|i| i.app == app_id)
         .ok_or(super::APP_INVITE_GONE)?;
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    if invite.created_by != actor && !state.manages_grants(app, &actor) {
+    if invite.created_by != actor && !state.manages_grants_self(app, &actor) {
         return Err(ONLY_CREATOR_OR_MANAGERS_REVOKE_INVITE);
     }
     let _gone = state.app_invites.remove(&invite_key);
@@ -1762,7 +1821,7 @@ fn redeem_app_invite(
     // instance's grants (removed, demoted, out of its team, or unknown) names nobody, so a
     // manager who lost the instance cannot hand it out through invites made before.
     if state.cluster_brings(super::cluster_version::Feature::InviteCreatorStanding)
-        && !state.manages_grants(app, &invite.created_by)
+        && !state.manages_grants_self(app, &invite.created_by)
     {
         return Err(super::INVITE_CREATOR_LACKS);
     }
@@ -1773,7 +1832,7 @@ fn redeem_app_invite(
         .get(&app.org)
         .and_then(|o| o.role(&account))
         .is_some();
-    if !member && !state.guests_allowed(app) {
+    if !member && !state.guests_allowed(app, state.orgs.get(&app.org)) {
         return Err(super::GUESTS_NOT_ALLOWED);
     }
     let answer = json!(super::InviteRedeemed {
@@ -1813,7 +1872,7 @@ fn link_app(
     actor: AccountId,
 ) -> Result<Value, Rejection> {
     let app = state.apps.get(&app_id).ok_or(NO_SUCH_APP)?;
-    if !state.manages_app(app, &actor) {
+    if !state.manages_app_self(app, &actor) {
         return Err(ONLY_MANAGERS_LINK.into());
     }
     if !calimero_bundle::is_use_name(&name) {
@@ -1827,7 +1886,7 @@ fn link_app(
         if *target_id == app_id || attached.org != app.org {
             return Err(ATTACH_SAME_ORG);
         }
-        if !state.manages_app(attached, &actor) {
+        if !state.manages_app_self(attached, &actor) {
             return Err(ONLY_MANAGERS_LINK.into());
         }
         if !app.attached.contains_key(&name) && app.attached.len() >= MAX_ATTACHED {
@@ -1854,26 +1913,31 @@ fn set_app_metadata(
     actor: AccountId,
     owner_in_org: bool,
     owner_in_team: bool,
+    baked: Option<Org>,
 ) -> Result<Value, Rejection> {
     let rule = OwnerRule::logged(owner_in_org, owner_in_team);
-    check_app_metadata(state, &app_id, &metadata, &actor, rule)?;
+    check_app_metadata(state, &app_id, &metadata, &actor, rule, baked.as_ref())?;
     if let Some(app) = state.apps.get_mut(&app_id) {
         app.metadata = metadata;
     }
     Ok(Value::Null)
 }
 
-/// [`set_app_metadata`]'s rules, read-only.
+/// [`set_app_metadata`]'s rules, read-only. The organization is the one baked at
+/// propose from the app's own shard (its tenant group), else this machine's own
+/// state (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
 fn check_app_metadata(
     state: &SystemState,
     app_id: &str,
     metadata: &Value,
     actor: &str,
     rule: OwnerRule,
+    baked: Option<&Org>,
 ) -> Result<(), Rejection> {
     metadata_fits(metadata)?;
     let app = state.apps.get(app_id).ok_or(NO_SUCH_APP)?;
-    if !state.owner_acts_as_logged(app, actor, rule) && !state.is_org_admin(&app.org, actor) {
+    let org = baked.or_else(|| state.orgs.get(&app.org));
+    if !state.owner_acts_as_logged(app, actor, rule, org) && !state.is_org_admin(org, actor) {
         return Err(ONLY_OWNER_OR_ADMIN_SETS_METADATA);
     }
     Ok(())
@@ -1894,12 +1958,13 @@ pub(super) fn prejudge(s: &SystemState, cmd: &SystemCmd) -> Result<(), Rejection
             actor,
             owner_in_org,
             owner_in_team,
+            org,
         } => {
             let rule = OwnerRule::logged(*owner_in_org, *owner_in_team);
             (
                 app_id,
                 actor,
-                check_app_metadata(s, app_id, metadata, actor, rule),
+                check_app_metadata(s, app_id, metadata, actor, rule, org.as_deref()),
             )
         }
         SystemCmd::SetAccess {
@@ -1908,9 +1973,11 @@ pub(super) fn prejudge(s: &SystemState, cmd: &SystemCmd) -> Result<(), Rejection
             actor,
             owner_in_org,
             owner_in_team,
+            org,
         } => {
             let rule = OwnerRule::logged(*owner_in_org, *owner_in_team);
-            let judged = check_access(s, app_id, access.clone(), actor, rule).map(drop);
+            let judged =
+                check_access(s, app_id, access.clone(), actor, rule, org.as_deref()).map(drop);
             (app_id, actor, judged)
         }
         SystemCmd::DeleteApp {
@@ -1927,7 +1994,7 @@ pub(super) fn prejudge(s: &SystemState, cmd: &SystemCmd) -> Result<(), Rejection
         _ => return Ok(()),
     };
     judged.map_err(|why| match s.apps.get(app_id) {
-        Some(app) if s.may_reach(app, Some(actor)) => why,
+        Some(app) if s.may_reach(app, Some(actor), s.orgs.get(&app.org)) => why,
         _ => APP_NOT_FOUND,
     })
 }

@@ -189,7 +189,7 @@ mod tests {
     /// A machine at cluster `version` where `alice` owns `org` and `org2`, with bounds small
     /// enough to reach.
     fn machine(version: &str) -> SystemMachine {
-        let mut m = SystemMachine::new("c".into());
+        let mut m = SystemMachine::new("c".into(), crate::system::shard::ShardId::Root);
         m.state.cluster_version = Some(version.to_owned());
         for org in ["org", "org2"] {
             let o = new_org(org.into(), org.into(), "alice".into(), None, false);

@@ -58,8 +58,17 @@ pub enum Via {
 }
 
 impl Via {
-    fn sees(self, s: &SystemState, v: &PackageVersion, actor: &str) -> bool {
-        s.sees_release_from(v, actor, self == Self::Frontend)
+    /// Whether `who` may use release `v`, the release's serving organizations
+    /// resolved from `extra` (their tenant groups), for the access gate
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    fn sees_with(
+        self,
+        s: &SystemState,
+        v: &PackageVersion,
+        actor: &str,
+        extra: &std::collections::BTreeMap<crate::types::OrgId, crate::types::Org>,
+    ) -> bool {
+        s.sees_release_from_with(v, actor, self == Self::Frontend, extra)
     }
 }
 
@@ -298,7 +307,7 @@ impl Node {
         let Some(org) = named else {
             return crate::api::apps::only_org(self, actor).await;
         };
-        if !self.sys(|s| s.member_of(org, actor)) {
+        if !self.member_of_fresh(org, actor) {
             return Err(ApiError::not_found("no such organization"));
         }
         Ok(Some(org.to_owned()))
@@ -318,12 +327,12 @@ impl Node {
         // Before the fetch, judged by the key the package is pinned to (none
         // yet: unbound, as for a package the actor may not use); `record_release` judges
         // the verified key again.
-        let pinned = self
-            .sys(|s| {
-                s.package_used(package, actor, false)
-                    .map(|p| p.signer_id.clone())
-            })
-            .unwrap_or_default();
+        let pinned = if self.package_used_fresh(package, actor, false) {
+            self.sys(|s| s.packages.get(package).map(|p| p.signer_id.clone()))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         self.refuse_stalled_install(actor, &pinned)?;
         let (mpk, visibility) = self.fetch_for_install(package, version, actor).await?;
         let verified = self
@@ -579,7 +588,7 @@ impl Node {
             merged.visibility = after;
             merged.orgs.clone_from(&orgs_after);
             let _new = merged.installers.insert(actor.to_owned());
-            if !self.sys(|s| s.sees_release(&merged, actor)) {
+            if !self.sees_release_fresh(&merged, actor) {
                 return Err(not_for_this_account(&package, &manifest.app_version));
             }
         }
@@ -872,6 +881,10 @@ impl Node {
     ) -> Result<(String, Option<String>, PackageRef), ApiError> {
         // No version: the latest installed release `actor` sees. A registry
         // install always names its version.
+        // The release's serving organizations are read from their own shards
+        // (their tenant groups): a private release is visible to a member of one
+        // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        let extra = self.release_org_view(package);
         let version = match version {
             Some(v) => v.to_owned(),
             None => self
@@ -879,7 +892,7 @@ impl Node {
                     let p = s.packages.get(package)?;
                     p.versions
                         .values()
-                        .filter(|v| via.sees(s, v, actor))
+                        .filter(|v| via.sees_with(s, v, actor, &extra))
                         .max_by(|a, b| compare_versions(&a.version, &b.version))
                         .map(|v| v.version.clone())
                 })
@@ -894,7 +907,7 @@ impl Node {
             s.packages
                 .get(package)
                 .and_then(|p| p.versions.get(&version))
-                .filter(|v| via.sees(s, v, actor))
+                .filter(|v| via.sees_with(s, v, actor, &extra))
                 .map(|v| (v.app_parts().clone(), v.compute.clone()))
         };
         let (services, compute) = match self.sys(seen) {

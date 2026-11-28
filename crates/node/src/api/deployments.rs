@@ -683,10 +683,7 @@ async fn deployment_offer(
     let account = p.account()?;
     let _d = managed_deployment(&node, &p, &id).await?;
     node.refuse_undeployable(&account).await?;
-    let seen = node.sys(|s| {
-        s.release_used(&body.package, &body.version, &account)
-            .is_some()
-    });
+    let seen = node.release_used_fresh(&body.package, &body.version, &account);
     if !seen {
         return Err(ApiError::not_found(
             "no such release; install it before offering it",
@@ -701,6 +698,7 @@ async fn deployment_offer(
         body.confirm,
     )
     .await?;
+    let serving = node.release_org_view(&body.package).into_values().collect();
     Ok(Json(
         node.sys_write(&SystemCmd::OfferApp {
             deployment: id,
@@ -710,6 +708,7 @@ async fn deployment_offer(
             actor: account,
             at: now_secs(),
             consent,
+            serving,
         })
         .await?,
     ))

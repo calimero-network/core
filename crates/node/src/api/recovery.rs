@@ -430,7 +430,7 @@ async fn recovery_set(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh().await;
-    if node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor))) != Some(OrgRole::Owner) {
+    if node.sys_with_org(&org, |_, o| o.and_then(|o| o.role(&actor))) != Some(OrgRole::Owner) {
         return Err(ApiError::forbidden(crate::system::OWNER_ONLY_RECOVERY));
     }
     if let Some(k) = &body.public_key {
@@ -519,8 +519,7 @@ async fn recovery_cancel(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh().await;
-    let (role, pending) = node.sys(|s| {
-        let o = s.orgs.get(&org);
+    let (role, pending) = node.sys_with_org(&org, |_, o| {
         (
             o.and_then(|o| o.role(&actor)),
             o.and_then(|o| o.recovery.as_ref())

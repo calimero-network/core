@@ -34,7 +34,7 @@ const READS_ALLOWED: &[(&str, &str, &str)] = &[
     ("api/apps.rs", "let v = s.packages.get(&r.package)?.versions.get(&r.version)?;", "chosen_parts: the member unit_members chose"),
     ("api/apps.rs", "s.packages.get(&release.package).and_then(|p| p.versions.get(&release.version))", "unit_members: a release its callers resolved"),
     ("api/apps.rs", "s.packages.get(&u.package).map(|p| {", "unit_members: the member rule itself"),
-    ("api/apps.rs", "p.versions.iter().filter(|(_, v)| same_signer || s.sees_release(v, creator) || serves(v))", "unit_members: the member rule itself"),
+    ("api/apps.rs", "p.versions.iter().filter(|(_, v)| {", "unit_members: the member rule itself, now reading release visibility across the serving orgs' shards (sees_release_with)"),
     ("api/packages.rs", "s.packages.values().filter_map(|p| {", "package_list: package_json lists the releases used"),
     ("api/packages.rs", "s.packages.values().filter_map(|p| package_json(s, p, crate::system::OPERATOR, false))", "ops_package_list: the operator's"),
     ("api/passkeys.rs", "s.packages.get(package)?.latest_where(|v| {", "app_name: a name only from a release open to anyone"),

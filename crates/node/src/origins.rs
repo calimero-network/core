@@ -261,7 +261,7 @@ impl SystemState {
             return false;
         };
         match self.publisher_of_signer(&p.signer_id) {
-            Some(org) => self.manages_apps(org, account, None),
+            Some(org) => self.manages_apps_self(org, account, None),
             // A first installer, only while a release of it is theirs to use (from the
             // version that brings private releases, so earlier entries replay as they applied).
             None => {
@@ -450,7 +450,7 @@ impl SystemState {
         at: u64,
     ) -> Result<Value, Rejection> {
         let record = self.apps.get(&app).ok_or("no such app")?;
-        if !self.manages_app(record, &actor) {
+        if !self.manages_app(record, &actor, self.orgs.get(&record.org)) {
             return Err("only whoever manages the instance registers its origins".into());
         }
         if registration.is_empty() {
@@ -512,7 +512,7 @@ impl SystemState {
         actor: &str,
     ) -> Result<Value, Rejection> {
         let record = self.apps.get(app).ok_or("no such app")?;
-        if !self.manages_app(record, actor) {
+        if !self.manages_app(record, actor, self.orgs.get(&record.org)) {
             return Err("only whoever manages the instance removes its origins".into());
         }
         let Some(held) = self

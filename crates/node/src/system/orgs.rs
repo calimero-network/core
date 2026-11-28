@@ -581,6 +581,11 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
     match cmd {
         cmd @ SystemCmd::CreateOrg { .. } => create_org(state, cmd),
         SystemCmd::DeleteOrg { org, actor, .. } => delete_org(state, &org, &actor),
+        SystemCmd::SeedTenant { org, members } => seed_tenant(state, *org, members),
+        SystemCmd::BindInvite { invite_key, org } => {
+            let _prev = state.invite_org.insert(invite_key, org);
+            Ok(Value::Null)
+        }
         SystemCmd::RenameOrg {
             org, name, actor, ..
         } => rename_org(state, org, name, &actor),
@@ -679,8 +684,22 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             now,
             free_when_unchanged,
             clamp_grants,
+            redeemer,
             ..
         } => {
+            // On a tenant group the redeemer is, by definition, not yet a member,
+            // so the shard does not hold their account. The proposer carries it
+            // from the root directory (`redeemer`); register it here, as the
+            // tenant seed registers an existing member, so `check_known_account`
+            // passes and the new member's later tenant commands verify. Trusted
+            // at the seed's attestation boundary; the redemption itself was
+            // authorized against the tenant's own invite record
+            // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+            if let Some(redeemer) = redeemer {
+                if redeemer.account_id == account {
+                    let _kept = state.accounts.entry(account.clone()).or_insert(*redeemer);
+                }
+            }
             check_known_account(state, &account)?;
             let org = state.redeem_org_invite(
                 &invite_key,
@@ -778,13 +797,54 @@ fn create_org(state: &mut SystemState, cmd: SystemCmd) -> Result<Value, Rejectio
     // are made under a new organization's default; a refused team removes the org.
     let _prev = state.orgs.insert(org_id.clone(), org);
     let Some(package) = app_team else {
+        bind_tenant_group(state, &org_id);
         set_new_orgs_default(state, &org_id, capabilities);
         return Ok(json!(OrgCreated {
             org_id,
             team_id: None
         }));
     };
-    make_app_team(state, &org_id, package, &actor, capabilities)
+    // `make_app_team` removes the org when it refuses the team, so bind the
+    // tenant group only once it has succeeded — never leaving a binding for an
+    // org that was rolled back.
+    let created = make_app_team(state, &org_id, package, &actor, capabilities)?;
+    bind_tenant_group(state, &org_id);
+    Ok(created)
+}
+
+/// Allocate and record an organization's tenant group: the Raft group its own
+/// control plane lives in once the system group is sharded by tenant. The id
+/// comes from the dedicated tenant range ([`shard::TENANT_GROUP_BASE`]) through a
+/// monotonic counter, so it never shifts an app group id and is never reused
+/// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+/// Seed an organization's own record and a projection of its members' account
+/// identity into its tenant group. Applied only on the organization's tenant
+/// machine (the node writes it to that group alone), and idempotent: a member
+/// or the org already present is left as it is, so a re-seed on a later node
+/// reconcile changes nothing. The member projection carries each member's
+/// passkeys so the tenant can verify that member's consent from the log alone
+/// (`Proofs::consent_of`), the identity the root account directory holds
+/// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+fn seed_tenant(
+    state: &mut SystemState,
+    org: crate::types::Org,
+    members: Vec<crate::types::Account>,
+) -> Result<Value, Rejection> {
+    let _kept = state.orgs.entry(org.org_id.clone()).or_insert(org);
+    for account in members {
+        let _kept = state
+            .accounts
+            .entry(account.account_id.clone())
+            .or_insert(account);
+    }
+    Ok(Value::Null)
+}
+
+pub(super) fn bind_tenant_group(state: &mut SystemState, org_id: &str) {
+    use crate::system::shard;
+    let gid = state.next_tenant_group.max(shard::TENANT_GROUP_BASE);
+    state.next_tenant_group = gid + 1;
+    state.tenant_groups.insert(org_id.to_owned(), gid);
 }
 
 /// The account exists.
@@ -888,6 +948,9 @@ fn delete_org(state: &mut SystemState, org: &str, actor: &str) -> Result<Value, 
         return Err(OWNS_A_DEPLOYMENT);
     }
     let _gone = state.orgs.remove(org);
+    // Drop the org's tenant-group binding; its id is never reused
+    // (`next_tenant_group` stays monotonic), so no new group can alias it.
+    let _unbound = state.tenant_groups.remove(org);
     state.invites.retain(|_, invite| invite.org != org);
     unbind_publishers(state, org);
     let apps: Vec<String> = state
@@ -1686,7 +1749,7 @@ fn set_org_settings(
     settings: &OrgSettings,
     actor: &str,
 ) -> Result<Value, Rejection> {
-    if !state.is_org_admin(org, actor) {
+    if !state.is_org_admin_self(org, actor) {
         return Err(ONLY_ADMINS_CHANGE_SETTINGS);
     }
     if settings.is_empty() {
@@ -1717,7 +1780,7 @@ fn revoke_invite(
     if invite.org != org {
         return Err(INVITE_GONE.into());
     }
-    if !state.sees_invite(invite, actor) {
+    if !state.sees_invite_self(invite, actor) {
         return Err(ONLY_CREATOR_OR_MANAGERS_REVOKE_ORG_INVITE);
     }
     let _gone = state.invites.remove(invite_key);

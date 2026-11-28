@@ -291,7 +291,7 @@ fn member_apps(s: &SystemState, org: &str, account: &str) -> Vec<String> {
     s.apps
         .values()
         .filter(|a| a.org == org && !a.access.anyone())
-        .filter(|a| s.may_reach(a, Some(account)))
+        .filter(|a| s.may_reach(a, Some(account), s.orgs.get(&a.org)))
         .map(|a| a.name.clone())
         .collect()
 }
@@ -875,7 +875,7 @@ fn revoke(
     let inv = s
         .invites
         .get(&invite_key)
-        .filter(|i| i.org == org && s.sees_invite(i, actor))
+        .filter(|i| i.org == org && s.sees_invite_self(i, actor))
         .ok_or_else(|| ApiError::not_found(crate::system::INVITE_GONE))?
         .clone();
     let name = o.name.clone();

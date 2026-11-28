@@ -1680,7 +1680,10 @@ impl Node {
             _ => false,
         };
         let reached = match (&app, req.caller.account()) {
-            (Some(app), Some(account)) => self.sys(|s| s.may_reach(app, Some(account))),
+            (Some(app), Some(account)) => {
+                let org = self.org_of(&app.org);
+                self.sys(|s| s.may_reach(app, Some(account), org.as_ref()))
+            }
             _ => true,
         };
         if visitor_out || !reached {
@@ -3336,11 +3339,14 @@ impl Node {
             Caller::Account { account } | Caller::ApiKey { account, .. } => account.clone(),
             _ => return as_app(),
         };
+        let org = self
+            .sys(|s| s.apps.get(target).map(|t| t.org.clone()))
+            .and_then(|o| self.org_of(&o));
         let granted = self.sys(|s| {
             s.delegates(&account, source, target, method)
                 && s.apps
                     .get(target)
-                    .is_some_and(|t| s.may_reach(t, Some(&account)))
+                    .is_some_and(|t| s.may_reach(t, Some(&account), org.as_ref()))
         });
         if granted {
             (person.clone(), Some(source.to_owned()))

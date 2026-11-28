@@ -44,13 +44,13 @@ async fn org_members(
     }
     node.sys_fresh_from(p.sys_index).await;
     let now = now_secs();
+    let org_rec = node.org_of(&org);
     node.sys(|s| {
-        let o = s
-            .orgs
-            .get(&org)
+        let o = org_rec
+            .as_ref()
             .filter(|o| o.role(&account).is_some())
             .ok_or_else(|| ApiError::not_found("no such organization"))?;
-        if !s.is_org_admin(&org, &account) {
+        if !s.is_org_admin(org_rec.as_ref(), &account) {
             return Err(ApiError::forbidden(
                 "only the organization's owner and admins see its members' security",
             ));
@@ -285,7 +285,7 @@ async fn org_get(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let o = node
-        .sys(|s| s.orgs.get(&org).cloned())
+        .sys_org(&org, |s| s.orgs.get(&org).cloned())
         .ok_or_else(|| ApiError::not_found("no such organization"))?;
     if o.role(&account).is_none() {
         return Err(ApiError::not_found("no such organization"));
@@ -326,9 +326,9 @@ async fn org_get(
     // Who may approve its releases, the keys it publishes, and whether a
     // passed deadline has stopped new work on its own set (`null`: it has
     // not).
-    let (approvers, publishes, stall) = node.sys(|s| {
+    let (approvers, publishes, stall) = node.sys_with_org(&org, |s, o| {
         (
-            s.release_approvers(&org),
+            s.release_approvers_at(o),
             s.publishers
                 .iter()
                 .filter(|(_, b)| b.org == org)
@@ -417,8 +417,9 @@ pub(crate) async fn delete_org(
     confirm: Option<ConfirmBody>,
 ) -> ApiResult {
     let actor = p.account()?;
-    let is_owner =
-        node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)) == Some(OrgRole::Owner));
+    let is_owner = node.sys_org(&org, |s| {
+        s.orgs.get(&org).and_then(|o| o.role(&actor)) == Some(OrgRole::Owner)
+    });
     if !is_owner {
         return Err(ApiError::forbidden(
             "only the organization's owner deletes it",
@@ -475,7 +476,7 @@ pub(crate) async fn rename_org(
 ) -> ApiResult {
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
+    let role = node.sys_org(&org, |s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
     let Some(role) = role else {
         return Err(ApiError::not_found("no such organization"));
     };
@@ -540,7 +541,7 @@ pub(crate) async fn set_all_apps(
 ) -> ApiResult {
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    let role = node.sys(|s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
+    let role = node.sys_org(&org, |s| s.orgs.get(&org).and_then(|o| o.role(&actor)));
     let Some(role) = role else {
         return Err(ApiError::not_found("no such organization"));
     };
@@ -978,8 +979,8 @@ async fn team_get(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let v = node
-        .sys(|s| {
-            let o = s.orgs.get(&org)?;
+        .sys_with_org(&org, |s, o| {
+            let o = o?;
             o.role(&account)?;
             team_view(s, o, &team, &account)
         })
@@ -1086,10 +1087,8 @@ async fn team_delete(
     let actor = p.account()?;
     // Only someone who may delete it learns which apps go (as `DeleteTeam`
     // judges it again where it applies).
-    let (sees, may_delete) = node.sys(|s| {
-        s.orgs
-            .get(&org)
-            .filter(|o| o.teams.contains_key(&team))
+    let (sees, may_delete) = node.sys_with_org(&org, |_, o| {
+        o.filter(|o| o.teams.contains_key(&team))
             .map_or((false, false), |o| {
                 let may = o.manages_team(&actor, &team)
                     || o.may(&actor, None, crate::types::caps::DELETE_TEAM);
@@ -1102,7 +1101,7 @@ async fn team_delete(
     if !may_delete {
         return Err(ApiError::forbidden("not allowed to delete this team"));
     }
-    let apps = node.sys(|s| s.team_apps(&org, &team));
+    let apps = node.sys_with_org(&org, |s, o| s.team_apps_at(o, &team));
     let keep_apps = body.keep_apps;
     let consent = if apps.is_empty() {
         Value::Null
@@ -1284,14 +1283,17 @@ pub(crate) async fn create_invite(
     body: InviteBody,
 ) -> ApiResult {
     let actor = p.account()?;
-    if body.all_apps && !node.sys(|s| s.is_org_admin(&org, &actor)) {
+    let org_rec = node.org_of(&org);
+    if body.all_apps && !node.sys(|s| s.is_org_admin(org_rec.as_ref(), &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_ALL_APPS));
     }
     if let Some(bits) = body.capabilities {
         if !crate::types::Org::defined_caps(bits) {
             return Err(crate::node::unknown_capabilities());
         }
-        let may = node.sys(|s| s.orgs.get(&org).is_none_or(|o| o.may_grant(&actor, bits)));
+        let may = node.sys_org(&org, |s| {
+            s.orgs.get(&org).is_none_or(|o| o.may_grant(&actor, bits))
+        });
         if !may {
             return Err(crate::node::cannot_grant_unheld());
         }
@@ -1357,6 +1359,19 @@ pub(crate) async fn create_invite(
             "the approval was for a different call",
         ));
     }
+    // Under the cutover the invite lives in its organization's tenant group
+    // (`CreateInvite` routes there by scope). Record the invite_key -> org entry
+    // in the root routing directory first, so the redeem path can find the
+    // invite's tenant from the token alone; the directory carries no authority
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    if crate::system::shard::ACTIVE {
+        let _ok = node
+            .sys_write(&SystemCmd::BindInvite {
+                invite_key: invite_key.clone(),
+                org: org.clone(),
+            })
+            .await?;
+    }
     let _ok = node
         .sys_write(&SystemCmd::CreateInvite {
             invite_key,
@@ -1390,10 +1405,11 @@ async fn org_settings(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
+    let org_rec = node.org_of(&org);
     let (member, admin) = node.sys(|s| {
         (
-            s.orgs.get(&org).and_then(|o| o.role(&actor)).is_some(),
-            s.is_org_admin(&org, &actor),
+            org_rec.as_ref().and_then(|o| o.role(&actor)).is_some(),
+            s.is_org_admin(org_rec.as_ref(), &actor),
         )
     });
     if !member {
@@ -1467,14 +1483,34 @@ pub(crate) async fn redeem_invite(node: &Node, account: String, token: &str) -> 
         .require_features(&[Feature::InviteCapabilities])
         .await
         .is_ok();
+    let invite_key = crate::proof::invite_key(token);
+    // Under the cutover the invite and the membership both live in the
+    // organization's tenant group. Resolve the org from the root routing
+    // directory so the command routes there, and carry the redeemer's account
+    // identity from the root account directory so the tenant can register the
+    // new member from the entry alone (they are not yet a seeded member). The
+    // redemption stays authorized by the bearer token, re-checked on the tenant
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let (org, redeemer) = if crate::system::shard::ACTIVE {
+        node.sys(|s| {
+            (
+                s.invite_org.get(&invite_key).cloned(),
+                s.accounts.get(&account).cloned().map(Box::new),
+            )
+        })
+    } else {
+        (None, None)
+    };
     let v = node
         .sys_write(&SystemCmd::RedeemInvite {
-            invite_key: crate::proof::invite_key(token),
+            invite_key,
             signature: crate::proof::sign_invite_redeem(token, &account, now),
             account,
             now,
             free_when_unchanged: true,
             clamp_grants,
+            org,
+            redeemer,
         })
         .await?;
     Ok(Json(v))
@@ -1510,13 +1546,18 @@ async fn invite_list(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let now = now_secs();
+    let org_rec = node.org_of(&org);
+    // The invite records live in the organization's tenant group (written there
+    // by `CreateInvite`), so list them from that shard; the membership check uses
+    // the org record read from the same shard
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     let v = node
-        .sys(|s| {
-            s.orgs.get(&org)?.role(&account)?;
+        .sys_org(&org, |s| {
+            org_rec.as_ref()?.role(&account)?;
             let invites = s
                 .invites
                 .iter()
-                .filter(|(_, i)| i.org == org && s.sees_invite(i, &account))
+                .filter(|(_, i)| i.org == org && s.sees_invite(i, &account, org_rec.as_ref()))
                 .map(|(k, i)| invite_json(k, i, now))
                 .collect();
             Some(InviteList { invites })
@@ -1548,10 +1589,11 @@ pub(crate) async fn revoke_invite(
 ) -> ApiResult {
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    let visible = node.sys(|s| {
+    let org_rec = node.org_of(&org);
+    let visible = node.sys_org(&org, |s| {
         s.invites
             .get(&key)
-            .is_some_and(|i| i.org == org && s.sees_invite(i, &actor))
+            .is_some_and(|i| i.org == org && s.sees_invite(i, &actor, org_rec.as_ref()))
     });
     if !visible {
         return Err(ApiError::not_found(crate::system::INVITE_GONE));
@@ -1704,9 +1746,9 @@ async fn org_usage(
     p.beyond_instance(&node)?;
     let account = p.account()?;
     node.sys_fresh().await;
-    let (role, apps, quotas) = node.sys(|s| {
+    let (role, apps, quotas) = node.sys_with_org(&org, |s, o| {
         (
-            s.orgs.get(&org).and_then(|o| o.role(&account)),
+            o.and_then(|o| o.role(&account)),
             s.apps
                 .values()
                 .filter(|a| crate::usage::Billed::of(s, a).developer == org)
@@ -1744,7 +1786,9 @@ async fn org_apps(
     let p = signed_in(&node, &headers).await?;
     let account = p.account()?;
     let limit = q.limit()?;
-    let member = node.sys(|s| s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()));
+    let member = node.sys_org(&org, |s| {
+        s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some())
+    });
     if !member {
         return Err(ApiError::not_found("no such organization"));
     }

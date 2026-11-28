@@ -473,6 +473,7 @@ fn a_transferred_personal_apps_runs_are_billed_to_the_new_owner() {
         consent: serde_json::Value::Null,
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     })
     .unwrap();
     // It went to bob's personal organization, which pays its runs now.

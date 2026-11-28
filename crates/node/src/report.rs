@@ -109,7 +109,7 @@ fn uninstalled_release(
         .packages
         .get(&r.package)
         .is_some_and(|p| p.versions.contains_key(&r.version));
-    (!installed && s.may_reach(app, Some(who))).then(|| ReleaseName {
+    (!installed && s.may_reach(app, Some(who), s.orgs.get(&app.org))).then(|| ReleaseName {
         package: r.package.clone(),
         version: r.version.clone(),
         service: r.service.clone(),

@@ -428,7 +428,7 @@ fn outbound_approvals_of<'s>(
             Err(EGRESS_OFF)
         }
         ReleaseScope::Org { org } => {
-            if !state.manages_apps(org, actor, None) {
+            if !state.manages_apps_self(org, actor, None) {
                 return Err(NEEDS_MANAGE_APPLICATION);
             }
             let organization = state.orgs.get_mut(org).ok_or(NO_SUCH_ORG)?;
@@ -446,7 +446,7 @@ fn set_egress(
     egress: bool,
     actor: &str,
 ) -> Result<Value, Rejection> {
-    if !state.is_org_admin(&org, actor) {
+    if !state.is_org_admin_self(&org, actor) {
         return Err(ONLY_ADMINS_SWITCH_EGRESS);
     }
     match &app {

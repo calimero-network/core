@@ -728,7 +728,7 @@ fn a_private_release_is_used_only_in_the_organizations_it_was_installed_for() {
     .unwrap();
     let _prev = m.state.apps.insert("x".into(), app);
     let v = m.state.packages["p"].versions["1.0.0"].clone();
-    assert!(m.state.may_reach(&m.state.apps["x"], Some("carol")));
+    assert!(m.state.may_reach_self(&m.state.apps["x"], Some("carol")));
     assert!(m.state.reads_release("p", &v, "carol") && !m.state.sees_release(&v, "carol"));
     assert!(!m.state.reads_release("p", &v, OPERATOR));
 
@@ -1308,6 +1308,7 @@ fn a_compute_component_is_recorded_beside_its_service_and_never_run_as_an_app() 
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     }
@@ -1452,6 +1453,7 @@ fn a_release_whose_compute_component_an_app_still_uses_is_not_uninstalled() {
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     };
@@ -3305,6 +3307,7 @@ fn a_create_apps_refusals_keep_their_wording_and_code() {
         }
         SystemCmd::CreateApp {
             app: Box::new(serde_json::from_value(app).unwrap()),
+            org: None,
             unit_offer,
             offers_only: false,
         }
@@ -3748,9 +3751,9 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
         }))
         .unwrap()
     };
-    assert!(m.state.may_reach(&shared(&mine), Some("carol")));
-    assert!(!m.state.may_reach(&shared(&mine), Some("bob")));
-    assert!(!m.state.may_reach(&shared("team"), Some("carol")));
+    assert!(m.state.may_reach_self(&shared(&mine), Some("carol")));
+    assert!(!m.state.may_reach_self(&shared(&mine), Some("bob")));
+    assert!(!m.state.may_reach_self(&shared("team"), Some("carol")));
 
     // An app there handed to someone outside it goes to their personal
     // organization, `team` access becoming the organization's.
@@ -3765,6 +3768,7 @@ fn an_account_has_one_personal_organization_outside_its_quota() {
         consent: Value::Null,
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     let _ok = m.run_unproven(transfer("bob")).unwrap();
     let gift = &m.state.apps["gift"];
@@ -3872,6 +3876,7 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
         consent: Value::Null,
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     assert_eq!(
         m.run_unproven(transfer),
@@ -3884,8 +3889,8 @@ fn once_organizations_are_ordinary_a_personal_one_is_like_any_other() {
     );
 
     // Its listed accounts still reach it without being members.
-    assert!(m.state.may_reach(&m.state.apps["gift"], Some("carol")));
-    assert!(!m.state.may_reach(&m.state.apps["gift"], Some("bob")));
+    assert!(m.state.may_reach_self(&m.state.apps["gift"], Some("carol")));
+    assert!(!m.state.may_reach_self(&m.state.apps["gift"], Some("bob")));
 }
 
 /// Guests (`Feature::Guests`): an account named on an instance (an `account` grant)
@@ -3934,8 +3939,9 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     ] {
         let _prev = m.state.apps.insert(a.app_id.clone(), a);
     }
-    let reaches =
-        |m: &SystemMachine, id: &str, who: &str| m.state.may_reach(&m.state.apps[id], Some(who));
+    let reaches = |m: &SystemMachine, id: &str, who: &str| {
+        m.state.may_reach_self(&m.state.apps[id], Some(who))
+    };
 
     // Before the version, a listed outsider reaches nothing, as before.
     assert!(!reaches(&m, "open", "carol"));
@@ -3949,7 +3955,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
     assert!(m.state.guests_on());
     // The release allows guests: carol reaches it and its unit's member, not the rest.
     assert!(reaches(&m, "open", "carol"));
-    assert!(m.state.is_guest(&m.state.apps["open"], "carol"));
+    assert!(m.state.is_guest_self(&m.state.apps["open"], "carol"));
     assert!(
         reaches(&m, "member", "carol"),
         "a unit's member, by its instance's list"
@@ -3959,7 +3965,7 @@ fn a_guest_reaches_one_instance_while_its_release_and_its_organization_allow() {
         "a release that says nothing forbids them"
     );
     assert!(!reaches(&m, "wide", "carol"));
-    assert!(!m.state.manages_grants(&m.state.apps["open"], "carol"));
+    assert!(!m.state.manages_grants_self(&m.state.apps["open"], "carol"));
 
     // The organization's switch: its owner, with a passkey, once; a member is refused.
     let settings = |allow: bool, actor: &str, consent: Value| SystemCmd::SetOrgSettings {
@@ -4191,8 +4197,8 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
     let forms = &m.state.apps["forms"];
     assert_eq!(forms.access.link(&key).unwrap().created_by, "alice");
     assert_eq!(forms.access.grants()[0], crate::types::Grant::Org);
-    assert!(m.state.may_reach(forms, Some("bob")));
-    assert!(!m.state.may_reach(forms, None));
+    assert!(m.state.may_reach_self(forms, Some("bob")));
+    assert!(!m.state.may_reach_self(forms, None));
     // Setting the grants keeps the link as it is; a link it does not hold is never made
     // that way.
     let set = |access: Value| SystemCmd::SetAccess {
@@ -4201,6 +4207,7 @@ fn a_public_link_admits_visitors_while_it_and_its_organization_allow() {
         actor: "alice".into(),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     let _ok = m.run_unproven(set(json!([]))).unwrap();
     assert!(m.state.apps["forms"].access.link(&key).is_some());
@@ -4379,6 +4386,7 @@ fn an_instances_access_is_a_list_of_grants() {
         actor: "alice".into(),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     let partners = json!({ "channel": "partners" });
     let x = set(
@@ -4389,8 +4397,9 @@ fn an_instances_access_is_a_list_of_grants() {
     );
     assert_eq!(x.features(), [Feature::AccessGrants]);
     let _ok = m.run_unproven(x).unwrap();
-    let reaches =
-        |m: &SystemMachine, id: &str, who: Option<&str>| m.state.may_reach(&m.state.apps[id], who);
+    let reaches = |m: &SystemMachine, id: &str, who: Option<&str>| {
+        m.state.may_reach_self(&m.state.apps[id], who)
+    };
     // The team, a named member outside it, a guest; not another outsider, nor anyone signed
     // out, nor the owner outside the team (an owner is judged by the teams, as on `team`).
     for (who, want) in [
@@ -4404,7 +4413,7 @@ fn an_instances_access_is_a_list_of_grants() {
         assert_eq!(reaches(&m, "x", who), want, "{who:?}");
     }
     let xa = &m.state.apps["x"];
-    assert!(m.state.is_guest(xa, "carol") && !m.state.is_guest(xa, "dan"));
+    assert!(m.state.is_guest_self(xa, "carol") && !m.state.is_guest_self(xa, "dan"));
     assert_eq!(xa.access.scope_of("carol"), Some(&partners));
     assert_eq!(xa.access.the_team().map(String::as_str), Some("t"));
     // Anyone: every signed-in account, a member or not, never a caller without one.
@@ -4464,6 +4473,7 @@ fn an_instances_access_is_a_list_of_grants() {
             actor: "alice".into(),
             owner_in_org: true,
             owner_in_team: true,
+            org: None,
         })
         .unwrap();
     for token in ["inv_a", "inv_b"] {
@@ -4643,8 +4653,9 @@ fn a_team_deleted_keeping_its_instances_leaves_them_their_other_grants() {
     let out = m.run(delete("u", true, real)).unwrap();
     assert_eq!(out["keptApps"], json!(["e", "g", "m"]));
     assert_eq!(out["apps"], json!([]));
-    let reaches =
-        |m: &SystemMachine, id: &str, who: &str| m.state.may_reach(&m.state.apps[id], Some(who));
+    let reaches = |m: &SystemMachine, id: &str, who: &str| {
+        m.state.may_reach_self(&m.state.apps[id], Some(who))
+    };
     assert!(!m.state.orgs["org"].teams.contains_key("u"));
     assert_eq!(m.state.apps["g"].access, grants(json!([guest])));
     assert!(reaches(&m, "g", "erin"), "the guest keeps their way in");
@@ -4829,6 +4840,8 @@ fn invites_are_redeemed_with_the_tokens_key() {
         signature,
         free_when_unchanged: true,
         clamp_grants: false,
+        org: None,
+        redeemer: None,
     };
     assert!(m.run(redeem(String::new())).is_err(), "no signature");
     let forged = crate::proof::sign_invite_redeem("inv_guess", "carol", 10);
@@ -4866,6 +4879,8 @@ fn redemption(token: &str, account: &str, now: u64) -> SystemCmd {
         signature: crate::proof::sign_invite_redeem(token, account, now),
         free_when_unchanged: true,
         clamp_grants: true,
+        org: None,
+        redeemer: None,
     }
 }
 
@@ -5005,7 +5020,7 @@ fn a_team_removal_takes_the_rows_below_it() {
         .unwrap();
     let o = &m.state.orgs["org"];
     assert!(!o.in_team("bob", "t") && !o.in_team("bob", "c"));
-    assert!(!m.state.may_reach(&m.state.apps["inapp"], Some("bob")));
+    assert!(!m.state.may_reach_self(&m.state.apps["inapp"], Some("bob")));
 }
 
 /// Deleting a team that holds apps needs the deleter's passkey over
@@ -5265,22 +5280,25 @@ fn an_org_app_is_reached_only_by_current_members() {
     }))
     .unwrap();
     let s = &m.state;
-    assert!(s.may_reach(&listed, Some("alice")) && s.may_reach(&listed, Some("bob")));
+    assert!(s.may_reach_self(&listed, Some("alice")) && s.may_reach_self(&listed, Some("bob")));
     assert!(
-        !s.may_reach(&listed, Some("carol")),
+        !s.may_reach_self(&listed, Some("carol")),
         "listed, never a member"
     );
     let _gone = m.state.orgs.get_mut("org").unwrap().members.remove("bob");
     let s = &m.state;
-    assert!(!s.may_reach(&listed, Some("bob")), "listed owner, removed");
-    assert!(!s.receives(&listed, &Audience::All, Some("alice"), Some("bob")));
-    assert!(s.receives(&listed, &Audience::All, Some("bob"), Some("alice")));
+    assert!(
+        !s.may_reach_self(&listed, Some("bob")),
+        "listed owner, removed"
+    );
+    assert!(!s.receives_self(&listed, &Audience::All, Some("alice"), Some("bob")));
+    assert!(s.receives_self(&listed, &Audience::All, Some("bob"), Some("alice")));
     // In its owner's personal organization, the list alone decides.
     let personal = AppRecord {
         org: p("bob"),
         ..listed
     };
-    assert!(m.state.may_reach(&personal, Some("carol")));
+    assert!(m.state.may_reach_self(&personal, Some("carol")));
 }
 
 /// An instance only named people reach (a DM, a private channel) of a package with an
@@ -5309,13 +5327,19 @@ fn an_accounts_instance_is_reached_only_through_its_app_team() {
     let m = fresh();
     let chat = m.state.apps["dm"].clone();
     let s = &m.state;
-    assert!(s.may_reach(&chat, Some("alice")) && s.may_reach(&chat, Some("bob")));
-    assert!(!s.may_reach(&chat, Some("carol")), "the owner, out of Chat");
-    assert!(!s.may_reach(&chat, Some("dave")), "listed, out of Chat");
-    assert!(!s.receives(&chat, &Audience::All, Some("bob"), Some("dave")));
+    assert!(s.may_reach_self(&chat, Some("alice")) && s.may_reach_self(&chat, Some("bob")));
+    assert!(
+        !s.may_reach_self(&chat, Some("carol")),
+        "the owner, out of Chat"
+    );
+    assert!(
+        !s.may_reach_self(&chat, Some("dave")),
+        "listed, out of Chat"
+    );
+    assert!(!s.receives_self(&chat, &Audience::All, Some("bob"), Some("dave")));
     // No app team for its package: the list alone, as before.
     let raw = dm("raw", "b1");
-    assert!(s.may_reach(&raw, Some("carol")) && s.may_reach(&raw, Some("dave")));
+    assert!(s.may_reach_self(&raw, Some("carol")) && s.may_reach_self(&raw, Some("dave")));
 
     // Moving the DM onto Chat's team gives rows to who reaches it: Alice and Bob.
     let scope = SystemCmd::ScopeApps {
@@ -5691,8 +5715,12 @@ fn a_new_app_team_gives_its_all_apps_members_a_row() {
         let t = &s.orgs["org"].teams[&team];
         assert_eq!(t.join, TeamJoin::Invite);
         assert_eq!(t.members.contains_key("dave"), flag, "{flag}");
-        assert_eq!(s.may_reach(&s.apps["notes"], Some("dave")), flag, "{flag}");
-        assert!(!s.may_reach(&s.apps["notes"], Some("carol")));
+        assert_eq!(
+            s.may_reach_self(&s.apps["notes"], Some("dave")),
+            flag,
+            "{flag}"
+        );
+        assert!(!s.may_reach_self(&s.apps["notes"], Some("carol")));
     }
     // Chat's team was there already: closing it again adds nobody.
     let mut m = fresh();
@@ -6138,6 +6166,7 @@ fn set_access(app: &str, actor: &str) -> SystemCmd {
         actor: actor.into(),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     }
 }
 
@@ -6148,6 +6177,7 @@ fn set_app_metadata(app: &str, actor: &str) -> SystemCmd {
         actor: actor.into(),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     }
 }
 
@@ -6169,6 +6199,7 @@ fn transfer_app(pk: &mut Soft, app: &str, actor: &str, to: &str) -> SystemCmd {
         consent: consent(pk, app, "__transfer", &json!({ "to": to })),
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     }
 }
 
@@ -6325,7 +6356,7 @@ fn a_moved_app_takes_its_payer_access_and_people_to_the_target() {
     assert_eq!(o.role("bob"), Some(OrgRole::Member));
     assert_eq!(o.role("carol"), Some(OrgRole::Guest));
     for who in ["alice", "bob", "carol"] {
-        assert!(s.may_reach(app, Some(who)), "{who}");
+        assert!(s.may_reach_self(app, Some(who)), "{who}");
     }
     assert_eq!((s.file_bytes("org"), s.file_bytes("new")), (0, 100));
     assert_eq!(s.compute["oa"]["r"].payer, "new");
@@ -6365,8 +6396,8 @@ fn an_app_moves_without_its_people_only_to_where_its_owner_is() {
     assert_eq!(out["added"], json!([]), "{out}");
     let s = &m.state;
     assert_eq!(s.orgs["new"].role("carol"), None);
-    assert!(!s.may_reach(&s.apps["oa"], Some("carol")));
-    assert!(s.may_reach(&s.apps["oa"], Some("bob")));
+    assert!(!s.may_reach_self(&s.apps["oa"], Some("carol")));
+    assert!(s.may_reach_self(&s.apps["oa"], Some("bob")));
 
     // Into a target whose app teams are all closed, without its people:
     // the owner still reaches (and manages) it, with a row of their own.
@@ -6384,8 +6415,8 @@ fn an_app_moves_without_its_people_only_to_where_its_owner_is() {
         crate::types::TeamJoin::Invite
     );
     assert_eq!(s.orgs["new"].teams[&team].members.get("bob"), Some(&false));
-    assert!(s.may_reach(&s.apps["oa"], Some("bob")));
-    assert!(s.owner_acts(&s.apps["oa"], "bob"));
+    assert!(s.may_reach_self(&s.apps["oa"], Some("bob")));
+    assert!(s.owner_acts_self(&s.apps["oa"], "bob"));
 }
 
 /// Who moves: the app's manager where it is now, as an admin of the
@@ -6622,7 +6653,7 @@ fn a_moved_app_follows_the_targets_mode() {
         t.default_capabilities,
         Some(crate::types::caps::CREATE_CHILD_TEAM)
     );
-    assert!(m.state.may_reach(&m.state.apps["oa"], Some("bob")));
+    assert!(m.state.may_reach_self(&m.state.apps["oa"], Some("bob")));
 
     // A second instance goes onto the same team.
     let _prev = m.state.apps.insert("ob".into(), {
@@ -6651,7 +6682,7 @@ fn a_moved_app_follows_the_targets_mode() {
         .unwrap();
     assert_eq!(out["grants"], json!([{ "kind": "org" }]), "{out}");
     assert!(m.state.orgs["leg"].teams.is_empty());
-    assert!(m.state.may_reach(&m.state.apps["ob"], Some("bob")));
+    assert!(m.state.may_reach_self(&m.state.apps["ob"], Some("bob")));
 
     // One app team closed alone (another still open): the team made for
     // the moved app is open, as the other apps' are.
@@ -6719,9 +6750,9 @@ fn a_moved_dm_brings_its_people_into_the_targets_closed_app_team() {
     assert_eq!(team.members.get("bob"), Some(&false));
     assert_eq!(team.members.get("carol"), Some(&false));
     for who in ["bob", "carol"] {
-        assert!(s.may_reach(&s.apps["dm"], Some(who)), "{who}");
+        assert!(s.may_reach_self(&s.apps["dm"], Some(who)), "{who}");
     }
-    assert!(s.owner_acts(&s.apps["dm"], "bob"));
+    assert!(s.owner_acts_self(&s.apps["dm"], "bob"));
 
     // The same move as an earlier release logged it (no
     // `accounts_in_app_team`) gives no such rows, as that release did,
@@ -6753,7 +6784,7 @@ fn a_moved_dm_brings_its_people_into_the_targets_closed_app_team() {
         s.orgs["new"].teams["np"].members.keys().collect::<Vec<_>>(),
         ["alice"]
     );
-    assert!(!s.may_reach(&s.apps["dm"], Some("bob")));
+    assert!(!s.may_reach_self(&s.apps["dm"], Some("bob")));
 
     // An open app team in the target: its members reach the DM already,
     // and nothing is added.
@@ -6775,7 +6806,7 @@ fn a_moved_dm_brings_its_people_into_the_targets_closed_app_team() {
         .unwrap();
     let s = &m.state;
     assert_eq!(s.orgs["new"].teams["np"].members.len(), 1);
-    assert!(s.may_reach(&s.apps["dm"], Some("bob")));
+    assert!(s.may_reach_self(&s.apps["dm"], Some("bob")));
 }
 
 /// A personal app moves into an organization its owner administers,
@@ -6866,7 +6897,7 @@ fn a_move_entry_without_its_optional_fields_reads_as_a_plain_move() {
 #[test]
 fn an_org_apps_owner_manages_it_only_while_a_member() {
     let (mut m, _alice, mut bob) = org_app_of_bob();
-    assert!(m.state.owner_acts(&m.state.apps["oa"], "bob"));
+    assert!(m.state.owner_acts_self(&m.state.apps["oa"], "bob"));
     assert!(m.state.may_upgrade(&m.state.apps["oa"], "bob", false));
     let _ok = m.run(set_app_metadata("oa", "bob")).unwrap();
 
@@ -6881,8 +6912,8 @@ fn an_org_apps_owner_manages_it_only_while_a_member() {
             }
         }
         let app = &m.state.apps["oa"];
-        assert!(!m.state.owner_acts(app, "bob"), "{demoted:?}");
-        assert!(!m.state.manages_app(app, "bob"), "{demoted:?}");
+        assert!(!m.state.owner_acts_self(app, "bob"), "{demoted:?}");
+        assert!(!m.state.manages_app_self(app, "bob"), "{demoted:?}");
         assert!(!m.state.may_upgrade(app, "bob", false), "{demoted:?}");
         assert!(m.run(set_access("oa", "bob")).is_err(), "{demoted:?}");
         assert!(m.run(set_app_metadata("oa", "bob")).is_err(), "{demoted:?}");
@@ -6930,8 +6961,8 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
     set(&mut m, team(&["bob"], TeamJoin::Invite));
     m.state.apps.get_mut("oa").unwrap().access = Access::team("t".into());
     let app = m.state.apps["oa"].clone();
-    assert!(m.state.may_reach(&app, Some("bob")));
-    assert!(m.state.owner_acts(&app, "bob"));
+    assert!(m.state.may_reach_self(&app, Some("bob")));
+    assert!(m.state.owner_acts_self(&app, "bob"));
     let _ok = m.run(set_app_metadata("oa", "bob")).unwrap();
 
     // Kicked or left (no row), closed without them (no row, no longer
@@ -6941,9 +6972,9 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
     for out in [team(&[], TeamJoin::Invite), barred] {
         set(&mut m, out);
         let app = &m.state.apps["oa"];
-        assert!(!m.state.may_reach(app, Some("bob")));
-        assert!(!m.state.owner_acts(app, "bob"));
-        assert!(!m.state.manages_app(app, "bob"));
+        assert!(!m.state.may_reach_self(app, Some("bob")));
+        assert!(!m.state.owner_acts_self(app, "bob"));
+        assert!(!m.state.manages_app_self(app, "bob"));
         assert!(!m.state.may_upgrade(app, "bob", false));
         assert!(m.run(set_access("oa", "bob")).is_err());
         assert!(m.run(set_app_metadata("oa", "bob")).is_err());
@@ -6963,13 +6994,13 @@ fn an_apps_owner_reaches_and_manages_an_app_on_a_team_only_while_in_it() {
     let _ok = m.run(old(set_app_metadata("oa", "bob"))).unwrap();
     // Open to the organization again: Bob, a member, is in it.
     set(&mut m, team(&[], TeamJoin::Everyone));
-    assert!(m.state.may_reach(&m.state.apps["oa"], Some("bob")));
-    assert!(m.state.owner_acts(&m.state.apps["oa"], "bob"));
+    assert!(m.state.may_reach_self(&m.state.apps["oa"], Some("bob")));
+    assert!(m.state.owner_acts_self(&m.state.apps["oa"], "bob"));
     set(&mut m, team(&["carol"], TeamJoin::Invite));
     let _ok = m
         .run(transfer_app(&mut alice, "oa", "alice", "carol"))
         .unwrap();
-    assert!(m.state.owner_acts(&m.state.apps["oa"], "carol"));
+    assert!(m.state.owner_acts_self(&m.state.apps["oa"], "carol"));
 }
 
 /// The organization's admins clean up an app whose owner left: they
@@ -6994,7 +7025,7 @@ fn an_org_admin_transfers_or_deletes_an_app_whose_owner_left() {
         .run(transfer_app(&mut alice, "oa", "alice", "carol"))
         .unwrap();
     assert_eq!(m.state.apps["oa"].owner, "carol");
-    assert!(m.state.owner_acts(&m.state.apps["oa"], "carol"));
+    assert!(m.state.owner_acts_self(&m.state.apps["oa"], "carol"));
     let _ok = m.run(delete_app("ob", "alice")).unwrap();
     assert!(!m.state.apps.contains_key("ob"));
 }
@@ -7010,8 +7041,8 @@ fn a_member_owner_and_a_personal_owner_manage_their_apps() {
     assert_eq!(m.state.apps["oa"].owner, "carol");
 
     // `app` is alice's own, outside any organization.
-    assert!(m.state.owner_acts(&m.state.apps["app"], "alice"));
-    assert!(!m.state.manages_app(&m.state.apps["app"], "bob"));
+    assert!(m.state.owner_acts_self(&m.state.apps["app"], "alice"));
+    assert!(!m.state.manages_app_self(&m.state.apps["app"], "bob"));
     let _ok = m.run(set_access("app", "alice")).unwrap();
     let _ok = m.run(set_app_metadata("app", "alice")).unwrap();
     let _ok = m
@@ -7969,6 +8000,7 @@ fn a_release_deadline_stops_new_work_until_the_release_is_approved() {
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     };
@@ -8117,7 +8149,7 @@ fn bind_on(
 /// (release 1.0.0 ships `b1`, `upgrades` as given), a raw bundle `raw`,
 /// and the customer's instances `inst` (of `p`) and `rawapp`.
 fn publishing(signer: &str, upgrades: &str) -> SystemMachine {
-    let mut m = SystemMachine::new("test".into());
+    let mut m = SystemMachine::new("test".into(), crate::system::shard::ShardId::Root);
     let _ok = m.run_unproven(genesis(all(Authority::Owner))).unwrap();
     for who in ["pam", "bob", "cora", "dan"] {
         let _ok = m.run_unproven(account(who)).unwrap();
@@ -8280,6 +8312,7 @@ fn a_publisher_approves_the_releases_of_every_instance_of_its_packages() {
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     };
@@ -10653,6 +10686,7 @@ fn offer_app(deployment: &str, app: &str, version: &str, actor: &str) -> SystemC
         actor: actor.into(),
         at: 10,
         consent: serde_json::Value::Null,
+        serving: Vec::new(),
     }
 }
 
@@ -10683,6 +10717,7 @@ fn instance(id: &str, owner: &str, bundle: &str, deployment: Option<&str>) -> Sy
             }))
             .unwrap(),
         ),
+        org: None,
         unit_offer: None,
         offers_only: false,
     }
@@ -11117,6 +11152,7 @@ fn deployment_changes_carry_their_managers_consent() {
         actor: "alice".into(),
         at: 10,
         consent,
+        serving: Vec::new(),
     };
     let for_1 = json!({ "app": "notes", "package": "p", "version": "1.0.0" });
     let c = consent(&mut alice, &subject, "__offer_app", &for_1);
@@ -11685,6 +11721,7 @@ fn a_deployment_holds_secrets_the_releases_its_offers_use_declare() {
             actor: "alice".into(),
             at: 10,
             consent: Value::Null,
+            serving: Vec::new(),
         })
         .unwrap();
     let d = m.state.deployments["a"].clone();
@@ -11786,6 +11823,7 @@ fn a_member_of_its_offers_signer_reads_the_deployments_secret() {
             actor: "alice".into(),
             at: 10,
             consent: Value::Null,
+            serving: Vec::new(),
         },
         set_secret("a", "PI_KEY", "devs-key", "alice"),
     ] {
@@ -11842,6 +11880,7 @@ fn a_used_release_its_owner_may_not_use_declares_no_deployment_secret() {
             actor: "alice".into(),
             at: 10,
             consent: Value::Null,
+            serving: Vec::new(),
         })
         .unwrap();
     // pi, another publisher's, becomes private to an organization alice is not in.
@@ -12114,6 +12153,7 @@ fn the_payer_totals_always_equal_the_sum_over_the_apps() {
             consent: serde_json::Value::Null,
             owner_in_org: true,
             owner_in_team: true,
+            org: None,
         })
         .unwrap();
     assert_totals_are_sums(&m.state);
@@ -12152,6 +12192,7 @@ fn a_personal_app_moves_only_to_an_owner_whose_quota_holds_its_files() {
         consent: serde_json::Value::Null,
         owner_in_org: true,
         owner_in_team: true,
+        org: None,
     };
     let refused = m.run_unproven(transfer.clone()).unwrap_err();
     assert!(refused.is_quota(), "{refused}");
@@ -17153,7 +17194,7 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
         .unwrap();
     assert!(m.state.orgs["org"].in_team("bob", "t"));
     assert!(
-        m.state.manages_apps("org", "bob", Some("t")),
+        m.state.manages_apps_self("org", "bob", Some("t")),
         "the old rule"
     );
 
@@ -17173,7 +17214,7 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
         "no row in a restricted team either"
     );
     assert!(!m.state.orgs["org"].in_team("bob", "t"));
-    assert!(!m.state.manages_apps("org", "bob", Some("t")));
+    assert!(!m.state.manages_apps_self("org", "bob", Some("t")));
 
     // Once the owner puts him in `t` holding MANAGE_MEMBERS there, he still
     // grants no bit he lacks organization-wide: not to his own row, not
@@ -17212,7 +17253,7 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
         ),
         super::CANNOT_GRANT_UNHELD
     );
-    assert!(!m.state.manages_apps("org", "bob", Some("t")));
+    assert!(!m.state.manages_apps_self("org", "bob", Some("t")));
     assert!(!m.state.orgs["org"].in_team("carol", "t"));
     // What he holds he hands on, and an unknown bit is refused to anyone.
     let _ok = m
@@ -17236,7 +17277,7 @@ fn a_team_row_grants_only_what_its_maker_holds_on_a_team_they_see() {
     let _ok = m
         .run(team_caps(&mut alice, "t", "carol", escalate, "alice"))
         .unwrap();
-    assert!(m.state.manages_apps("org", "carol", Some("t")));
+    assert!(m.state.manages_apps_self("org", "carol", Some("t")));
 }
 
 /// `bob`'s invite of `org` under `token`: `role`, `teams`, five uses.
@@ -17353,7 +17394,7 @@ fn an_organizations_backup_key_is_set_by_its_owner_and_admins() {
             .unwrap()
             .capabilities
             .insert("bob".into(), caps::MANAGE_APPLICATION);
-        assert!(m.state.manages_apps("org", "bob", None));
+        assert!(m.state.manages_apps_self("org", "bob", None));
         assert!(!m.state.approves_upgrades("org", "bob"));
     };
 
@@ -17426,7 +17467,7 @@ fn an_instance_invite_gives_nothing_once_its_creator_no_longer_manages_the_insta
             .unwrap()
             .members
             .insert("bob".into(), OrgRole::Member);
-        assert!(!m.state.manages_grants(&m.state.apps["oa"], "bob"));
+        assert!(!m.state.manages_grants_self(&m.state.apps["oa"], "bob"));
         m
     };
     let redeem = |token: &str, who: &str| SystemCmd::RedeemAppInvite {

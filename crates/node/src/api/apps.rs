@@ -89,6 +89,10 @@ pub(crate) async fn offered_bundle(
     version: Option<&str>,
     service: Option<&str>,
 ) -> Result<(String, Option<String>, PackageRef), ApiError> {
+    // The organizations the serve check reads (the deployment's owner and its
+    // offered releases' served orgs) come from their own shards
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let serve = node.deployment_serve_view(id);
     let find = || {
         node.sys(|s| {
             let d = s.deployments.get(id)?;
@@ -98,7 +102,9 @@ pub(crate) async fn offered_bundle(
                 .filter(|o| o.package == package && version.is_none_or(|v| v == o.version))
                 .filter_map(|o| {
                     // An offer serves only while its owner's side may still use the release.
-                    let r = s.offered_release(o).filter(|r| s.offer_serves(d, r))?;
+                    let r = s
+                        .offered_release(o)
+                        .filter(|r| s.offer_serves_with(d, r, &serve))?;
                     Some((o.version.clone(), r.app_parts().clone(), r.compute.clone()))
                 })
                 .collect();
@@ -749,6 +755,12 @@ async fn create_instance(
     let has_compute = compute_bundle.is_some();
     let components = node.sys(|s| s.components_of(release.as_ref()));
     let access = body.grants.map_or_else(Access::org, Access::new);
+    // Bake the organization from its own shard (its tenant group) into the
+    // entry: `apply` runs on the root group, which cannot read another shard,
+    // so every replica judges the app's membership, capability and grant checks
+    // against the organization this read sees
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    let baked_org = node.org_of(&org).map(Box::new);
     let out = node
         .sys_write(&SystemCmd::CreateApp {
             app: Box::new(crate::types::AppRecord {
@@ -778,6 +790,7 @@ async fn create_instance(
                 egress_off: false,
                 lineage: None,
             }),
+            org: baked_org,
             unit_offer: body.unit_offer,
             offers_only,
         })
@@ -885,19 +898,29 @@ pub(crate) async fn unit_members(
         }
         let range = semver::VersionReq::parse(&u.range)
             .map_err(|e| ApiError::bad_request("BAD_USES", &e.to_string()))?;
+        // The used release's serving organizations come from their own shards
+        // (their tenant groups), so a member sees a private used release their
+        // organization serves
+        // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        let used_orgs = node.release_org_view(&u.package);
+        let serve = deployment
+            .map(|d| node.deployment_serve_view(d))
+            .unwrap_or_default();
         let installed: Vec<String> = node.sys(|s| {
             let same_signer = s.same_signer(&release.package, &u.package);
             let serves = |v: &crate::system::PackageVersion| {
                 deployment
                     .and_then(|d| s.deployments.get(d))
-                    .is_some_and(|d| s.offer_serves(d, v))
+                    .is_some_and(|d| s.offer_serves_with(d, v, &serve))
             };
             s.packages
                 .get(&u.package)
                 .map(|p| {
                     p.versions
                         .iter()
-                        .filter(|(_, v)| same_signer || s.sees_release(v, creator) || serves(v))
+                        .filter(|(_, v)| {
+                            same_signer || s.sees_release_with(v, creator, &used_orgs) || serves(v)
+                        })
                         .map(|(k, _)| k.clone())
                         .collect()
                 })
@@ -984,6 +1007,17 @@ async fn app_list(
     let bound = p.as_ref().and_then(|p| p.bound_app().map(str::to_owned));
     let reader = crate::report::Reader::Account(account.as_deref().unwrap_or_default());
     let key = p.as_ref().and_then(|p| p.api_key.clone());
+    // Each app's organization, read from its shard, for the reach filter below.
+    let org_recs: std::collections::HashMap<crate::types::OrgId, crate::types::Org> = node
+        .sys(|s| {
+            s.apps
+                .values()
+                .map(|a| a.org.clone())
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .into_iter()
+        .filter_map(|o| node.org_of(&o).map(|r| (o, r)))
+        .collect();
     let apps: Vec<AppEntry> = node.sys(|s| {
         s.apps
             .values()
@@ -992,7 +1026,7 @@ async fn app_list(
                     .is_none_or(|k| super::key_scoped_to(k, &a.app_id))
             })
             .filter(|a| !a.access.anyone() || account.as_deref() == Some(a.owner.as_str()))
-            .filter(|a| s.may_reach(a, account.as_deref()))
+            .filter(|a| s.may_reach(a, account.as_deref(), org_recs.get(&a.org)))
             .filter(|a| p.as_ref().is_none_or(|p| p.origin_admits(s, Some(&a.app_id))))
             .filter(|a| q.bundle.as_ref().is_none_or(|b| *b == a.bundle))
             .map(|a| (a, crate::report::release_of_app(s, a, reader)))
@@ -1092,7 +1126,8 @@ async fn app_get(
         return Err(ApiError::not_found("no such app"));
     }
     // Its public links are its managers' to see.
-    let manages = account.is_some_and(|a| node.sys(|s| s.manages_grants(&app, a)));
+    let morg = node.org_of(&app.org);
+    let manages = account.is_some_and(|a| node.sys(|s| s.manages_grants(&app, a, morg.as_ref())));
     let mut app = app;
     if !manages {
         app.access = app.access.without_links();
@@ -1100,7 +1135,8 @@ async fn app_get(
     let mut v = serde_json::to_value(&app).unwrap_or_default();
     // A guest sees none of the organization's people: only their own grant.
     if let Some(a) = account {
-        if node.sys(|s| s.is_guest(&app, a)) {
+        let org = node.org_of(&app.org);
+        if node.sys(|s| s.is_guest(&app, a, org.as_ref())) {
             v["grants"] = json!(app.access.only(a));
         }
     }
@@ -1132,11 +1168,12 @@ fn refuse_app_invite(
     app: &crate::types::AppRecord,
     actor: &str,
 ) -> Result<(), ApiError> {
+    let org = node.org_of(&app.org);
     node.sys(|s| {
-        if !s.may_reach(app, Some(actor)) {
+        if !s.may_reach(app, Some(actor), org.as_ref()) {
             return Err(ApiError::not_found("no such app"));
         }
-        if !s.manages_grants(app, actor) {
+        if !s.manages_grants(app, actor, org.as_ref()) {
             return Err(ApiError::forbidden(
                 "only whoever may change the instance's access invites its guests",
             ));
@@ -1256,8 +1293,11 @@ async fn app_invite_list(
     let app = node.app(&app_id).await?;
     p.within(&node, &app)?;
     let now = now_secs();
+    let org = node.org_of(&app.org);
     node.sys(|s| {
-        if !s.may_reach(&app, Some(&actor)) || !s.manages_grants(&app, &actor) {
+        if !s.may_reach(&app, Some(&actor), org.as_ref())
+            || !s.manages_grants(&app, &actor, org.as_ref())
+        {
             return Err(ApiError::not_found("no such app"));
         }
         let invites: Vec<AppInviteView> = s
@@ -1291,9 +1331,11 @@ async fn app_invite_revoke(
     let actor = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let app = node.app(&app_id).await?;
+    let org = node.org_of(&app.org);
     let visible = node.sys(|s| {
         s.app_invites.get(&key).is_some_and(|i| {
-            i.app == app_id && (i.created_by == actor || s.manages_grants(&app, &actor))
+            i.app == app_id
+                && (i.created_by == actor || s.manages_grants(&app, &actor, org.as_ref()))
         })
     });
     if !visible {
@@ -1365,6 +1407,7 @@ async fn app_access(
         }
         _ => p.unbound()?,
     }
+    let org = node.org_of(&app.org).map(Box::new);
     let _ok = node
         .sys_write(&SystemCmd::SetAccess {
             app_id,
@@ -1372,6 +1415,7 @@ async fn app_access(
             actor: account,
             owner_in_org: true,
             owner_in_team: true,
+            org,
         })
         .await?;
     Ok(Json(json!({})))
@@ -1416,7 +1460,12 @@ async fn app_transfer(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
+    if !{
+        let org = node.org_of(&app.org);
+        node.sys(|s| {
+            fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, org.as_ref()))
+        })
+    } {
         let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_TRANSFER);
         return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
@@ -1428,10 +1477,8 @@ async fn app_transfer(
         .await
         .is_ok();
     if ordinary
-        && !node.sys(|s| {
-            s.orgs
-                .get(&app.org)
-                .and_then(|o| o.role(&body.to))
+        && !node.sys_with_org(&app.org, |_, o| {
+            o.and_then(|o| o.role(&body.to))
                 .is_some_and(|r| r >= crate::types::OrgRole::Member)
         })
     {
@@ -1448,14 +1495,15 @@ async fn app_transfer(
     .await?;
     // Make the new owner's personal organization first if they have none.
     let leaves_personal = !ordinary
-        && node.sys(|s| {
-            s.orgs.get(&app.org).is_some_and(|o| {
+        && node.sys_with_org(&app.org, |s, o| {
+            o.is_some_and(|o| {
                 o.personal && o.role(&body.to).is_none() && s.accounts.contains_key(&body.to)
             })
         });
     if leaves_personal {
         let _theirs = personal_org(&node, &body.to).await?;
     }
+    let org = node.org_of(&app.org).map(Box::new);
     Ok(Json(
         node.sys_write(&SystemCmd::TransferApp {
             app_id,
@@ -1464,6 +1512,7 @@ async fn app_transfer(
             consent,
             owner_in_org: true,
             owner_in_team: true,
+            org,
         })
         .await?,
     ))
@@ -1494,11 +1543,17 @@ async fn app_move(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
+    if !{
+        let org = node.org_of(&app.org);
+        node.sys(|s| {
+            fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, org.as_ref()))
+        })
+    } {
         let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_MOVE);
         return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
-    if !node.sys(|s| s.is_org_admin(&body.to_org, &actor)) {
+    let to_org = node.org_of(&body.to_org);
+    if !node.sys(|s| s.is_org_admin(to_org.as_ref(), &actor)) {
         return Err(ApiError::forbidden(crate::system::ONLY_ADMINS_MOVE_IN));
     }
     // Before the passkey step-up: a node that could not apply it refuses it anyway.
@@ -1535,8 +1590,10 @@ async fn app_metadata(
     let app_id = node.canonical_app_id(&app_id);
     let p = signed_in(&node, &headers).await?;
     let actor = p.account()?;
-    p.within(&node, &node.app(&app_id).await?)?;
+    let app = node.app(&app_id).await?;
+    p.within(&node, &app)?;
     p.settings_write()?;
+    let org = node.org_of(&app.org).map(Box::new);
     let _ok = node
         .sys_write(&SystemCmd::SetAppMetadata {
             app_id,
@@ -1544,6 +1601,7 @@ async fn app_metadata(
             actor,
             owner_in_org: true,
             owner_in_team: true,
+            org,
         })
         .await?;
     Ok(Json(json!({})))
@@ -1767,8 +1825,12 @@ pub(crate) async fn delegation_plan(
     let source = node.app(source_id).await?;
     let target = node.app(target_id).await?;
     let account = account.to_owned();
-    let reaches =
-        node.sys(|s| s.may_reach(&source, Some(&account)) && s.may_reach(&target, Some(&account)));
+    // source and target share an org (checked below), so one lookup serves both.
+    let org = node.org_of(&source.org);
+    let reaches = node.sys(|s| {
+        s.may_reach(&source, Some(&account), org.as_ref())
+            && s.may_reach(&target, Some(&account), org.as_ref())
+    });
     if !reaches || source_id == target_id || source.org != target.org {
         return Err(ApiError::new(
             404,
@@ -2228,9 +2290,12 @@ async fn app_link(
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
     let target = node.app(&target_id).await?;
+    let aorg = node.org_of(&app.org);
+    let torg = node.org_of(&target.org);
     if !node.sys(|s| {
-        fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))
-            && fresh_record(s, &target).is_some_and(|target| s.manages_app(target, &actor))
+        fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, aorg.as_ref()))
+            && fresh_record(s, &target)
+                .is_some_and(|target| s.manages_app(target, &actor, torg.as_ref()))
     }) {
         let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK);
         let refused = hidden_from(&node, &target, Some(&actor), refused);
@@ -2298,7 +2363,12 @@ async fn app_unlink(
     let p = holder(&node, &headers).await?;
     let actor = p.account()?;
     let app = node.app(&app_id).await?;
-    if !node.sys(|s| fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor))) {
+    if !{
+        let org = node.org_of(&app.org);
+        node.sys(|s| {
+            fresh_record(s, &app).is_some_and(|app| s.manages_app(app, &actor, org.as_ref()))
+        })
+    } {
         let refused = ApiError::forbidden(crate::system::ONLY_MANAGERS_LINK);
         return Err(hidden_from(&node, &app, Some(&actor), refused));
     }
@@ -2343,10 +2413,11 @@ async fn manages_instance(node: &Node, account: &str, app_id: &str) -> Result<()
         let Some(app) = s.apps.get(app_id) else {
             return Err(ApiError::not_found("no such app"));
         };
-        if s.manages_app(app, account) {
+        let org = s.orgs.get(&app.org);
+        if s.manages_app(app, account, org) {
             return Ok(());
         }
-        if s.may_reach(app, Some(account)) {
+        if s.may_reach(app, Some(account), org) {
             return Err(ApiError::forbidden(
                 "only whoever manages the instance handles its origins: its owner or an admin of its organization",
             ));

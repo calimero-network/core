@@ -2053,8 +2053,19 @@ impl SysDirectory {
         })
     }
 
+    /// The app's organization, read from the shard that owns it (its tenant
+    /// group once the control plane is sharded), not from this (root) state: the
+    /// app record and its id are root's, but its members and teams live in the
+    /// tenant group, so the caller-standing host functions below must read them
+    /// there (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
     fn with_org<R: Default>(&self, f: impl FnOnce(&crate::types::Org) -> R) -> R {
-        self.with(|s, a| s.orgs.get(&a.org).map(f).unwrap_or_default())
+        let Some(node) = self.node.upgrade() else {
+            return R::default();
+        };
+        let Some(org_id) = node.sys(|s| s.apps.get(&self.app_id).map(|a| a.org.clone())) else {
+            return R::default();
+        };
+        node.org_of(&org_id).as_ref().map(f).unwrap_or_default()
     }
 }
 
@@ -2092,11 +2103,10 @@ impl host::Directory for SysDirectory {
     /// app's org with the account's role in it. A component runs code the platform
     /// doesn't vet, so it never maps its callers' memberships in other tenants.
     fn orgs_of(&self, account: &str) -> Vec<(String, host::OrgRole)> {
-        self.with(|s, a| {
-            s.orgs
-                .get(&a.org)
-                .and_then(|o| o.role(account))
-                .map(|r| vec![(a.org.clone(), host_role(r))])
+        let org_id = self.with(|_, a| a.org.clone());
+        self.with_org(|o| {
+            o.role(account)
+                .map(|r| vec![(org_id.clone(), host_role(r))])
                 .unwrap_or_default()
         })
     }

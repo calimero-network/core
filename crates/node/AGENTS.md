@@ -89,7 +89,11 @@ All paths are under `src/`. Each file's `//!` says what it owns; this is the ind
   `Area`: `fleet`, `packages`, `apps`, `compute`, `accounts`, `recovery`, `approvals`,
   `deployments`, `sign_up`, `orgs`, `updates`), `system/cluster_version.rs`,
   `system/routing.rs` (derived indexes for Raft admission), `proof.rs`, `membership.rs`,
-  `placement.rs`.
+  `placement.rs`. `system/shard.rs` is the tenant-sharding routing layer — `ShardId`,
+  `Scope`, `SystemCmd::scope()`, `shard_for`/`owns`/`flipped`, and the `ACTIVE` cutover
+  switch (`false` today, so every command stays on the one system group); it splits the
+  system group into a root group and per-organization tenant groups when turned on
+  ([design note](../../docs/design/system-group-sharding.md)).
 - **App groups**: `app.rs` (`AppMachine`), `component.rs` (entries and apply),
   `component/` (`action`, `blobs`, `runs`, `pipelines`, `proofs`, `step_cache`, `search`,
   `xcall`), `idempotency.rs`.

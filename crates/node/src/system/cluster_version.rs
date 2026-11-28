@@ -977,6 +977,9 @@ impl SystemCmd {
                 ..
             } => vec![Feature::SessionHolders],
             Self::RedeemInvite { .. } => Vec::new(),
+            // Node-written seed and invite routing directory; hard cutover,
+            // never gated.
+            Self::SeedTenant { .. } | Self::BindInvite { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
             }
@@ -1013,6 +1016,7 @@ impl SystemCmd {
                 app,
                 unit_offer,
                 offers_only,
+                ..
             } => {
                 let mut f = Vec::new();
                 if !app.components.is_app() {

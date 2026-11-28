@@ -34,6 +34,8 @@ mod prejudge;
 mod recovery;
 mod rejection;
 mod routing;
+/// The tenant-shard placement seam: see the module's own documentation.
+pub(crate) mod shard;
 mod sign_up;
 mod state_caps;
 mod updates;
@@ -899,8 +901,34 @@ pub struct SystemState {
     pub refresh: BTreeMap<String, RefreshRecord>,
     pub revoked_sessions: BTreeSet<String>,
     pub orgs: BTreeMap<OrgId, Org>,
+    /// Root-owned: the system shard that carries each organization's own state.
+    /// An org's tenant group is allocated from `next_group` when the org is
+    /// created and dropped when it is deleted, so a tenant's control plane lives
+    /// in its own Raft group rather than the single system group. Empty until the
+    /// first org is created under sharding; left out of a snapshot while empty, so
+    /// state written before sharding reads and writes as it did
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tenant_groups: BTreeMap<OrgId, u64>,
+    /// Root-owned: the next tenant group id to hand out, monotonic across org
+    /// deletions so a tenant group id is never reused. Starts from
+    /// `shard::TENANT_GROUP_BASE`; left out of a snapshot while unset, so state
+    /// written before sharding reads and writes as it did.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub next_tenant_group: u64,
     /// invite key (the token's Ed25519 public key, hex) -> invite
     pub invites: BTreeMap<String, Invite>,
+    /// Root-held routing directory for organization invites: invite key -> the
+    /// organization it belongs to. An invite token names no organization, so the
+    /// redeem path reads this on root to find the invite's tenant group and
+    /// route `RedeemInvite` there (the invite record itself lives on that tenant,
+    /// written by `CreateInvite`). Routing metadata only — never the authority
+    /// for a redemption, which the tenant re-checks against its own invite record
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    /// Left out when empty, so a state from before sharding reads and writes as
+    /// it did.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub invite_org: BTreeMap<String, OrgId>,
     /// Instance invites ([`crate::types::AppInvite`]), by the token's Ed25519 public key:
     /// whoever redeems one becomes a guest of its instance. Left out when empty, so a
     /// state from before reads and writes as it did.
@@ -2344,7 +2372,15 @@ impl SystemState {
     /// binding decides whose approvals cover the key's packages.
     #[must_use]
     pub fn holds_approve_releases(&self, org: &str, account: &str) -> bool {
-        self.orgs.get(org).is_some_and(|o| {
+        self.holds_approve_releases_at(self.orgs.get(org), account)
+    }
+
+    /// [`Self::holds_approve_releases`] reading the organization from its own
+    /// shard (its tenant group when sharded), for the access gate
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn holds_approve_releases_at(&self, org: Option<&Org>, account: &str) -> bool {
+        org.is_some_and(|o| {
             o.role(account).is_some_and(|r| r >= OrgRole::Member)
                 && o.may(account, None, crate::types::caps::APPROVE_RELEASES)
         })
@@ -2482,15 +2518,16 @@ impl SystemState {
                             r.package == package && r.version == v.version
                         })
                         && v.app_parts().values().any(|h| *h == a.bundle)
-                        && self.may_reach(a, Some(who))
+                        && self.may_reach(a, Some(who), self.orgs.get(&a.org))
                 }))
     }
 
     /// Whether `who` reaches an app running one of `v`'s services.
     fn reaches_release(&self, v: &PackageVersion, who: &str) -> bool {
-        self.apps
-            .values()
-            .any(|a| v.app_parts().values().any(|h| *h == a.bundle) && self.may_reach(a, Some(who)))
+        self.apps.values().any(|a| {
+            v.app_parts().values().any(|h| *h == a.bundle)
+                && self.may_reach(a, Some(who), self.orgs.get(&a.org))
+        })
     }
 
     /// [`Self::sees_release`] for a session bound to the package's frontend (`frontend`):
@@ -2501,6 +2538,26 @@ impl SystemState {
         (frontend && v.visibility.is_none()) || self.sees_release(v, who)
     }
 
+    // Cross-shard organization reads come in three shapes, by convention, because
+    // an organization's membership lives in its own tenant group once the control
+    // plane is sharded while this state is the root group's
+    // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>):
+    //
+    //   * a plain method (`member_of`, `sees_release`, `acts_for`, `offer_serves`,
+    //     `approves_releases`, `team_apps`, …) reads the organization from **this**
+    //     machine's own state — the common case, and the only one `apply` may use;
+    //   * its `_with` twin (for a read that spans many organizations, e.g. a
+    //     release's serving orgs) takes an `extra: &BTreeMap<OrgId, Org>` of
+    //     organizations resolved from their tenant shards, preferring it over this
+    //     state (`org_for`); its `_at` twin (for a single organization already
+    //     resolved) takes that `Option<&Org>` directly;
+    //   * the leader fans the organizations out and fills `extra` (or the one
+    //     `Option<&Org>`) before it proposes or answers, in `Node`'s `*_fresh` /
+    //     `*_view` helpers (`node.rs`), so `apply` and the twin never read a peer.
+    //
+    // A gate on a sharded read calls the `_with`/`_at` form through one of those
+    // `Node` helpers; a local read calls the plain method.
+
     /// Whether `who` is a member (or above) of `org`.
     #[must_use]
     pub fn member_of(&self, org: &str, who: &str) -> bool {
@@ -2508,6 +2565,91 @@ impl SystemState {
             .get(org)
             .and_then(|o| o.role(who))
             .is_some_and(|r| r >= OrgRole::Member)
+    }
+
+    /// The organization record for `org`, preferring `extra` — organizations the
+    /// caller resolved from their own shards (their tenant groups) and passed in
+    /// — over this (root) state. Release visibility reads an organization's
+    /// membership, which lives in its tenant group once the control plane is
+    /// sharded, so the node fans those organizations out and passes them here
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    fn org_for<'a>(&'a self, org: &str, extra: &'a BTreeMap<OrgId, Org>) -> Option<&'a Org> {
+        extra.get(org).or_else(|| self.orgs.get(org))
+    }
+
+    /// [`Self::member_of`] reading the organization from `extra` when it holds it.
+    #[must_use]
+    pub fn member_of_with(&self, org: &str, who: &str, extra: &BTreeMap<OrgId, Org>) -> bool {
+        self.org_for(org, extra)
+            .and_then(|o| o.role(who))
+            .is_some_and(|r| r >= OrgRole::Member)
+    }
+
+    /// [`Self::sees_release`] reading the organizations a private release serves
+    /// from `extra` (their tenant groups), for the access gate. The legacy
+    /// (`visibility` absent) branch still reads root; genesis-sharded clusters
+    /// record visibility on every release.
+    #[must_use]
+    pub fn sees_release_with(
+        &self,
+        v: &PackageVersion,
+        who: &str,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        if v.installed_by_any(OPERATOR) {
+            return true;
+        }
+        if who == OPERATOR {
+            return false;
+        }
+        match v.visibility {
+            Some(Visibility::Public) => true,
+            Some(Visibility::Private) if v.orgs.is_empty() => v.installed_by_any(who),
+            Some(Visibility::Private) => v.orgs.iter().any(|o| self.member_of_with(o, who, extra)),
+            None => self.sees_release(v, who),
+        }
+    }
+
+    /// [`Self::sees_release_from`] with the organizations resolved from `extra`.
+    #[must_use]
+    pub fn sees_release_from_with(
+        &self,
+        v: &PackageVersion,
+        who: &str,
+        frontend: bool,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        (frontend && v.visibility.is_none()) || self.sees_release_with(v, who, extra)
+    }
+
+    /// Whether `who` may use one of `package`'s releases ([`Self::package_used`]),
+    /// the serving organizations resolved from `extra`.
+    #[must_use]
+    pub fn package_used_with(
+        &self,
+        package: &str,
+        who: &str,
+        frontend: bool,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        self.packages.get(package).is_some_and(|p| {
+            p.versions
+                .values()
+                .any(|v| self.sees_release_from_with(v, who, frontend, extra))
+        })
+    }
+
+    /// The distinct organizations every release of `package` serves
+    /// ([`PackageVersion::orgs`]): the node fans these out through its shards to
+    /// build the `extra` map the `*_with` readers take.
+    #[must_use]
+    pub fn release_serving_orgs(&self, package: &str) -> BTreeSet<OrgId> {
+        self.packages.get(package).map_or_else(BTreeSet::new, |p| {
+            p.versions
+                .values()
+                .flat_map(|v| v.orgs.iter().cloned())
+                .collect()
+        })
     }
 
     /// The organizations `v` was installed for that `who` is a member of: never another.
@@ -3065,7 +3207,7 @@ impl SystemState {
         }
         self.deployers.iter().any(|(key, g)| {
             g.live(now)
-                && matches!(Deployer::from_key(key), Some(Deployer::Org(o)) if self.manages_apps(&o, account, None))
+                && matches!(Deployer::from_key(key), Some(Deployer::Org(o)) if self.manages_apps_self(&o, account, None))
         })
     }
 
@@ -3132,7 +3274,23 @@ impl SystemState {
     pub fn acts_for(&self, owner: &Deployer, account: &str) -> bool {
         match owner {
             Deployer::Account(a) => a == account,
-            Deployer::Org(o) => self.manages_apps(o, account, None),
+            Deployer::Org(o) => self.manages_apps_self(o, account, None),
+        }
+    }
+
+    /// [`Self::acts_for`] reading the owner organization from `extra` (its tenant
+    /// group), for the deployment-serve gate
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn acts_for_with(
+        &self,
+        owner: &Deployer,
+        account: &str,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        match owner {
+            Deployer::Account(a) => a == account,
+            Deployer::Org(o) => self.manages_apps(self.org_for(o, extra), account, None),
         }
     }
 
@@ -3196,7 +3354,7 @@ impl SystemState {
     pub fn hands_over(&self, owner: &Deployer, actor: &str) -> bool {
         match owner {
             Deployer::Account(a) => a == actor,
-            Deployer::Org(o) => self.is_org_admin(o, actor),
+            Deployer::Org(o) => self.is_org_admin_self(o, actor),
         }
     }
 
@@ -3305,7 +3463,8 @@ impl SystemState {
         // read from state at this log position, so replicas agree.
         let clamp =
             clamp_grants || self.cluster_brings(cluster_version::Feature::InviteCapabilities);
-        let all_apps = inv.all_apps && (!clamp || self.is_org_admin(&inv.org, &inv.created_by));
+        let all_apps =
+            inv.all_apps && (!clamp || self.is_org_admin_self(&inv.org, &inv.created_by));
         let o = self.orgs.get(&inv.org).ok_or("no such organization")?;
         // From the logged version that brings it, an invite gives only what its
         // creator could still give: a creator removed (or unknown), demoted below
@@ -3467,6 +3626,45 @@ impl SystemState {
         candidates
             .into_iter()
             .any(|m| self.acts_for(&d.owner, m) && self.sees_release(v, m))
+    }
+
+    /// [`Self::offer_serves`] reading the deployment owner's organization and
+    /// the release's serving organizations from `extra` (their tenant groups),
+    /// for the deployment-serve gate
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn offer_serves_with(
+        &self,
+        d: &Deployment,
+        v: &PackageVersion,
+        extra: &BTreeMap<OrgId, Org>,
+    ) -> bool {
+        let owner_org = match &d.owner {
+            Deployer::Account(_) => None,
+            Deployer::Org(o) => self.org_for(o, extra),
+        };
+        let candidates: Vec<&str> = match &d.owner {
+            Deployer::Account(a) => vec![a],
+            Deployer::Org(o) => {
+                let for_all = v.installed_by_any(OPERATOR)
+                    || v.visibility == Some(Visibility::Public)
+                    || (v.visibility == Some(Visibility::Private) && v.orgs.contains(o));
+                if for_all {
+                    return owner_org
+                        .into_iter()
+                        .flat_map(|o| o.members.keys())
+                        .any(|m| self.acts_for_with(&d.owner, m, extra));
+                }
+                owner_org
+                    .into_iter()
+                    .flat_map(|o| o.members.keys())
+                    .map(String::as_str)
+                    .collect()
+            }
+        };
+        candidates
+            .into_iter()
+            .any(|m| self.acts_for_with(&d.owner, m, extra) && self.sees_release_with(v, m, extra))
     }
 
     /// Whether `d` offers a release that ships `bundle`: what an instance
@@ -3865,7 +4063,7 @@ impl SystemState {
     /// bundle, or none, does not) and its organization does not turn them off
     /// ([`crate::types::Org::allow_guests`]). The stricter switch wins.
     #[must_use]
-    pub fn guests_allowed(&self, app: &AppRecord) -> bool {
+    pub fn guests_allowed(&self, app: &AppRecord, org: Option<&Org>) -> bool {
         let release = app.release.as_ref().and_then(|r| {
             self.packages
                 .get(&r.package)
@@ -3873,7 +4071,7 @@ impl SystemState {
         });
         let developer =
             release.and_then(|v| v.guests) == Some(calimero_bundle::GuestPolicy::Allowed);
-        developer && self.orgs.get(&app.org).is_some_and(|o| o.allow_guests)
+        developer && org.is_some_and(|o| o.allow_guests)
     }
 
     /// The instance whose guest list judges `app`: the top of its unit (the app whose
@@ -3896,23 +4094,19 @@ impl SystemState {
     /// ([`Self::guests_allowed`]). Judged on the state of the moment, so a guest taken off
     /// the list, or a switch turned off, stops reaching it at once.
     #[must_use]
-    pub fn guest_reaches(&self, app: &AppRecord, account: &str) -> bool {
+    pub fn guest_reaches(&self, app: &AppRecord, account: &str, org: Option<&Org>) -> bool {
         if !self.guests_on() {
             return false;
         }
         let holder = self.guest_holder(app);
-        holder.access.names(account) && self.guests_allowed(holder)
+        holder.access.names(account) && self.guests_allowed(holder, org)
     }
 
     /// Whether `account` is a guest of `app` and not a member of its organization: it
     /// reaches the app only as a guest ([`Self::guest_reaches`]).
     #[must_use]
-    pub fn is_guest(&self, app: &AppRecord, account: &str) -> bool {
-        self.orgs
-            .get(&app.org)
-            .and_then(|o| o.role(account))
-            .is_none()
-            && self.guest_reaches(app, account)
+    pub fn is_guest(&self, app: &AppRecord, account: &str, org: Option<&Org>) -> bool {
+        org.and_then(|o| o.role(account)).is_none() && self.guest_reaches(app, account, org)
     }
 
     /// The scope of `account`'s grant on `app` ([`crate::types::Grant::Account`]): on `app`
@@ -3971,8 +4165,14 @@ impl SystemState {
     /// grants: a team's leads on their team's instance, else who manages the organization's
     /// apps).
     #[must_use]
-    pub fn manages_grants(&self, app: &AppRecord, actor: &str) -> bool {
-        self.owner_acts(app, actor) || self.may_set_access(app, &app.access, actor)
+    pub fn manages_grants(&self, app: &AppRecord, actor: &str, org: Option<&Org>) -> bool {
+        self.owner_acts(app, actor, org) || self.may_set_access(app, &app.access, actor, org)
+    }
+
+    /// [`Self::manages_grants`] reading the app's org from this state.
+    #[must_use]
+    pub fn manages_grants_self(&self, app: &AppRecord, actor: &str) -> bool {
+        self.manages_grants(app, actor, self.orgs.get(&app.org))
     }
 
     /// Whether `org` is kept apart as a personal organization: flagged so, and only
@@ -4105,7 +4305,7 @@ impl SystemState {
             {
                 !by_operator && self.approves_upgrades(org, actor)
             }
-            BackupHolder::Org(org) => !by_operator && self.manages_apps(org, actor, None),
+            BackupHolder::Org(org) => !by_operator && self.manages_apps_self(org, actor, None),
             BackupHolder::Account(account) => {
                 !by_operator && actor == account && self.accounts.contains_key(account)
             }
@@ -4270,7 +4470,7 @@ impl SystemState {
     /// of any package.
     #[must_use]
     pub fn approves_upgrades(&self, org: &str, account: &str) -> bool {
-        self.is_org_admin(org, account)
+        self.is_org_admin_self(org, account)
     }
 
     /// Whether the rule [`cluster_version::Feature::OwnerApprovedUpgrades`] brings
@@ -4306,17 +4506,17 @@ impl SystemState {
         if !self.upgrades_of(release).is_owner() {
             return self
                 .upgraded_by_publisher(release)
-                .is_some_and(|p| self.manages_apps(p, account, None));
+                .is_some_and(|p| self.manages_apps_self(p, account, None));
         }
-        self.owner_acts_as_logged(app, account, rule)
-            || self.manages_access(&app.org, account, &app.access)
+        self.owner_acts_as_logged(app, account, rule, self.orgs.get(&app.org))
+            || self.manages_access_self(&app.org, account, &app.access)
     }
 
     /// Whether `actor` manages the apps an instance with `access` is: on each team it admits
     /// (every team grant), else organization-wide
     /// ([`Self::manages_apps`]).
     #[must_use]
-    pub fn manages_access(&self, org: &str, actor: &str, access: &Access) -> bool {
+    pub fn manages_access(&self, org: Option<&Org>, actor: &str, access: &Access) -> bool {
         let teams = access.teams();
         if teams.is_empty() {
             return self.manages_apps(org, actor, None);
@@ -4355,8 +4555,13 @@ impl SystemState {
     /// ([`Self::manages_access`]). Org admins and the owner hold it everywhere, a
     /// team's leads on their team.
     #[must_use]
-    pub fn may_set_access(&self, app: &AppRecord, to: &Access, actor: &str) -> bool {
-        let org = app.org.as_str();
+    pub fn may_set_access(
+        &self,
+        app: &AppRecord,
+        to: &Access,
+        actor: &str,
+        org: Option<&Org>,
+    ) -> bool {
         self.manages_access(org, actor, &app.access) && self.manages_access(org, actor, to)
     }
 
@@ -4370,37 +4575,40 @@ impl SystemState {
     /// keys, files and blobs), as [`Self::may_reach`] no longer lets them
     /// reach it. A personal app is its owner's alone.
     #[must_use]
-    pub fn owner_acts(&self, app: &AppRecord, account: &str) -> bool {
-        self.owner_acts_as_logged(app, account, OwnerRule::CURRENT)
+    pub fn owner_acts(&self, app: &AppRecord, account: &str, org: Option<&Org>) -> bool {
+        self.owner_acts_as_logged(app, account, OwnerRule::CURRENT, org)
     }
 
     /// [`Self::owner_acts`], as the release that logged the command judged
     /// it ([`OwnerRule`]).
-    fn owner_acts_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
+    fn owner_acts_as_logged(
+        &self,
+        app: &AppRecord,
+        account: &str,
+        rule: OwnerRule,
+        org: Option<&Org>,
+    ) -> bool {
         if app.owner != account {
             return false;
         }
-        let org = app.org.as_str();
         if rule == OwnerRule::Ownership {
             return true;
         }
-        let Some(o) = self.orgs.get(org) else {
+        let Some(o) = org else {
             return false;
         };
         o.role(account).is_some_and(|r| r >= OrgRole::Member)
-            && (rule == OwnerRule::InOrg || self.owner_in_team(app, account))
+            && (rule == OwnerRule::InOrg || self.owner_in_team(app, account, org))
     }
 
     /// Whether `app`'s team, if it is on one, holds `owner`: an owner reaches
     /// and manages an app on a team only while they are in it.
-    fn owner_in_team(&self, app: &AppRecord, owner: &str) -> bool {
+    fn owner_in_team(&self, app: &AppRecord, owner: &str, org: Option<&Org>) -> bool {
         let teams = app.access.teams();
         if teams.is_empty() || app.access.org_wide() || app.access.names(owner) {
             return true;
         }
-        self.orgs
-            .get(&app.org)
-            .is_some_and(|o| teams.into_iter().any(|t| o.in_team(owner, t)))
+        org.is_some_and(|o| teams.into_iter().any(|t| o.in_team(owner, t)))
     }
 
     /// Whether `account` manages `app` as a whole (transfers or deletes it,
@@ -4408,14 +4616,26 @@ impl SystemState {
     /// [`Self::owner_acts`], or an admin of its organization, so an
     /// organization cleans up the app of an owner who left.
     #[must_use]
-    pub fn manages_app(&self, app: &AppRecord, account: &str) -> bool {
-        self.manages_app_as_logged(app, account, OwnerRule::CURRENT)
+    pub fn manages_app(&self, app: &AppRecord, account: &str, org: Option<&Org>) -> bool {
+        self.manages_app_as_logged(app, account, OwnerRule::CURRENT, org)
+    }
+
+    /// [`Self::manages_app`] reading the app's org from this state.
+    #[must_use]
+    pub fn manages_app_self(&self, app: &AppRecord, account: &str) -> bool {
+        self.manages_app(app, account, self.orgs.get(&app.org))
     }
 
     /// [`Self::manages_app`], with the owner judged as the release that
     /// logged the command did ([`OwnerRule`]).
-    fn manages_app_as_logged(&self, app: &AppRecord, account: &str, rule: OwnerRule) -> bool {
-        self.owner_acts_as_logged(app, account, rule) || self.is_org_admin(&app.org, account)
+    fn manages_app_as_logged(
+        &self,
+        app: &AppRecord,
+        account: &str,
+        rule: OwnerRule,
+        org: Option<&Org>,
+    ) -> bool {
+        self.owner_acts_as_logged(app, account, rule, org) || self.is_org_admin(org, account)
     }
 
     /// Whether `actor` sees (and may revoke) the organization invite `inv`:
@@ -4423,8 +4643,8 @@ impl SystemState {
     /// member, or whoever manages every team it names (an invite naming no
     /// team is organization-wide: an admin's).
     #[must_use]
-    pub fn sees_invite(&self, inv: &Invite, actor: &str) -> bool {
-        let Some(o) = self.orgs.get(&inv.org) else {
+    pub fn sees_invite(&self, inv: &Invite, actor: &str, org: Option<&Org>) -> bool {
+        let Some(o) = org else {
             return false;
         };
         let Some(role) = o.role(actor) else {
@@ -4811,7 +5031,7 @@ impl SystemState {
                 .flat_map(|a| {
                     o.members
                         .keys()
-                        .filter(|m| self.may_reach(a, Some(m.as_str())))
+                        .filter(|m| self.may_reach(a, Some(m.as_str()), self.orgs.get(&a.org)))
                         .cloned()
                         .collect::<Vec<_>>()
                 })
@@ -5079,7 +5299,7 @@ impl SystemState {
         if from == to_org {
             return Err("the app is in that organization already".into());
         }
-        if !self.manages_app(app, actor) {
+        if !self.manages_app_self(app, actor) {
             return Err(ONLY_MANAGERS_MOVE.into());
         }
         let target = self.orgs.get(to_org).ok_or("no such organization")?;
@@ -5112,7 +5332,7 @@ impl SystemState {
             Some(o) if bring_members => o
                 .members
                 .iter()
-                .filter(|(m, _)| self.may_reach(app, Some(m.as_str())))
+                .filter(|(m, _)| self.may_reach(app, Some(m.as_str()), self.orgs.get(&app.org)))
                 .map(|(m, r)| (m.clone(), *r))
                 .collect(),
             _ => Vec::new(),
@@ -5121,7 +5341,7 @@ impl SystemState {
         // app team (an owner reaches an app on a team only while in it), so
         // a move never takes their app away without their consent.
         let owner_keeps = self
-            .may_reach(app, Some(app.owner.as_str()))
+            .may_reach(app, Some(app.owner.as_str()), self.orgs.get(&app.org))
             .then(|| app.owner.clone());
         let joins: Vec<(AccountId, OrgRole)> = reached
             .iter()
@@ -5348,8 +5568,8 @@ impl SystemState {
     /// The owner, an admin, a team's lead, or a member holding the capability
     /// there; never someone outside the organization or below member.
     #[must_use]
-    pub fn manages_apps(&self, org: &str, account: &str, team: Option<&str>) -> bool {
-        self.orgs.get(org).is_some_and(|o| {
+    pub fn manages_apps(&self, org: Option<&Org>, account: &str, team: Option<&str>) -> bool {
+        org.is_some_and(|o| {
             o.role(account).is_some_and(|r| r >= OrgRole::Member)
                 && o.may(account, team, crate::types::caps::MANAGE_APPLICATION)
         })
@@ -5366,13 +5586,32 @@ impl SystemState {
         self.governance().releases == Authority::Owner && self.holds_approve_releases(org, account)
     }
 
+    /// [`Self::approves_releases`] reading the organization from its own shard:
+    /// the cluster governance is root's (`self`), the member's capability is the
+    /// organization's, passed from the shard that owns it
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn approves_releases_at(&self, org: Option<&Org>, account: &str) -> bool {
+        self.governance().releases == Authority::Owner
+            && self.holds_approve_releases_at(org, account)
+    }
+
     /// Who may approve `org`'s releases ([`Self::approves_releases`]).
     #[must_use]
     pub fn release_approvers(&self, org: &str) -> Vec<AccountId> {
-        self.orgs.get(org).map_or_else(Vec::new, |o| {
+        self.release_approvers_at(self.orgs.get(org))
+    }
+
+    /// [`Self::release_approvers`] reading the organization from its own shard
+    /// (its tenant group when sharded): its members and their capabilities are
+    /// the organization's, the cluster governance is root's
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn release_approvers_at(&self, org: Option<&Org>) -> Vec<AccountId> {
+        org.map_or_else(Vec::new, |o| {
             o.members
                 .keys()
-                .filter(|a| self.approves_releases(org, a))
+                .filter(|a| self.approves_releases_at(Some(o), a))
                 .cloned()
                 .collect()
         })
@@ -5594,8 +5833,34 @@ impl SystemState {
     /// Whether `account` may reach `app` at all: through one of its grants
     /// (`Self::grants_reach`). Nobody without an account does.
     #[must_use]
-    pub fn may_reach(&self, app: &AppRecord, account: Option<&str>) -> bool {
-        account.is_some_and(|a| self.grants_reach(app, a))
+    pub fn may_reach(&self, app: &AppRecord, account: Option<&str>, org: Option<&Org>) -> bool {
+        account.is_some_and(|a| self.grants_reach(app, a, org))
+    }
+
+    /// [`Self::may_reach`] reading the app's organization from this state. For a
+    /// state that holds the org (tests, and a tenant machine applying its own
+    /// org's entry); the gate passes the org from its shard explicitly.
+    #[must_use]
+    pub fn may_reach_self(&self, app: &AppRecord, account: Option<&str>) -> bool {
+        self.may_reach(app, account, self.orgs.get(&app.org))
+    }
+
+    /// [`Self::is_guest`] reading the app's organization from this state.
+    #[must_use]
+    pub fn is_guest_self(&self, app: &AppRecord, account: &str) -> bool {
+        self.is_guest(app, account, self.orgs.get(&app.org))
+    }
+
+    /// [`Self::receives`] reading the app's organization from this state.
+    #[must_use]
+    pub fn receives_self(
+        &self,
+        app: &AppRecord,
+        audience: &Audience,
+        emitter: Option<&str>,
+        account: Option<&str>,
+    ) -> bool {
+        self.receives(app, audience, emitter, account, self.orgs.get(&app.org))
     }
 
     /// Whether `account` lets `source`'s runs for them call `method` of `target` as them.
@@ -5612,11 +5877,20 @@ impl SystemState {
     /// beside a team (it covers them), a team not of `org`, an account the cluster does not
     /// know (one name per account), a scope past [`crate::types::MAX_GRANT_SCOPE_BYTES`], or more than
     /// [`crate::types::MAX_TEAM_GRANTS`] teams or [`crate::types::MAX_ACCOUNT_GRANTS`] names.
-    pub fn check_grants(&self, org: &str, grants: &[Grant]) -> Result<(), Rejection> {
+    /// `baked` is the app's organization as its own shard (its tenant group)
+    /// holds it, resolved at propose; `None` reads it from this (root) state.
+    pub fn check_grants(
+        &self,
+        org: &str,
+        baked: Option<&Org>,
+        grants: &[Grant],
+    ) -> Result<(), Rejection> {
         if grants.len() > crate::types::MAX_GRANTS {
             return Err(Rejection::quota("an instance holds at most 1018 grants"));
         }
-        let o = self.orgs.get(org).ok_or("no such organization")?;
+        let o = baked
+            .or_else(|| self.orgs.get(org))
+            .ok_or("no such organization")?;
         let mut named: BTreeSet<&str> = BTreeSet::new();
         let mut teams: BTreeSet<&str> = BTreeSet::new();
         let (mut whole, mut anyone) = (false, false);
@@ -5667,23 +5941,27 @@ impl SystemState {
     /// only) or through a grant: the organization (an `app_only` guest of it never), a team
     /// they are in, or their name; a name, and the owner of an instance only names admit, only
     /// while they are in the package's app team where it has one.
-    fn grants_reach(&self, app: &AppRecord, a: &str) -> bool {
+    fn grants_reach(&self, app: &AppRecord, a: &str, org: Option<&Org>) -> bool {
         let grants = app.access.grants();
         if app.access.anyone() {
             return true;
         }
-        let Some(o) = self.orgs.get(&app.org) else {
+        // The app's organization comes from its shard (its tenant group when the
+        // control plane is sharded), not from `self`, which holds the fleet,
+        // packages and guest records this still reads
+        // (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        let Some(o) = org else {
             return false;
         };
         if o.role(a).is_none() {
-            return (o.personal && app.access.names(a)) || self.guest_reaches(app, a);
+            return (o.personal && app.access.names(a)) || self.guest_reaches(app, a, org);
         }
         let in_app_team = || {
-            self.app_team_of(app)
-                .is_none_or(|(o, team)| o.in_team(a, &team.team_id))
+            self.app_team_of(app, org)
+                .is_none_or(|team| o.in_team(a, &team.team_id))
         };
         if a == app.owner
-            && self.owner_in_team(app, a)
+            && self.owner_in_team(app, a, org)
             && (!app.access.named_only() || in_app_team())
         {
             return true;
@@ -5698,13 +5976,12 @@ impl SystemState {
         })
     }
 
-    /// The app team of `app`'s package in `app`'s organization, with the
-    /// organization, if both are there.
+    /// The app team of `app`'s package in its organization `org` (its shard's),
+    /// if both are there. `self` provides the package the app instances.
     #[must_use]
-    pub fn app_team_of(&self, app: &AppRecord) -> Option<(&Org, &Team)> {
-        let o = self.orgs.get(&app.org)?;
-        let team = o.app_team(self.package_of(app)?)?;
-        Some((o, team))
+    pub fn app_team_of<'a>(&self, app: &AppRecord, org: Option<&'a Org>) -> Option<&'a Team> {
+        let o = org?;
+        o.app_team(self.package_of(app)?)
     }
 
     /// Whether `account` (`None`: anonymous) receives an event of `app` sent to
@@ -5718,19 +5995,20 @@ impl SystemState {
         audience: &Audience,
         emitter: Option<&str>,
         account: Option<&str>,
+        org: Option<&Org>,
     ) -> bool {
-        if !self.may_reach(app, account) {
+        if !self.may_reach(app, account, org) {
             return false;
         }
-        let org = |id: &str| (app.org == id).then(|| self.orgs.get(id)).flatten();
+        // Every audience below names the app's own organization, which comes
+        // from its shard; an event cannot address another organization's roster.
+        let org = |id: &str| (app.org == id).then_some(org).flatten();
         match (audience, account) {
             (Audience::All, _) => true,
             (_, None) => false,
             (Audience::Caller, Some(a)) => emitter == Some(a),
             (Audience::Accounts { accounts }, Some(a)) => accounts.iter().any(|x| x == a),
-            (Audience::Team { team }, Some(a)) => {
-                self.orgs.get(&app.org).is_some_and(|o| o.in_team(a, team))
-            }
+            (Audience::Team { team }, Some(a)) => org(&app.org).is_some_and(|o| o.in_team(a, team)),
             (Audience::OrgMembers { org: id }, Some(a)) => {
                 org(id).is_some_and(|o| o.role(a).is_some_and(|r| r >= OrgRole::Member))
             }
@@ -5745,7 +6023,16 @@ impl SystemState {
     /// `DeleteTeam { keep_apps }` the same apps stay, without those teams' grants.
     #[must_use]
     pub fn team_apps(&self, org: &str, team: &str) -> Vec<AppId> {
-        let Some(o) = self.orgs.get(org).filter(|o| o.teams.contains_key(team)) else {
+        self.team_apps_at(self.orgs.get(org), team)
+    }
+
+    /// [`Self::team_apps`] reading the organization from its own shard (its
+    /// tenant group when sharded): the team structure is the organization's, the
+    /// app directory it filters is root's (`self`)
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    #[must_use]
+    pub fn team_apps_at(&self, org: Option<&Org>, team: &str) -> Vec<AppId> {
+        let Some(o) = org.filter(|o| o.teams.contains_key(team)) else {
             return Vec::new();
         };
         let gone = o.subtree(team);
@@ -5755,7 +6042,7 @@ impl SystemState {
             // team, a grant to the organization) stays and loses only those grants.
             .filter(|a| {
                 let teams = a.access.teams();
-                a.org == org
+                a.org == o.org_id
                     && !teams.is_empty()
                     && !a.access.org_wide()
                     && teams.into_iter().all(|t| gone.contains(t))
@@ -5796,11 +6083,45 @@ impl SystemState {
     }
 
     #[must_use]
-    pub fn is_org_admin(&self, org: &str, account: &str) -> bool {
-        self.orgs
-            .get(org)
-            .and_then(|o| o.role(account))
+    pub fn is_org_admin(&self, org: Option<&Org>, account: &str) -> bool {
+        org.and_then(|o| o.role(account))
             .is_some_and(|r| r >= OrgRole::Admin)
+    }
+
+    /// [`Self::is_org_admin`] reading `org` from this state (apply, tests).
+    #[must_use]
+    pub fn is_org_admin_self(&self, org: &str, account: &str) -> bool {
+        self.is_org_admin(self.orgs.get(org), account)
+    }
+
+    /// [`Self::manages_apps`] reading `org` from this state.
+    #[must_use]
+    pub fn manages_apps_self(&self, org: &str, account: &str, team: Option<&str>) -> bool {
+        self.manages_apps(self.orgs.get(org), account, team)
+    }
+
+    /// [`Self::manages_access`] reading `org` from this state.
+    #[must_use]
+    pub fn manages_access_self(&self, org: &str, actor: &str, access: &Access) -> bool {
+        self.manages_access(self.orgs.get(org), actor, access)
+    }
+
+    /// [`Self::may_set_access`] reading the app's org from this state.
+    #[must_use]
+    pub fn may_set_access_self(&self, app: &AppRecord, to: &Access, actor: &str) -> bool {
+        self.may_set_access(app, to, actor, self.orgs.get(&app.org))
+    }
+
+    /// [`Self::owner_acts`] reading the app's org from this state.
+    #[must_use]
+    pub fn owner_acts_self(&self, app: &AppRecord, account: &str) -> bool {
+        self.owner_acts(app, account, self.orgs.get(&app.org))
+    }
+
+    /// [`Self::sees_invite`] reading the invite's org from this state.
+    #[must_use]
+    pub fn sees_invite_self(&self, inv: &Invite, actor: &str) -> bool {
+        self.sees_invite(inv, actor, self.orgs.get(&inv.org))
     }
 }
 
@@ -6039,6 +6360,8 @@ impl SystemCmd {
             Self::SetOutboundApproval { .. } => Area::Approvals,
             Self::SetEgress { .. } => Area::Approvals,
             Self::DeleteOrg { .. } => Area::Orgs,
+            Self::SeedTenant { .. } => Area::Orgs,
+            Self::BindInvite { .. } => Area::Orgs,
             Self::SetOrgMetadata { .. } => Area::Orgs,
             Self::SetMemberMetadata { .. } => Area::Orgs,
             Self::SetAppMetadata { .. } => Area::Apps,
@@ -6073,6 +6396,83 @@ impl SystemCmd {
             Self::StartRecovery { .. } => Area::Recovery,
             Self::CancelRecovery { .. } => Area::Recovery,
             Self::FinishRecovery { .. } => Area::Recovery,
+        }
+    }
+
+    /// The shard a command's state belongs to ([`shard::Scope`]) — the first,
+    /// behaviour-preserving half of tenant routing. A command that names an
+    /// organization routes to that org's shard; one that names an app routes to
+    /// the app's org (resolved from root state at propose). `CreateOrg` and
+    /// `DeleteOrg` are root lifecycle operations — root owns the tenant-group
+    /// registry. Everything else — the fleet, the package registry, cluster
+    /// governance, account identity and recovery, and the session/invite
+    /// commands that still need their org field (the session-sharding slice adds
+    /// it) — stays on root. Nothing moves until the gate turns on and tenant
+    /// groups exist (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    pub(crate) fn scope(&self) -> shard::Scope {
+        use shard::Scope;
+        match self {
+            // Org structure, teams, invites, org-scoped governance and recovery.
+            Self::RenameOrg { org, .. }
+            | Self::SetOrgMetadata { org, .. }
+            | Self::SetMemberMetadata { org, .. }
+            | Self::SetOrgRole { org, .. }
+            | Self::RemoveOrgMember { org, .. }
+            | Self::CreateTeam { org, .. }
+            | Self::SetTeamMember { org, .. }
+            | Self::SetTeamMembers { org, .. }
+            | Self::UpdateTeam { org, .. }
+            | Self::DeleteTeam { org, .. }
+            | Self::SetCapabilities { org, .. }
+            | Self::SetAllApps { org, .. }
+            | Self::SetDefaultCapabilities { org, .. }
+            | Self::RemoveTeamMember { org, .. }
+            | Self::RemoveTeamMembers { org, .. }
+            | Self::RevokeInvite { org, .. }
+            | Self::SetOrgSettings { org, .. }
+            | Self::ScopeApps { org, .. }
+            | Self::SetEgress { org, .. }
+            | Self::StartUpgradeRun { org, .. }
+            | Self::FinishUpgradeRun { org, .. }
+            | Self::SetUpgradePolicy { org, .. }
+            | Self::SetRecoveryKey { org, .. }
+            | Self::StartRecovery { org, .. }
+            | Self::CancelRecovery { org, .. }
+            | Self::FinishRecovery { org, .. } => Scope::Org(org.clone()),
+            // Seeded into the organization's own tenant group.
+            Self::SeedTenant { org, .. } => Scope::Org(org.org_id.clone()),
+            // An invite and its redemption live in the organization's tenant
+            // group: the invite carries its org directly; the redemption's org is
+            // resolved from the root `invite_org` directory at propose and baked
+            // in (`None` only with the cutover off, then cluster-routed to root).
+            Self::CreateInvite { invite, .. } => Scope::Org(invite.org.clone()),
+            Self::RedeemInvite { org: Some(org), .. } => Scope::Org(org.clone()),
+            // The invite routing directory is cluster-wide root state.
+            Self::BindInvite { .. } => Scope::Cluster,
+            // A new app carries its org directly.
+            Self::CreateApp { app, .. } => Scope::Org(app.org.clone()),
+            // Commands on an existing app → the app's owning org (resolved from
+            // the root directory at propose).
+            Self::UpgradeApp { app_id, .. }
+            | Self::ApproveUpgrade { app_id, .. }
+            | Self::UndoUpgrade { app_id, .. }
+            | Self::TransferApp { app_id, .. }
+            | Self::MoveApp { app_id, .. }
+            | Self::DeleteApp { app_id, .. }
+            | Self::SetReplicas { app_id, .. }
+            | Self::RestoreApp { app_id, .. }
+            | Self::FinishRestore { app_id, .. }
+            | Self::SetAccess { app_id, .. }
+            | Self::LinkApp { app_id, .. }
+            | Self::SetAppMetadata { app_id, .. }
+            | Self::UpgradeFailed { app_id, .. }
+            | Self::RevokeAppInvite { app_id, .. }
+            | Self::RevokePublicLink { app_id, .. }
+            | Self::ChargeFileBytes { app_id, .. } => Scope::OfApp(app_id.clone()),
+            // Fleet, packages, compute queue, cluster governance, sign-up,
+            // account identity + recovery, and the session/invite commands whose
+            // org field is added by a later slice: all root for now.
+            _ => Scope::Cluster,
         }
     }
 }
@@ -6558,6 +6958,16 @@ pub enum SystemCmd {
     },
     CreateApp {
         app: Box<AppRecord>,
+        /// The app's organization as the proposing node read it from the org's
+        /// shard (its tenant group) at propose, baked in so every replica judges
+        /// the app's membership, capability, team and grant checks against the
+        /// same organization — the resolve-at-propose the sharded control plane
+        /// needs, since `apply` cannot read another shard
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        /// Absent in an entry logged before sharding, or with the cutover off; the
+        /// checks then read the organization from this (root) state as before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<Box<crate::types::Org>>,
         /// A unit's member created from its instance's deployment (`app.deployment`): the
         /// release the deployment offers for the instance, whose offer covers the member's
         /// own release ([`Feature::WholeUnits`](cluster_version::Feature::WholeUnits)).
@@ -6740,6 +7150,14 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+        /// The app's organization as its own shard (its tenant group) holds it,
+        /// baked at propose: `apply` runs on the root group and cannot read
+        /// another shard, so it judges the owner's and the new owner's membership
+        /// against this rather than root's copy. Absent with the cutover off,
+        /// then read from root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<Box<crate::types::Org>>,
     },
     /// Move an app instance to another organization, its data where it is:
     /// whoever manages it where it is now ([`SystemState::manages_app`]; a
@@ -6885,6 +7303,13 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+        /// The app's organization from its own shard (its tenant group), baked
+        /// at propose so `apply` on the root group judges who may set access and
+        /// validates the grants against it, not root's copy. Absent with the
+        /// cutover off
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<Box<crate::types::Org>>,
     },
     /// A new account, with the session its sign-up opens. Carries the new
     /// passkey's assertion over [`account_args`] (`account:<id> /
@@ -7418,6 +7843,14 @@ pub enum SystemCmd {
         at: u64,
         #[serde(default)]
         consent: Value,
+        /// The organizations the offered release serves, each read from its own
+        /// shard (its tenant group) at propose, so `apply` on the root group can
+        /// judge whether the manager sees the release (a member of an
+        /// organization it serves) without reading another shard. Empty with the
+        /// cutover off, then the check reads root as before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        serving: Vec<crate::types::Org>,
     },
     /// Remove `app` from `deployment` (`__withdraw_app / { app }`): refused
     /// while an instance created from the deployment runs its package. The
@@ -7586,6 +8019,28 @@ pub enum SystemCmd {
         #[serde(default)]
         consent: Value,
     },
+    /// Node-written, never from a client: seeds an organization's own record and
+    /// a projection of its members' account identity (their passkeys) into the
+    /// organization's tenant group when the node forms it, so the tenant group
+    /// can authorize its own commands from the log alone — `consent_of` reads the
+    /// member passkeys this carries. Applied only on the matching tenant machine,
+    /// and idempotent (re-seeding is a no-op). The tenant-sharding backbone
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    SeedTenant {
+        org: Box<crate::types::Org>,
+        members: Vec<crate::types::Account>,
+    },
+    /// Record an organization invite in the root routing directory
+    /// ([`SystemState::invite_org`]): `invite_key` belongs to `org`. Written to
+    /// the root group alongside the `CreateInvite` that stores the invite on the
+    /// org's tenant group, so the redeem path can find the invite's tenant from
+    /// the token alone. Carries no authority — the redemption is authorized on
+    /// the tenant against its own invite record
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    BindInvite {
+        invite_key: String,
+        org: OrgId,
+    },
     SetOrgMetadata {
         org: OrgId,
         metadata: Value,
@@ -7636,6 +8091,12 @@ pub enum SystemCmd {
         /// logged, which replays judging the owner without the team.
         #[serde(default)]
         owner_in_team: bool,
+        /// The app's organization from its own shard (its tenant group), baked
+        /// at propose so `apply` on root judges owner and admin against it.
+        /// Absent with the cutover off
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<Box<crate::types::Org>>,
     },
     SetPasskeyLabel {
         account: AccountId,
@@ -7899,6 +8360,24 @@ pub enum SystemCmd {
         now: u64,
         #[serde(default)]
         signature: String,
+        /// The organization this invite belongs to, resolved at propose from the
+        /// root `invite_org` directory so the command routes to that org's tenant
+        /// group (the invite record and the membership both live there). Absent
+        /// in an entry proposed with the cutover off, which stays on root as
+        /// before
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        org: Option<OrgId>,
+        /// The redeemer's account identity (its passkeys), read from the root
+        /// account directory at propose and carried so the tenant group can
+        /// register the new member from the entry alone — the redeemer is not yet
+        /// a seeded member, so the tenant does not hold their account. Trusted at
+        /// the same attestation boundary as the tenant seed's member projection;
+        /// the redemption itself is authorized by the bearer token, re-verified
+        /// on the tenant against its own invite record. Absent with the cutover
+        /// off.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        redeemer: Option<Box<Account>>,
         /// A redemption that changes nothing for `account` (a member at the
         /// invite's role or above, in every team it names) spends no use.
         /// Absent (`false`) in a redemption an earlier release logged:
@@ -8157,14 +8636,21 @@ pub struct SystemMachine {
     /// messages of every app group ([`routing`]); dropped whenever `state`
     /// changes through [`Machine::apply`] or [`Machine::restore`].
     routing: routing::Routing,
+    /// Which shard this machine is: the cluster-wide `Root` (group 1), or an
+    /// organization's `Tenant` group. `apply` judges each command against this —
+    /// a command routes to, and so applies on, exactly the shard that owns it
+    /// ([`shard::owns`]); one that reaches the wrong shard is a routing bug,
+    /// refused rather than applied. Defaults to `Root`.
+    role: shard::ShardId,
 }
 
 impl SystemMachine {
-    /// The system machine of the cluster named `cluster`.
+    /// The system machine of the cluster named `cluster`, serving `role`.
     #[must_use]
-    pub fn new(cluster: String) -> Self {
+    pub(crate) fn new(cluster: String, role: shard::ShardId) -> Self {
         Self {
             cluster,
+            role,
             ..Self::default()
         }
     }
@@ -8227,6 +8713,21 @@ impl SystemMachine {
     /// is new work its scope has lost ([`Self::new_work_refusal`]), else by its
     /// own rules. The proof is spent only when the command applies.
     fn run(&mut self, mut cmd: SystemCmd) -> Result<Value, Rejection> {
+        // This command routed to this shard, so this shard owns it: one that
+        // reaches the wrong system shard is a routing bug, refused not applied
+        // ([`shard::owns`]). `SeedTenant` is the node's own seed, written
+        // straight to its tenant group. While the cutover is off every command
+        // owns on root, so this is behaviour-preserving.
+        let tenant = if shard::flipped(cmd.area()) {
+            shard::tenant_of(&cmd.scope(), |_| None)
+        } else {
+            None
+        };
+        if !matches!(cmd, SystemCmd::SeedTenant { .. })
+            && !shard::owns(&self.role, tenant, shard::ACTIVE)
+        {
+            return Err("this command reached the wrong system shard".into());
+        }
         // From the mark on, a flag naming an older rule is no choice of the
         // proposer's: this release's nodes always set it.
         if self.state.holds_current_rules(self.index) {

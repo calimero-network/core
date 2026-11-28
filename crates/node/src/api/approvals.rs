@@ -51,10 +51,10 @@ pub(crate) async fn set_release_approval(
     // again.
     if let crate::system::ReleaseScope::Org { org } = &scope {
         node.sys_fresh_from(p.sys_index).await;
-        let (member, approves) = node.sys(|s| {
+        let (member, approves) = node.sys_with_org(org, |s, o| {
             (
-                s.orgs.get(org).is_some_and(|o| o.role(&account).is_some()),
-                s.approves_releases(org, &account),
+                o.is_some_and(|o| o.role(&account).is_some()),
+                s.approves_releases_at(o, &account),
             )
         });
         if !member {
@@ -203,7 +203,7 @@ async fn org_outbound_approval(
 /// owner or admin turns egress on again. Asked before the passkey ceremony; the log asks
 /// again (`SetOutboundApproval`).
 pub(crate) fn refuse_egress_off(node: &Node, org: &str) -> Result<(), ApiError> {
-    if node.sys(|s| s.orgs.get(org).is_some_and(|o| o.egress_off)) {
+    if node.sys_with_org(org, |_, o| o.is_some_and(|o| o.egress_off)) {
         return Err(crate::node::rejected(crate::system::EGRESS_OFF));
     }
     Ok(())
@@ -240,10 +240,10 @@ pub(crate) async fn set_egress(
 ) -> ApiResult {
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
-    let (member, admin, app_in_org) = node.sys(|s| {
+    let (member, admin, app_in_org) = node.sys_with_org(&org, |s, o| {
         (
-            s.orgs.get(&org).is_some_and(|o| o.role(&account).is_some()),
-            s.is_org_admin(&org, &account),
+            o.is_some_and(|o| o.role(&account).is_some()),
+            s.is_org_admin(o, &account),
             app.as_ref()
                 .is_none_or(|id| s.apps.get(id).is_some_and(|a| a.org == org)),
         )
@@ -310,11 +310,14 @@ pub(super) async fn app_set_egress(
     let account = p.account()?;
     node.sys_fresh_from(p.sys_index).await;
     let app_id = node.canonical_app_id(&app_id);
+    let org_rec = node
+        .sys(|s| s.apps.get(&app_id).map(|a| a.org.clone()))
+        .and_then(|o| node.org_of(&o));
     let org = node
         .sys(|s| {
             s.apps
                 .get(&app_id)
-                .filter(|a| s.may_reach(a, Some(&account)))
+                .filter(|a| s.may_reach(a, Some(&account), org_rec.as_ref()))
                 .map(|a| a.org.clone())
         })
         .ok_or_else(|| ApiError::not_found("no such app"))?;
