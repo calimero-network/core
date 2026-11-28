@@ -6575,6 +6575,7 @@ impl SystemCmd {
             Self::UpgradeFailed { .. } => Area::Apps,
             Self::StartUpgradeRun { .. } => Area::Apps,
             Self::FinishUpgradeRun { .. } => Area::Apps,
+            Self::NoteRunOutcome { .. } => Area::Apps,
             Self::SetAlias { .. } => Area::Apps,
             Self::SetOrgRole { .. } => Area::Orgs,
             Self::RemoveOrgMember { .. } => Area::Orgs,
@@ -6695,6 +6696,7 @@ impl SystemCmd {
             | Self::SetEgress { org, .. }
             | Self::StartUpgradeRun { org, .. }
             | Self::FinishUpgradeRun { org, .. }
+            | Self::NoteRunOutcome { org, .. }
             | Self::SetUpgradePolicy { org, .. }
             | Self::SetRecoveryKey { org, .. }
             | Self::StartRecovery { org, .. }
@@ -8483,6 +8485,14 @@ pub enum SystemCmd {
         /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         standings: Vec<crate::types::Org>,
+        /// The newest release of the package the actor reads, as root's mirror
+        /// of every organization finds it at propose: an actor may read a
+        /// private release through an instance in another organization, which
+        /// this organization's tenant group (where it applies, the cutover on)
+        /// does not hold. Absent with the cutover off
+        /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reads_version: Option<String>,
     },
     /// Turn egress off (`egress: false`) or back on for every app of an organization, or
     /// with `app` for that instance alone ([`crate::types::Org::egress_off`],
@@ -8714,6 +8724,20 @@ pub enum SystemCmd {
     FinishUpgradeRun {
         org: OrgId,
         run_id: String,
+    },
+    /// Node-written: record on run `run_id` of organization `org` how one of
+    /// its apps in **another** organization fared (`error`: why it failed;
+    /// none: done). With the cutover on, that app's upgrade applies on its own
+    /// organization's tenant group, which notes it only on its copy of the run;
+    /// the run's own tenant learns it from this. Applied only where the run is
+    /// and the app is one of it
+    /// (<https://github.com/calimero-network/core/blob/master/docs/design/system-group-sharding.md>).
+    NoteRunOutcome {
+        org: OrgId,
+        run_id: String,
+        app_id: AppId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<Value>,
     },
     /// An account names an app (`Some`) or drops the name (`None`).
     SetAlias {

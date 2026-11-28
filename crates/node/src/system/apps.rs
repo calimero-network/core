@@ -643,6 +643,23 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             (by_release, owner_approves),
             published.as_deref(),
         ),
+        SystemCmd::NoteRunOutcome {
+            org,
+            run_id,
+            app_id,
+            error,
+        } => {
+            let ours = state
+                .orgs
+                .get(&org)
+                .and_then(|o| o.upgrade_runs.get(&run_id))
+                .is_some_and(|r| r.apps.contains(&app_id));
+            if !ours {
+                return Err(NO_SUCH_RUN);
+            }
+            state.note_run(Some(&run_id), &app_id, error);
+            Ok(Value::Null)
+        }
         SystemCmd::FinishUpgradeRun { org, run_id } => {
             let organization = state.orgs.get_mut(&org).ok_or(NO_SUCH_ORG)?;
             let upgrade_run = organization

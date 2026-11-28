@@ -191,6 +191,9 @@ pub(crate) async fn set_outbound_approval(
         .iter()
         .filter_map(|o| node.standing(o, &[&account]).map(|b| *b))
         .collect();
+    let reads_version = crate::system::shard::ACTIVE
+        .then(|| outbound_release_fresh(node, &body.package, &account).map(|v| v.version))
+        .flatten();
     Ok(Json(
         node.sys_write(&SystemCmd::SetOutboundApproval {
             scope,
@@ -200,6 +203,7 @@ pub(crate) async fn set_outbound_approval(
             actor: account,
             consent,
             standings,
+            reads_version,
         })
         .await?,
     ))
@@ -518,6 +522,7 @@ async fn ops_outbound(
             actor: String::new(),
             consent,
             standings: Vec::new(),
+            reads_version: None,
         })
         .await?,
     ))

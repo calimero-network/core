@@ -442,6 +442,11 @@ pub(super) async fn request(
         let org = sub.org.clone();
         return node.sys_org(&org, |s| revoke(s, account, sub));
     }
+    // What a deletion takes (its invites, its apps) is counted where they are.
+    if let OrgAsk::Delete(sub) = ask {
+        let org = sub.org.clone();
+        return node.sys_org(&org, |s| delete(s, account, sub));
+    }
     node.sys(|s| match ask {
         OrgAsk::Leave(sub) => leave(s, account, sub),
         OrgAsk::RemoveMember(sub) => remove(s, account, sub),
@@ -1372,6 +1377,16 @@ fn egress(
 /// role, a name, what a deletion takes, capabilities, the all-apps flag. The
 /// routes judge authority again when they run.
 pub(super) fn still_current(node: &Node, action: &OrgAction) -> Result<(), ApiError> {
+    // A deletion's count is the organization's own shard's, as the page took it.
+    if let OrgAction::Delete { org, holds: h } = action {
+        return node.sys_org(org, |s| {
+            if s.orgs.get(org).is_some_and(|o| holds(s, org, o) == *h) {
+                Ok(())
+            } else {
+                Err(stale("what the organization holds"))
+            }
+        });
+    }
     node.sys(|s| match action {
         OrgAction::Leave { .. }
         | OrgAction::RemoveMember { .. }

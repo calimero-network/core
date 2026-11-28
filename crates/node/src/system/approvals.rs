@@ -269,11 +269,12 @@ pub(super) fn apply(m: &mut SystemMachine, cmd: SystemCmd) -> Result<Value, Reje
             replace,
             actor,
             standings,
+            reads_version,
             ..
         } => set_outbound_approval(
             state,
             &scope,
-            &package,
+            (&package, reads_version.as_deref()),
             &selection,
             replace,
             (&actor, &SystemState::judged_orgs(standings)),
@@ -388,7 +389,7 @@ fn set_release_approval(
 fn set_outbound_approval(
     state: &mut SystemState,
     scope: &ReleaseScope,
-    package: &str,
+    (package, reads_version): (&str, Option<&str>),
     selection: &calimero_primitives::outbound::OutboundSelection,
     replace: bool,
     (actor, judged): (&str, &BTreeMap<OrgId, Org>),
@@ -399,9 +400,14 @@ fn set_outbound_approval(
     // the newest of all); entries logged below private releases apply as they did.
     let gated = state.cluster_brings(cluster_version::Feature::PrivateReleases)
         && *scope != ReleaseScope::Cluster;
-    let newest = record.latest_where(|version| {
-        !gated || state.reads_release_with(package, version, actor, judged)
-    });
+    // With the cutover on, the release the actor reads comes with the entry,
+    // as root's mirror of every organization found it.
+    let newest = match reads_version {
+        Some(version) if gated => record.versions.get(version),
+        _ => record.latest_where(|version| {
+            !gated || state.reads_release_with(package, version, actor, judged)
+        }),
+    };
     if gated && newest.is_none() {
         return Err(NO_SUCH_PACKAGE);
     }

@@ -416,6 +416,7 @@ fn manage_application_lets_a_member_upgrade_and_approve_outbound() {
         actor: actor.into(),
         consent: serde_json::Value::Null,
         standings: Vec::new(),
+        reads_version: None,
     };
     // An approval covers the whole organization, so a team-only grant
     // does not reach it.
@@ -538,6 +539,7 @@ fn check(g: &Governance) {
         actor: actor.into(),
         consent: serde_json::Value::Null,
         standings: Vec::new(),
+        reads_version: None,
     };
     let ops_outbound = m
         .run_authorized(outbound(ReleaseScope::Cluster, ""))
@@ -1137,6 +1139,7 @@ fn an_outbound_approval_takes_the_newest_release_its_approver_reads() {
         actor: "alice".into(),
         consent: Value::Null,
         standings: Vec::new(),
+        reads_version: None,
     };
     let mut old = SystemMachine {
         state: m.state.clone(),

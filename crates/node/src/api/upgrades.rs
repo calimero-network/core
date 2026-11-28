@@ -1051,102 +1051,30 @@ async fn start_run_with(
     let targets = run.targets.clone();
     let _task = tokio::spawn(async move {
         for app in apps {
-            // Judged as `UpgradeApp { run }` judges it, before anything runs
-            // on the app's group: an app on another package or a newer
-            // release is noted as failed.
-            let refused = node.sys_with_org(&org, |s, o| {
-                o?; // membership gate on the tenant
-                let r = s.orgs.get(&org)?.upgrade_runs.get(&run_id)?;
-                s.run_may_move(r, s.apps.get(&app.app_id)?).err()
-            });
-            if let Some(why) = refused {
-                let error = json!({ "code": "NOT_IN_RUN", "message": why });
-                note_failed_upgrade(&node, &app.app_id, "", None, &who, error).await;
-                continue;
-            }
-            let version = targets
-                .get(&app.app_id)
-                .map_or(body.version.as_str(), |t| t.version.as_str());
-            match target_bundle(&node, &app, version, &who) {
-                // Only the deployment's managers move its instances: an app from a
-                // deployment the run would take off its offer is noted as failed.
-                Some(t)
-                    if node.sys(|s| {
-                        s.within_deployment(&app, t.release.as_ref(), who.run.as_deref())
-                            .is_err()
-                    }) =>
-                {
-                    let e = crate::node::outside_deployment();
-                    let error = json!({ "code": e.code, "message": e.message });
-                    note_failed_upgrade(
-                        &node,
-                        &app.app_id,
-                        &t.bundle,
-                        t.release.as_ref(),
-                        &who,
-                        error,
-                    )
-                    .await;
-                }
-                Some(t) if t.bundle == app.bundle => {
-                    // Same app component: nothing to run on the app's group,
-                    // though its compute component and its release (a
-                    // frontend-only one) may differ, which the directory
-                    // records; `UpgradeApp` judges who may as for any upgrade,
-                    // and a refusal is noted on the app and the run.
-                    let class =
-                        run_class(&node, &app.app_id, t.release.as_ref(), who.run.as_deref()).await;
-                    let written = node
-                        .sys_write(&SystemCmd::UpgradeApp {
-                            app_id: app.app_id.clone(),
-                            bundle: t.bundle.clone(),
-                            compute_bundle: t.compute_bundle,
-                            by_operator: who.by_operator,
-                            actor: who.actor.clone(),
-                            at: now_secs(),
-                            run: who.run.clone(),
-                            consent: who.consent.clone(),
-                            release: t.release.clone(),
-                            owner_in_org: true,
-                            owner_in_team: true,
-                            in_deployment: in_deployment_rule(&node, &app.app_id).await,
-                            owner_approves: who.owner_approves,
-                            class,
-                            auto: false,
-                            members_stay: false,
-                            restore_point: restore_points_rule(&node)
-                                .await
-                                .then(crate::types::TakenRestorePoint::default),
+            let app_id = app.app_id.clone();
+            let app_org = app.org.clone();
+            run_one(&node, &org, &run_id, app, &body, &who, &migrate, &targets).await;
+            // An app of another organization (a publisher's run) noted its
+            // outcome on its own tenant's copy of the run: the run's tenant
+            // learns it here.
+            if crate::system::shard::ACTIVE && app_org != org {
+                let outcome = node.sys_org(&app_org, |s| {
+                    let r = s.orgs.get(&org)?.upgrade_runs.get(&run_id)?;
+                    r.failed
+                        .get(&app_id)
+                        .cloned()
+                        .map(Some)
+                        .or_else(|| r.done.contains(&app_id).then_some(None))
+                });
+                if let Some(error) = outcome {
+                    let _noted = node
+                        .sys_write(&SystemCmd::NoteRunOutcome {
+                            org: org.clone(),
+                            run_id: run_id.clone(),
+                            app_id,
+                            error,
                         })
                         .await;
-                    if let Err(e) = written {
-                        let error = json!({ "code": e.code, "message": e.message });
-                        note_failed_upgrade(
-                            &node,
-                            &app.app_id,
-                            &t.bundle,
-                            t.release.as_ref(),
-                            &who,
-                            error,
-                        )
-                        .await;
-                    }
-                }
-                Some(t) => {
-                    let _r =
-                        run_upgrade(&node, app.app_id.clone(), t, migrate.clone(), who.clone())
-                            .await;
-                }
-                None => {
-                    note_failed_upgrade(
-                        &node,
-                        &app.app_id,
-                        "",
-                        None,
-                        &who,
-                        json!({ "code": "NOT_INSTALLED", "message": "the release ships no bundle for this app's service" }),
-                    )
-                    .await;
                 }
             }
         }
@@ -1155,6 +1083,122 @@ async fn start_run_with(
             .await;
     });
     Ok(Json(serde_json::to_value(run).unwrap_or_default()))
+}
+
+/// One app of a run, judged and upgraded as the run's loop does
+/// ([`start_run_with`]).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the run's loop state, handed to one app's step"
+)]
+async fn run_one(
+    node: &Arc<Node>,
+    org: &str,
+    run_id: &str,
+    app: crate::types::AppRecord,
+    body: &OrgUpgradeBody,
+    who: &Upgrader,
+    migrate: &Option<String>,
+    targets: &BTreeMap<String, crate::types::RunTarget>,
+) {
+    let node = Arc::clone(node);
+    let (org, run_id) = (org.to_owned(), run_id.to_owned());
+    let migrate = migrate.clone();
+    // Judged as `UpgradeApp { run }` judges it, before anything runs
+    // on the app's group: an app on another package or a newer
+    // release is noted as failed.
+    let refused = node.sys_with_org(&org, |s, o| {
+        o?; // membership gate on the tenant
+        let r = s.orgs.get(&org)?.upgrade_runs.get(&run_id)?;
+        s.run_may_move(r, s.apps.get(&app.app_id)?).err()
+    });
+    if let Some(why) = refused {
+        let error = json!({ "code": "NOT_IN_RUN", "message": why });
+        note_failed_upgrade(&node, &app.app_id, "", None, who, error).await;
+        return;
+    }
+    let version = targets
+        .get(&app.app_id)
+        .map_or(body.version.as_str(), |t| t.version.as_str());
+    match target_bundle(&node, &app, version, who) {
+        // Only the deployment's managers move its instances: an app from a
+        // deployment the run would take off its offer is noted as failed.
+        Some(t)
+            if node.sys(|s| {
+                s.within_deployment(&app, t.release.as_ref(), who.run.as_deref())
+                    .is_err()
+            }) =>
+        {
+            let e = crate::node::outside_deployment();
+            let error = json!({ "code": e.code, "message": e.message });
+            note_failed_upgrade(
+                &node,
+                &app.app_id,
+                &t.bundle,
+                t.release.as_ref(),
+                who,
+                error,
+            )
+            .await;
+        }
+        Some(t) if t.bundle == app.bundle => {
+            // Same app component: nothing to run on the app's group,
+            // though its compute component and its release (a
+            // frontend-only one) may differ, which the directory
+            // records; `UpgradeApp` judges who may as for any upgrade,
+            // and a refusal is noted on the app and the run.
+            let class = run_class(&node, &app.app_id, t.release.as_ref(), who.run.as_deref()).await;
+            let written = node
+                .sys_write(&SystemCmd::UpgradeApp {
+                    app_id: app.app_id.clone(),
+                    bundle: t.bundle.clone(),
+                    compute_bundle: t.compute_bundle,
+                    by_operator: who.by_operator,
+                    actor: who.actor.clone(),
+                    at: now_secs(),
+                    run: who.run.clone(),
+                    consent: who.consent.clone(),
+                    release: t.release.clone(),
+                    owner_in_org: true,
+                    owner_in_team: true,
+                    in_deployment: in_deployment_rule(&node, &app.app_id).await,
+                    owner_approves: who.owner_approves,
+                    class,
+                    auto: false,
+                    members_stay: false,
+                    restore_point: restore_points_rule(&node)
+                        .await
+                        .then(crate::types::TakenRestorePoint::default),
+                })
+                .await;
+            if let Err(e) = written {
+                let error = json!({ "code": e.code, "message": e.message });
+                note_failed_upgrade(
+                    &node,
+                    &app.app_id,
+                    &t.bundle,
+                    t.release.as_ref(),
+                    who,
+                    error,
+                )
+                .await;
+            }
+        }
+        Some(t) => {
+            let _r = run_upgrade(&node, app.app_id.clone(), t, migrate.clone(), who.clone()).await;
+        }
+        None => {
+            note_failed_upgrade(
+                &node,
+                &app.app_id,
+                "",
+                None,
+                who,
+                json!({ "code": "NOT_INSTALLED", "message": "the release ships no bundle for this app's service" }),
+            )
+            .await;
+        }
+    }
 }
 
 /// Upgrade every app of an organization (or a team, with `cascade` its

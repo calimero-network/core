@@ -984,6 +984,7 @@ impl SystemCmd {
             | Self::SyncTenantRoot { .. }
             | Self::MirrorTenant { .. }
             | Self::ReleaseApp { .. }
+            | Self::NoteRunOutcome { .. }
             | Self::BindInvite { .. } => Vec::new(),
             Self::CreateInvite { invite, .. } => {
                 invite_features(invite.all_apps, invite.capabilities.is_some())
