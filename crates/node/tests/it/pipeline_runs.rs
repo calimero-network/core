@@ -1184,10 +1184,20 @@ async fn a_start_while_the_app_has_no_leader_is_unavailable_not_expired() {
         .await;
     assert_eq!(ghost.unwrap_err().code(), Some("NO_SUCH_PIPELINE"));
     rig.c.stop(only).await;
-    let started = alice
-        .start_pipeline_run(&rig.app, "broken", json!({ "docs": [file] }), json!({}))
-        .await;
+    // One request, as the node answers it: the client would retry this 503 with its key.
+    let req = Request::new(
+        Method::POST,
+        format!("apps/{}/pipelines/broken/runs", rig.app),
+    )
+    .json(json!({ "inputs": { "docs": [file] } }));
+    let asked = Instant::now();
+    let started = alice.transport().json(req).await;
     assert_eq!(started.unwrap_err().code(), Some("UNAVAILABLE"));
+    assert!(
+        asked.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        asked.elapsed()
+    );
 }
 
 fn cached(v: &Value, step: &str) -> bool {
@@ -1320,11 +1330,12 @@ async fn a_key_whose_run_was_dropped_starts_a_new_run() {
     let first = start("fresh", keyed.clone()).await.unwrap();
     let first = first["run"].as_str().unwrap().to_owned();
     assert_eq!(rig.ended(&first).await["state"], "succeeded");
-    for _ in 0..FINISHED_PIPELINE_RUNS_KEPT {
-        let filler = start("partial", json!({ "inputs": { "docs": [file] } }))
-            .await
-            .unwrap();
-        let _ended = rig.ended(filler["run"].as_str().unwrap()).await;
+    for _ in 0..FINISHED_PIPELINE_RUNS_KEPT / MAX_ACTIVE_PIPELINE_RUNS {
+        let batch = (0..MAX_ACTIVE_PIPELINE_RUNS)
+            .map(|_| start("partial", json!({ "inputs": { "docs": [file] } })));
+        for filler in futures_util::future::join_all(batch).await {
+            let _ended = rig.ended(filler.unwrap()["run"].as_str().unwrap()).await;
+        }
     }
     let dropped = rig.alice.pipeline_run(&rig.app, &first).await;
     assert!(dropped.is_err(), "the first run is dropped: {dropped:?}");
