@@ -122,6 +122,43 @@ mod suite {
                 && out.contains("Seccomp:\t2");
             (ok, show(&r))
         }),
+        ("node_root_out_of_reach", |run| {
+            // Root inside the sandbox must be no uid of the node's that holds power: the user
+            // namespace maps no id to the node's 0.
+            let r = sh(run, "cat /proc/self/uid_map /proc/self/gid_map");
+            let out = text(&r.stdout);
+            let maps_node_root = out
+                .lines()
+                .any(|l| l.split_whitespace().nth(1) == Some("0"));
+            (
+                r.exit_code == 0 && !out.is_empty() && !maps_node_root,
+                show(&r),
+            )
+        }),
+        ("proc_masked", |run| {
+            // What OCI runtimes mask: the kernel's timers, keys, memory image and hardware
+            // listings read empty, and the kernel's switches cannot be written.
+            let r = sh(run, "for f in /proc/interrupts /proc/timer_list /proc/keys /proc/kcore /proc/sched_debug /proc/latency_stats; do test -e $f && echo \"$f $(head -c 64 $f 2>/dev/null | wc -c)\"; done; for d in /proc/acpi /proc/scsi /proc/asound; do ls -A $d 2>/dev/null; done | grep -c . ; (echo h > /proc/sysrq-trigger) 2>/dev/null && echo SYSRQ-WRITTEN; (echo 1 > /proc/sys/vm/drop_caches) 2>/dev/null && echo SYS-WRITTEN; echo end");
+            let out = text(&r.stdout);
+            let leaked = out
+                .lines()
+                .filter(|l| l.starts_with("/proc/"))
+                .any(|l| !l.ends_with(" 0"));
+            let listed: u32 = out
+                .lines()
+                .find(|l| l.chars().all(|c| c.is_ascii_digit()) && !l.is_empty())
+                .and_then(|l| l.parse().ok())
+                .unwrap_or(999);
+            let ok = !leaked && listed == 0 && !out.contains("WRITTEN") && out.ends_with("end");
+            (ok, show(&r))
+        }),
+        ("writes_stay_in_workspace_tmp_and_dev", |run| {
+            // Landlock: what the read-only root leaves writable (the process's own `/proc`
+            // entries) still is not, outside `/workspace`, `/tmp` and `/dev`.
+            let r = sh(run, "for f in /proc/self/comm /proc/self/oom_score_adj /proc/self/clear_refs; do (echo 1 > $f) 2>/dev/null && echo WROTE:$f; done; echo x > /tmp/t && echo x > /workspace/w && echo x > /dev/null && echo end");
+            let out = text(&r.stdout);
+            (!out.contains("WROTE:") && out.ends_with("end"), show(&r))
+        }),
         ("setuid_binaries_inert", |run| {
             let r = sh(
                 run,
@@ -383,7 +420,12 @@ mod suite {
     #[cfg(feature = "controls")]
     fn controls() {
         use calimero_sandbox::Control;
-        for control in [Control::NoSeccomp, Control::Root] {
+        for control in [
+            Control::NoSeccomp,
+            Control::Root,
+            Control::NoUserns,
+            Control::NoLandlock,
+        ] {
             let limits = Limits {
                 control,
                 ..Limits::default()

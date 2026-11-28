@@ -18,14 +18,20 @@ mod cgroup;
 #[cfg(target_os = "linux")]
 mod init;
 #[cfg(target_os = "linux")]
+mod landlock;
+#[cfg(target_os = "linux")]
 mod run;
 #[cfg(target_os = "linux")]
 mod seccomp;
+#[cfg(target_os = "linux")]
+mod workspace;
 
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
 pub use run::Run;
+#[cfg(target_os = "linux")]
+pub use workspace::Workspace;
 
 /// Elsewhere than Linux there is no sandbox: [`Run::create`] answers `Unsupported`.
 #[cfg(not(target_os = "linux"))]
@@ -96,6 +102,9 @@ pub fn init_if_requested() {
     }
 }
 
+/// The default [`Config::uid_base`].
+pub const DEFAULT_UID_BASE: u32 = 1_000_000_000;
+
 /// Where a run's processes and files live on the node.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -105,6 +114,9 @@ pub struct Config {
     pub cgroup_name: String,
     /// The binary re-run as init: the node's own, which calls [`init_if_requested`].
     pub init_exe: PathBuf,
+    /// The node's uid (and gid) that is root inside a sandbox: a sandbox's ids `0..65536` are
+    /// the node's `uid_base..uid_base + 65536`, a range no user of the node holds.
+    pub uid_base: u32,
 }
 
 impl Default for Config {
@@ -113,6 +125,7 @@ impl Default for Config {
             base_dir: PathBuf::from("/run/calimero-sandbox"),
             cgroup_name: "calimero-sandbox".to_owned(),
             init_exe: PathBuf::from("/proc/self/exe"),
+            uid_base: DEFAULT_UID_BASE,
         }
     }
 }
@@ -182,8 +195,12 @@ pub enum Control {
     Full,
     /// No seccomp filter.
     NoSeccomp,
-    /// No seccomp filter and no privilege drop: the command runs as root.
+    /// No seccomp filter and no privilege drop: the command runs as root of its user namespace.
     Root,
+    /// No user namespace: the sandbox's root is the node's root.
+    NoUserns,
+    /// No Landlock ruleset.
+    NoLandlock,
 }
 
 #[cfg(feature = "controls")]
@@ -193,6 +210,8 @@ impl Control {
             Self::Full => "full",
             Self::NoSeccomp => "no-seccomp",
             Self::Root => "root",
+            Self::NoUserns => "no-userns",
+            Self::NoLandlock => "no-landlock",
         }
     }
 }

@@ -1,19 +1,23 @@
-//! The sandbox's init: `<node binary> __calimero_sandbox_init <control> <image> <root>
-//! <workspace> <cwd> -- argv...`.
+//! The sandbox's init: `<node binary> __calimero_sandbox_init <control> <uid base> <image>
+//! <root> <workspace> <cwd> -- argv...`.
 //!
-//! [`crate::Run::exec`] starts it already in the run's cgroup and in new mount, network, IPC,
-//! UTS and cgroup namespaces, with a new PID namespace for its children. From there:
+//! [`crate::Run::exec`] starts it in the run's cgroup, as the node's own user. From there:
 //!
-//! 1. fork: the child is PID 1 of the new PID namespace;
-//! 2. PID 1 builds a fresh root on tmpfs (the image's `/usr` read-only, a minimal `/etc` and
+//! 1. the outer init forks a child that unshares a user namespace with new mount, PID, network,
+//!    IPC, UTS and cgroup namespaces owned by it; the outer init maps the child's uids and gids
+//!    0..65536 to the node's `<uid base>..<uid base> + 65536`, none of them the node's root, so
+//!    nothing in the sandbox is ever root on the node;
+//! 2. the child becomes root of its user namespace only and forks: that child is PID 1 of the
+//!    new PID namespace;
+//! 3. PID 1 builds a fresh root on tmpfs (the image's `/usr` read-only, a minimal `/etc` and
 //!    `/dev`, `/proc` of the new namespace, `/tmp`, the run's `/workspace`), pivots into it and
 //!    detaches the old root, so nothing of the node's filesystem stays reachable;
-//! 3. PID 1 empties every capability set (bounding included), becomes `nobody`, sets
+//! 4. PID 1 empties every capability set (bounding included), becomes `nobody`, sets
 //!    `no_new_privs` and rlimits, and installs the seccomp filters;
-//! 4. PID 1 forks the command and reaps until it exits; when PID 1 exits, the kernel kills
+//! 5. PID 1 forks the command and reaps until it exits; when PID 1 exits, the kernel kills
 //!    whatever is left in the namespace.
 //!
-//! The outer process waits for PID 1 and exits with its status (128 + n for signal n).
+//! Each process waits for the one it forked and exits with its status (128 + n for signal n).
 
 use std::ffi::CString;
 use std::fs;
@@ -21,7 +25,7 @@ use std::io;
 use std::os::unix::fs::symlink;
 use std::path::Path;
 
-use crate::{seccomp, NOBODY};
+use crate::{landlock, seccomp, NOBODY};
 
 /// The status init exits with when it could not start the command.
 pub(crate) const INIT_FAILED: i32 = 125;
@@ -36,6 +40,7 @@ pub(crate) fn main(args: &[String]) -> ! {
 
 struct Args<'a> {
     control: &'a str,
+    uid_base: u32,
     image: &'a str,
     root: &'a str,
     workspace: &'a str,
@@ -50,15 +55,21 @@ fn os_err(what: impl std::fmt::Display) -> String {
 }
 
 fn parse(args: &[String]) -> InitResult<Args<'_>> {
-    let [control, image, root, workspace, cwd, sep, argv @ ..] = args else {
-        return Err("usage: <control> <image> <root> <workspace> <cwd> -- argv...".into());
+    const USAGE: &str = "usage: <control> <uid base> <image> <root> <workspace> <cwd> -- argv...";
+    let [control, uid_base, image, root, workspace, cwd, sep, argv @ ..] = args else {
+        return Err(USAGE.into());
     };
     if sep != "--" || argv.is_empty() {
-        return Err("usage: <control> <image> <root> <workspace> <cwd> -- argv...".into());
+        return Err(USAGE.into());
     }
+    let uid_base = uid_base
+        .parse()
+        .ok()
+        .filter(|b: &u32| *b > 0 && b.checked_add(ID_RANGE).is_some())
+        .ok_or_else(|| format!("bad uid base {uid_base:?}"))?;
     // Only a test build turns a layer off.
     let known: &[&str] = if cfg!(feature = "controls") {
-        &["full", "no-seccomp", "root"]
+        &["full", "no-seccomp", "root", "no-userns", "no-landlock"]
     } else {
         &["full"]
     };
@@ -67,6 +78,7 @@ fn parse(args: &[String]) -> InitResult<Args<'_>> {
     }
     Ok(Args {
         control,
+        uid_base,
         image,
         root,
         workspace,
@@ -75,21 +87,135 @@ fn parse(args: &[String]) -> InitResult<Args<'_>> {
     })
 }
 
-fn run(args: &[String]) -> InitResult<i32> {
-    let args = parse(args)?;
-    // SAFETY: a fresh exec, single-threaded, so fork is safe.
+/// How many uids and gids the sandbox's user namespace maps.
+pub(crate) const ID_RANGE: u32 = 65_536;
+
+/// The namespaces the sandbox's child unshares beside its user namespace.
+const NAMESPACES: libc::c_int = libc::CLONE_NEWNS
+    | libc::CLONE_NEWPID
+    | libc::CLONE_NEWNET
+    | libc::CLONE_NEWIPC
+    | libc::CLONE_NEWUTS
+    | libc::CLONE_NEWCGROUP;
+
+/// Runs `f` in a forked child that exits with its answer, and returns the child's pid.
+fn fork_with(f: impl FnOnce() -> InitResult<i32>) -> InitResult<libc::pid_t> {
+    // SAFETY: init is single-threaded (a fresh exec), so fork is safe.
     match unsafe { libc::fork() } {
-        -1 => Err(os_err("fork pid 1")),
+        -1 => Err(os_err("fork")),
         0 => {
-            let code = pid1(&args).unwrap_or_else(|e| {
+            let code = f().unwrap_or_else(|e| {
                 eprintln!("sandbox-init: {e}");
                 INIT_FAILED
             });
             // SAFETY: leaving the child without running the parent's atexit handlers.
             unsafe { libc::_exit(code) }
         }
-        pid => wait_for(pid),
+        pid => Ok(pid),
     }
+}
+
+/// A pipe whose ends close on exec.
+fn pipe() -> InitResult<(libc::c_int, libc::c_int)> {
+    let mut fds = [0; 2];
+    // SAFETY: pipe2 writes two descriptors into `fds`.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(os_err("pipe"));
+    }
+    Ok((fds[0], fds[1]))
+}
+
+/// Blocks until one byte arrives on `fd` (the other process says go), then closes it.
+fn wait_byte(fd: libc::c_int) -> InitResult<()> {
+    let mut b = 0u8;
+    loop {
+        // SAFETY: reads at most one byte into `b`.
+        let n = unsafe { libc::read(fd, (&raw mut b).cast(), 1) };
+        if n == 1 {
+            // SAFETY: closing a descriptor this process owns.
+            unsafe { libc::close(fd) };
+            return Ok(());
+        }
+        if n == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+            return Err("the other side of the sandbox's set-up went away".into());
+        }
+    }
+}
+
+/// Sends one byte on `fd` and closes it.
+fn send_byte(fd: libc::c_int) -> InitResult<()> {
+    // SAFETY: writes one byte from a constant.
+    let n = unsafe { libc::write(fd, b"1".as_ptr().cast(), 1) };
+    // SAFETY: closing a descriptor this process owns.
+    unsafe { libc::close(fd) };
+    if n != 1 {
+        return Err(os_err("signal the sandbox's set-up"));
+    }
+    Ok(())
+}
+
+fn run(args: &[String]) -> InitResult<i32> {
+    let args = parse(args)?;
+    let userns = args.control != "no-userns";
+    let (unshared_r, unshared_w) = pipe()?;
+    let (mapped_r, mapped_w) = pipe()?;
+    let child = fork_with(|| {
+        // SAFETY: closing the ends this process does not use.
+        unsafe {
+            libc::close(unshared_r);
+            libc::close(mapped_w);
+        }
+        let flags = if userns {
+            NAMESPACES | libc::CLONE_NEWUSER
+        } else {
+            NAMESPACES
+        };
+        // SAFETY: unshare takes only flags.
+        if unsafe { libc::unshare(flags) } != 0 {
+            return Err(os_err("unshare"));
+        }
+        send_byte(unshared_w)?;
+        wait_byte(mapped_r)?;
+        if userns {
+            become_namespace_root()?;
+        }
+        // The new PID namespace takes this process's children: the next one is its PID 1.
+        let pid1 = fork_with(|| pid1(&args))?;
+        wait_for(pid1)
+    })?;
+    // SAFETY: closing the ends this process does not use.
+    unsafe {
+        libc::close(unshared_w);
+        libc::close(mapped_r);
+    }
+    wait_byte(unshared_r)?;
+    if userns {
+        map_ids(child, args.uid_base)?;
+    }
+    send_byte(mapped_w)?;
+    wait_for(child)
+}
+
+/// Maps `pid`'s user namespace: its uids and gids `0..ID_RANGE` are the node's
+/// `base..base + ID_RANGE`.
+fn map_ids(pid: libc::pid_t, base: u32) -> InitResult<()> {
+    let map = format!("0 {base} {ID_RANGE}\n");
+    for file in ["uid_map", "gid_map"] {
+        let path = format!("/proc/{pid}/{file}");
+        fs::write(&path, &map).map_err(|e| format!("{path}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Becomes uid and gid 0 of the process's own user namespace, which the node sees as the uid
+/// base: the capabilities it holds are the namespace's, never the node's.
+fn become_namespace_root() -> InitResult<()> {
+    // SAFETY: set*id calls with constant arguments.
+    unsafe {
+        check(libc::setresgid(0, 0, 0), "setresgid 0")?;
+        check(libc::setresuid(0, 0, 0), "setresuid 0")?;
+    }
+    Ok(())
 }
 
 fn wait_for(pid: libc::pid_t) -> InitResult<i32> {
@@ -129,7 +255,10 @@ fn pid1(args: &Args<'_>) -> InitResult<i32> {
         drop_privileges()?;
     }
     set_rlimits();
-    if args.control == "full" {
+    if !matches!(args.control, "no-landlock" | "root") {
+        landlock::restrict().map_err(|e| format!("landlock: {e}"))?;
+    }
+    if !matches!(args.control, "no-seccomp" | "root") {
         seccomp::install().map_err(|e| format!("seccomp: {e}"))?;
     }
 
@@ -284,6 +413,7 @@ fn setup_fs(image: &Path, root: &Path, workspace: &str) -> InitResult<()> {
         libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
         None,
     )?;
+    mask_proc(&proc_)?;
 
     // A minimal /dev.
     let dev = root.join("dev");
@@ -360,6 +490,67 @@ fn setup_fs(image: &Path, root: &Path, workspace: &str) -> InitResult<()> {
         libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
         None,
     )
+}
+
+/// `/proc` entries a sandbox reads nothing of, as OCI runtimes mask them: the kernel's memory
+/// image, keys, timers and scheduler state, and hardware listings.
+const MASKED_PROC: &[&str] = &[
+    "acpi",
+    "asound",
+    "interrupts",
+    "kcore",
+    "keys",
+    "latency_stats",
+    "sched_debug",
+    "scsi",
+    "timer_list",
+    "timer_stats",
+];
+
+/// `/proc` entries a sandbox may read but never write: the kernel's switches.
+const READ_ONLY_PROC: &[&str] = &["bus", "fs", "irq", "sys", "sysrq-trigger"];
+
+/// Masks `proc`'s entries in [`MASKED_PROC`] (a file under the node's `/dev/null`, a directory
+/// under an empty read-only tmpfs) and makes those in [`READ_ONLY_PROC`] read-only.
+fn mask_proc(proc_: &Path) -> InitResult<()> {
+    for name in MASKED_PROC {
+        let path = proc_.join(name);
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            mount(
+                Some(Path::new("tmpfs")),
+                &path,
+                Some("tmpfs"),
+                libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                Some("size=0,mode=0555"),
+            )?;
+        } else {
+            mount(
+                Some(Path::new("/dev/null")),
+                &path,
+                None,
+                libc::MS_BIND,
+                None,
+            )?;
+        }
+    }
+    for name in READ_ONLY_PROC {
+        let path = proc_.join(name);
+        if fs::symlink_metadata(&path).is_err() {
+            continue;
+        }
+        mount(Some(&path), &path, None, libc::MS_BIND | libc::MS_REC, None)?;
+        mount(
+            None,
+            &path,
+            None,
+            libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_NOSUID | libc::MS_NODEV,
+            None,
+        )?;
+    }
+    Ok(())
 }
 
 fn loopback_up() -> io::Result<()> {

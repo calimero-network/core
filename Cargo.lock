@@ -1034,6 +1034,7 @@ version = "0.0.0"
 dependencies = [
  "libc",
  "seccompiler",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 

@@ -14,10 +14,12 @@ calimero-bundle = { path = "../crates/bundle" }
 calimero-identity = { path = "../crates/identity", features = ["testing"] }
 calimero-log = { path = "../crates/log" }
 calimero-node = { path = "../crates/node" }
+calimero-sandbox = { path = "../crates/sandbox" }
 calimero-sealed = { path = "../crates/sealed" }
 calimero-tee-attestation = { path = "../crates/tee-attestation" }
 flate2 = "*"
 hex = "*"
+libc = "*"
 libfuzzer-sys = "0.4"
 meroctl-sign = { path = "../crates/meroctl/sign" }
 semver = "*"
@@ -71,3 +73,10 @@ doc = false
 bench = false
 
 [workspace]
+
+[[bin]]
+name = "sandbox_workspace"
+path = "fuzz_targets/sandbox_workspace.rs"
+test = false
+doc = false
+bench = false

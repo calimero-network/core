@@ -20,6 +20,9 @@ thiserror.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [[test]]
 name = "escape"
 harness = false

@@ -4,7 +4,6 @@
 use std::ffi::CString;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -12,10 +11,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::cgroup::Cgroup;
+use crate::init::ID_RANGE;
+use crate::workspace::Workspace;
 use crate::{
     Config, ExecOutcome, ExecRequest, Image, Limits, SandboxError, Usage, INIT_ARG, MAX_ARGV,
-    MAX_ENV, MAX_EXEC_MS, MAX_OUTPUT_BYTES, MAX_READ_BYTES, MAX_REQUEST_BYTES, MAX_STDIN_BYTES,
-    NOBODY,
+    MAX_ENV, MAX_EXEC_MS, MAX_OUTPUT_BYTES, MAX_REQUEST_BYTES, MAX_STDIN_BYTES, NOBODY,
 };
 
 /// Most bytes of a run id the node passes; the id names the run's directory and cgroup.
@@ -44,10 +44,10 @@ pub struct Run {
     image: Image,
     #[cfg(feature = "controls")]
     control: crate::Control,
-    workspace_bytes: u64,
     base: PathBuf,
     workspace: PathBuf,
-    workspace_fd: OwnedFd,
+    /// The workspace's files, as the node reads and writes them for the run.
+    files: Workspace,
     root: PathBuf,
     cgroup: Cgroup,
     procs: Vec<CString>,
@@ -87,8 +87,21 @@ impl Run {
         fs::create_dir_all(&root).map_err(|e| unavailable(root.display(), e))?;
         let guard = BaseGuard(base.clone());
 
+        if config.uid_base == 0 || config.uid_base.checked_add(ID_RANGE).is_none() {
+            return Err(invalid(format!("bad uid base {}", config.uid_base)));
+        }
+        // The workspace belongs to the sandbox's `nobody`: the node's uid for it in the sandbox's
+        // user namespace (the node's own `nobody` under the control that leaves that out).
+        #[cfg(feature = "controls")]
+        let owner = if limits.control == crate::Control::NoUserns {
+            NOBODY
+        } else {
+            config.uid_base + NOBODY
+        };
+        #[cfg(not(feature = "controls"))]
+        let owner = config.uid_base + NOBODY;
         let opts = CString::new(format!(
-            "size={},mode=0755,uid={NOBODY},gid={NOBODY}",
+            "size={},mode=0755,uid={owner},gid={owner}",
             limits.workspace_bytes
         ))
         .map_err(|e| unavailable("workspace options", e))?;
@@ -107,14 +120,7 @@ impl Run {
             return Err(unavailable("mount workspace", io::Error::last_os_error()));
         }
         let mounted = MountGuard(workspace.clone());
-        let workspace_fd = open_raw(
-            libc::AT_FDCWD,
-            &workspace,
-            libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
-            0,
-            0,
-        )
-        .map_err(|e| unavailable("open workspace", e))?;
+        let files = Workspace::open(&workspace, limits.workspace_bytes, Some(owner))?;
 
         let cgroup = Cgroup::create(&config.cgroup_name, id, limits)?;
         let procs = cgroup.procs_files()?;
@@ -126,10 +132,9 @@ impl Run {
             image,
             #[cfg(feature = "controls")]
             control: limits.control,
-            workspace_bytes: limits.workspace_bytes,
             base,
             workspace,
-            workspace_fd,
+            files,
             root,
             cgroup,
             procs,
@@ -149,6 +154,7 @@ impl Run {
         let _ = cmd
             .arg(INIT_ARG)
             .arg(control)
+            .arg(self.config.uid_base.to_string())
             .arg(&self.image.root)
             .arg(&self.root)
             .arg(&self.workspace)
@@ -163,10 +169,10 @@ impl Run {
             .stderr(Stdio::piped());
         let procs = self.procs.clone();
         // SAFETY: the closure runs between fork and exec and makes only async-signal-safe
-        // calls (open, write, close, unshare) on memory allocated before the fork.
+        // calls (open, write, close) on memory allocated before the fork.
         unsafe {
             let _ = cmd.pre_exec(move || {
-                // Join the run's cgroup ("0" = this process), then enter new namespaces.
+                // Join the run's cgroup ("0" = this process); init makes the namespaces.
                 for p in &procs {
                     let fd = libc::open(p.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
                     if fd < 0 {
@@ -177,15 +183,6 @@ impl Run {
                     if n != 1 {
                         return Err(io::Error::last_os_error());
                     }
-                }
-                let flags = libc::CLONE_NEWNS
-                    | libc::CLONE_NEWPID
-                    | libc::CLONE_NEWNET
-                    | libc::CLONE_NEWIPC
-                    | libc::CLONE_NEWUTS
-                    | libc::CLONE_NEWCGROUP;
-                if libc::unshare(flags) != 0 {
-                    return Err(io::Error::last_os_error());
                 }
                 Ok(())
             });
@@ -248,59 +245,18 @@ impl Run {
 
     /// Writes `bytes` to `path` in the workspace, replacing a regular file there.
     pub fn write(&self, path: &str, bytes: &[u8]) -> Result<(), SandboxError> {
-        if bytes.len() as u64 > self.workspace_bytes {
-            return Err(invalid("file larger than the workspace"));
-        }
-        // O_NONBLOCK: opening a FIFO the sandbox planted must not block the node.
-        let mut f = self.open_beneath(
-            path,
-            libc::O_WRONLY | libc::O_CREAT | libc::O_NONBLOCK,
-            0o644,
-        )?;
-        let _ = require_regular(&f, path)?;
-        f.set_len(0).map_err(|e| invalid(format!("{path}: {e}")))?;
-        f.write_all(bytes)
-            .map_err(|e| invalid(format!("{path}: {e}")))?;
-        // SAFETY: fchown on a file descriptor this function owns.
-        if unsafe { libc::fchown(f.as_raw_fd(), NOBODY, NOBODY) } != 0 {
-            return Err(unavailable(path, io::Error::last_os_error()));
-        }
-        Ok(())
+        self.files.write(path, bytes)
     }
 
-    /// Reads at most `max` bytes (and at most [`MAX_READ_BYTES`]) of a regular file in the
-    /// workspace.
+    /// Reads at most `max` bytes (and at most [`MAX_READ_BYTES`](crate::MAX_READ_BYTES)) of a
+    /// regular file in the workspace.
     pub fn read(&self, path: &str, max: u32) -> Result<Vec<u8>, SandboxError> {
-        let f = self.open_beneath(path, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
-        let _ = require_regular(&f, path)?;
-        let mut buf = Vec::new();
-        let _ = f
-            .take(u64::from(max.min(MAX_READ_BYTES)))
-            .read_to_end(&mut buf)
-            .map_err(|e| invalid(format!("{path}: {e}")))?;
-        Ok(buf)
+        self.files.read(path, max)
     }
 
     /// Opens a regular file in the workspace to take out of the run, with its length.
     pub fn collect(&self, path: &str) -> Result<(File, u64), SandboxError> {
-        let f = self.open_beneath(path, libc::O_RDONLY | libc::O_NONBLOCK, 0)?;
-        let len = require_regular(&f, path)?;
-        Ok((f, len))
-    }
-
-    /// Opens `path` under the workspace with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS |
-    /// RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV)`: absolute paths, `..` escapes, a symlink in any
-    /// component and other mounts are refused by the kernel, with no check-then-use race.
-    fn open_beneath(&self, path: &str, flags: i32, mode: u64) -> Result<File, SandboxError> {
-        let fd = open_raw(
-            self.workspace_fd.as_raw_fd(),
-            Path::new(path),
-            flags | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            mode,
-            RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV,
-        )
-        .map_err(|e| invalid(format!("{path}: {e}")))?;
-        Ok(File::from(fd))
+        self.files.collect(path)
     }
 }
 
@@ -372,14 +328,6 @@ fn check_request(req: &ExecRequest) -> Result<(), SandboxError> {
     Ok(())
 }
 
-fn require_regular(f: &File, path: &str) -> Result<u64, SandboxError> {
-    let m = f.metadata().map_err(|e| invalid(format!("{path}: {e}")))?;
-    if !m.file_type().is_file() {
-        return Err(invalid(format!("{path}: not a regular file")));
-    }
-    Ok(m.len())
-}
-
 fn read_capped(mut r: impl Read, cap: usize) -> (Vec<u8>, bool) {
     let mut out = Vec::new();
     let mut buf = [0u8; 16 * 1024];
@@ -400,45 +348,6 @@ fn read_capped(mut r: impl Read, cap: usize) -> (Vec<u8>, bool) {
 fn path_c(p: &Path) -> Result<CString, SandboxError> {
     CString::new(p.as_os_str().as_encoded_bytes())
         .map_err(|_| invalid(format!("{} holds a NUL byte", p.display())))
-}
-
-const RESOLVE_NO_XDEV: u64 = 0x01;
-const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-const RESOLVE_BENEATH: u64 = 0x08;
-
-/// `struct open_how` of openat2(2).
-#[repr(C)]
-struct OpenHow {
-    flags: u64,
-    mode: u64,
-    resolve: u64,
-}
-
-fn open_raw(dirfd: i32, path: &Path, flags: i32, mode: u64, resolve: u64) -> io::Result<OwnedFd> {
-    let p = CString::new(path.as_os_str().as_encoded_bytes())
-        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
-    let how = OpenHow {
-        flags: flags as u64,
-        mode,
-        resolve,
-    };
-    // SAFETY: `p` and `how` outlive the call, and the size is `how`'s.
-    let fd = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            dirfd,
-            p.as_ptr(),
-            &how as *const OpenHow,
-            size_of::<OpenHow>(),
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let fd = i32::try_from(fd).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-    // SAFETY: openat2 returned a new descriptor that nothing else owns.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 #[cfg(test)]
